@@ -64,7 +64,7 @@ jobs:
           verbose: true
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@75cd11691c0faa626561e295848008c8a7dddffe # v5
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
         with:
           files: target/llvm-cov/lcov-branch.info
           fail_ci_if_error: false
