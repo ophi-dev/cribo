@@ -3,7 +3,7 @@ use std::path::Path;
 use cow_utils::CowUtils;
 use ruff_python_ast::{
     AtomicNodeIndex, Expr, ExprContext, ExprName, ModModule, Stmt, StmtClassDef, StmtImport,
-    StmtImportFrom,
+    StmtImportFrom, Suite,
 };
 use ruff_text_size::TextRange;
 
@@ -500,7 +500,7 @@ impl<'a> RecursiveImportTransformer<'a> {
     }
 
     /// Transform a list of statements recursively
-    fn transform_statements(&mut self, stmts: &mut Vec<Stmt>) {
+    fn transform_statements(&mut self, stmts: &mut Suite) {
         log::debug!(
             "RecursiveImportTransformer::transform_statements: Processing {} statements",
             stmts.len()

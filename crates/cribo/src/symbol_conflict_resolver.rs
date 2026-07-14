@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use ruff_python_ast::{ModModule, Stmt};
+use ruff_python_ast::{ModModule, PySourceType, PythonVersion, Stmt};
 use ruff_python_semantic::{
     BindingFlags, BindingId, BindingKind, Module, ModuleKind, ModuleSource, SemanticModel,
 };
@@ -74,7 +74,14 @@ impl<'a> SemanticModelBuilder<'a> {
             name: None,
         };
 
-        let semantic = SemanticModel::new(&[], file_path, module);
+        let semantic = SemanticModel::new(
+            &[],
+            &[],
+            PythonVersion::default(),
+            PySourceType::Python,
+            file_path,
+            module,
+        );
 
         // Step 4: Create builder and populate semantic model
         let mut builder = Self {
@@ -231,7 +238,7 @@ impl<'a> SemanticModelBuilder<'a> {
         }
 
         // Create binding and add to current scope
-        let binding_id = self.semantic.push_binding(range, kind, binding_flags);
+        let binding_id = self.semantic.push_binding(name, range, kind, binding_flags);
         let scope = self.semantic.current_scope_mut();
         scope.add(name, binding_id);
 

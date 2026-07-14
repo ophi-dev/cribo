@@ -960,7 +960,7 @@ impl Bundler<'_> {
                 log::debug!(
                     "Created module initialization: {} = {}()",
                     module_name,
-                    &init_func_name
+                    init_func_name
                 );
             }
         }

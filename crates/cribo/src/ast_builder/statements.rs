@@ -320,8 +320,8 @@ pub(crate) fn function_def(
         type_params: None,
         parameters: Box::new(parameters),
         returns: returns.map(Box::new),
-        body,
-        decorator_list,
+        body: body.into(),
+        decorator_list: decorator_list.into(),
         is_async,
         range: TextRange::default(),
     })
@@ -363,8 +363,8 @@ pub(crate) fn for_loop(target: &str, iter: Expr, body: Vec<Stmt>, orelse: Vec<St
         node_index: AtomicNodeIndex::NONE,
         target: Box::new(expressions::name(target, ExprContext::Store)),
         iter: Box::new(iter),
-        body,
-        orelse,
+        body: body.into(),
+        orelse: orelse.into(),
         is_async: false,
         range: TextRange::default(),
     })
@@ -375,14 +375,14 @@ pub(crate) fn if_stmt(condition: Expr, body: Vec<Stmt>, orelse: Vec<Stmt>) -> St
     Stmt::If(ruff_python_ast::StmtIf {
         node_index: AtomicNodeIndex::NONE,
         test: Box::new(condition),
-        body,
+        body: body.into(),
         elif_else_clauses: if orelse.is_empty() {
             vec![]
         } else {
             vec![ruff_python_ast::ElifElseClause {
                 node_index: AtomicNodeIndex::NONE,
                 test: None,
-                body: orelse,
+                body: orelse.into(),
                 range: TextRange::default(),
             }]
         },
@@ -422,10 +422,10 @@ pub(crate) fn try_stmt(
     finalbody: Vec<Stmt>,
 ) -> Stmt {
     Stmt::Try(StmtTry {
-        body,
+        body: body.into(),
         handlers,
-        orelse,
-        finalbody,
+        orelse: orelse.into(),
+        finalbody: finalbody.into(),
         is_star: false,
         range: TextRange::default(),
         node_index: AtomicNodeIndex::NONE,

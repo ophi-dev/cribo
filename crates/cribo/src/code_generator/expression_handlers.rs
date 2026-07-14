@@ -117,7 +117,9 @@ pub(super) fn resolve_import_aliases_in_expr(
             }
         }
         Expr::DictComp(comp) => {
-            resolve_import_aliases_in_expr(&mut comp.key, import_aliases);
+            if let Some(key) = &mut comp.key {
+                resolve_import_aliases_in_expr(key, import_aliases);
+            }
             resolve_import_aliases_in_expr(&mut comp.value, import_aliases);
             for generator in &mut comp.generators {
                 resolve_import_aliases_in_expr(&mut generator.iter, import_aliases);
@@ -348,7 +350,9 @@ pub(crate) fn rewrite_aliases_in_expr(
             }
         }
         Expr::DictComp(comp) => {
-            rewrite_aliases_in_expr(&mut comp.key, alias_to_canonical);
+            if let Some(key) = &mut comp.key {
+                rewrite_aliases_in_expr(key, alias_to_canonical);
+            }
             rewrite_aliases_in_expr(&mut comp.value, alias_to_canonical);
             for generator in &mut comp.generators {
                 rewrite_aliases_in_expr(&mut generator.iter, alias_to_canonical);
@@ -1110,7 +1114,7 @@ fn hoist_and_dedup_global_statements(func_def: &mut StmtFunctionDef) {
     new_body.insert(insert_at, combined_global);
 
     // Replace function body
-    func_def.body = new_body;
+    func_def.body = new_body.into();
 }
 
 /// Rewrite aliases in class definitions

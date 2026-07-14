@@ -92,10 +92,10 @@ impl FinalizationPhase {
 
         let parameters = ruff_python_ast::Parameters {
             node_index: AtomicNodeIndex::NONE,
-            posonlyargs: vec![],
-            args: vec![self_param],
+            posonlyargs: vec![].into(),
+            args: vec![self_param].into(),
             vararg: None,
-            kwonlyargs: vec![],
+            kwonlyargs: vec![].into(),
             kwarg: None,
             range: TextRange::default(),
         };

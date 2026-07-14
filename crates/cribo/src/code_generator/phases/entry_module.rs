@@ -73,9 +73,10 @@ impl EntryModulePhase {
             ast.body = Self::reorder_entry_module_statements(
                 bundler,
                 &module_name,
-                ast.body,
+                ast.body.to_vec(),
                 params.python_version,
-            );
+            )
+            .into();
         }
 
         // Get entry module renames

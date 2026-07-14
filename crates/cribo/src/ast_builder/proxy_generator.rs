@@ -67,7 +67,7 @@ const CRIBO_INSTANCE: &str = CRIBO_PREFIX;
 /// Helper to create simple function parameters
 fn make_params(names: &[&str]) -> Parameters {
     Parameters {
-        posonlyargs: vec![],
+        posonlyargs: vec![].into(),
         args: names
             .iter()
             .map(|name| ParameterWithDefault {
@@ -81,9 +81,10 @@ fn make_params(names: &[&str]) -> Parameters {
                 range: TextRange::default(),
                 node_index: AtomicNodeIndex::NONE,
             })
-            .collect(),
+            .collect::<Vec<_>>()
+            .into(),
         vararg: None,
-        kwonlyargs: vec![],
+        kwonlyargs: vec![].into(),
         kwarg: None,
         range: TextRange::default(),
         node_index: AtomicNodeIndex::NONE,
@@ -159,12 +160,12 @@ fn create_cribo_module_class() -> Stmt {
         name: Identifier::new(CRIBO_MODULE_CLASS, TextRange::default()),
         arguments: Some(Box::new(Arguments {
             args: Box::new([]),
-            keywords: Box::new([]),
+            keywords: vec![].into(),
             range: TextRange::default(),
             node_index: AtomicNodeIndex::NONE,
         })),
-        body,
-        decorator_list: vec![],
+        body: body.into(),
+        decorator_list: vec![].into(),
         type_params: None,
         range: TextRange::default(),
     })
@@ -270,7 +271,7 @@ fn create_cribo_module_getattr() -> Stmt {
                 ExprContext::Load,
             ))),
             name: None,
-            body: except_body,
+            body: except_body.into(),
             range: TextRange::default(),
         });
 
@@ -366,12 +367,12 @@ fn create_cribo_class() -> Stmt {
         name: Identifier::new(CRIBO_CLASS, TextRange::default()),
         arguments: Some(Box::new(Arguments {
             args: Box::new([]),
-            keywords: Box::new([]),
+            keywords: vec![].into(),
             range: TextRange::default(),
             node_index: AtomicNodeIndex::NONE,
         })),
-        body: vec![getattr_method],
-        decorator_list: vec![],
+        body: vec![getattr_method].into(),
+        decorator_list: vec![].into(),
         type_params: None,
         range: TextRange::default(),
     })

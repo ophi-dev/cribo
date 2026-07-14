@@ -45,7 +45,7 @@ impl Bundler<'_> {
                 Stmt::If(if_stmt) => {
                     // Process if body recursively (inside conditional context)
                     let mut processed_body = self.process_body_recursive_impl(
-                        if_stmt.body.clone(),
+                        if_stmt.body.to_vec(),
                         module_name,
                         module_scope_symbols,
                         true,
@@ -65,7 +65,7 @@ impl Bundler<'_> {
                         .iter()
                         .map(|clause| {
                             let mut processed_clause_body = self.process_body_recursive_impl(
-                                clause.body.clone(),
+                                clause.body.to_vec(),
                                 module_name,
                                 module_scope_symbols,
                                 true,
@@ -80,7 +80,7 @@ impl Bundler<'_> {
                             ruff_python_ast::ElifElseClause {
                                 node_index: clause.node_index.clone(),
                                 test: clause.test.clone(),
-                                body: processed_clause_body,
+                                body: processed_clause_body.into(),
                                 range: clause.range,
                             }
                         })
@@ -90,7 +90,7 @@ impl Bundler<'_> {
                     let new_if = ruff_python_ast::StmtIf {
                         node_index: if_stmt.node_index.clone(),
                         test: if_stmt.test.clone(),
-                        body: processed_body,
+                        body: processed_body.into(),
                         elif_else_clauses: processed_elif_else,
                         range: if_stmt.range,
                     };
@@ -100,7 +100,7 @@ impl Bundler<'_> {
                 Stmt::Try(try_stmt) => {
                     // Process try body recursively (inside conditional context)
                     let processed_body = self.process_body_recursive_impl(
-                        try_stmt.body.clone(),
+                        try_stmt.body.to_vec(),
                         module_name,
                         module_scope_symbols,
                         true,
@@ -113,7 +113,7 @@ impl Bundler<'_> {
                         .map(|handler| {
                             let ExceptHandler::ExceptHandler(handler) = handler;
                             let processed_handler_body = self.process_body_recursive_impl(
-                                handler.body.clone(),
+                                handler.body.to_vec(),
                                 module_name,
                                 module_scope_symbols,
                                 true,
@@ -123,7 +123,7 @@ impl Bundler<'_> {
                                     node_index: handler.node_index.clone(),
                                     type_: handler.type_.clone(),
                                     name: handler.name.clone(),
-                                    body: processed_handler_body,
+                                    body: processed_handler_body.into(),
                                     range: handler.range,
                                 },
                             )
@@ -132,7 +132,7 @@ impl Bundler<'_> {
 
                     // Process orelse (inside conditional context)
                     let processed_orelse = self.process_body_recursive_impl(
-                        try_stmt.orelse.clone(),
+                        try_stmt.orelse.to_vec(),
                         module_name,
                         module_scope_symbols,
                         true,
@@ -140,7 +140,7 @@ impl Bundler<'_> {
 
                     // Process finalbody (inside conditional context)
                     let processed_finalbody = self.process_body_recursive_impl(
-                        try_stmt.finalbody.clone(),
+                        try_stmt.finalbody.to_vec(),
                         module_name,
                         module_scope_symbols,
                         true,
@@ -149,10 +149,10 @@ impl Bundler<'_> {
                     // Create new try statement
                     let new_try = ruff_python_ast::StmtTry {
                         node_index: try_stmt.node_index.clone(),
-                        body: processed_body,
+                        body: processed_body.into(),
                         handlers: processed_handlers,
-                        orelse: processed_orelse,
-                        finalbody: processed_finalbody,
+                        orelse: processed_orelse.into(),
+                        finalbody: processed_finalbody.into(),
                         is_star: try_stmt.is_star,
                         range: try_stmt.range,
                     };
@@ -336,13 +336,13 @@ impl Bundler<'_> {
                 }
                 Stmt::For(for_stmt) => {
                     let processed_body = self.process_body_recursive_impl(
-                        for_stmt.body.clone(),
+                        for_stmt.body.to_vec(),
                         module_name,
                         module_scope_symbols,
                         true,
                     );
                     let processed_orelse = self.process_body_recursive_impl(
-                        for_stmt.orelse.clone(),
+                        for_stmt.orelse.to_vec(),
                         module_name,
                         module_scope_symbols,
                         true,
@@ -351,21 +351,21 @@ impl Bundler<'_> {
                         node_index: for_stmt.node_index.clone(),
                         target: for_stmt.target.clone(),
                         iter: for_stmt.iter.clone(),
-                        body: processed_body,
-                        orelse: processed_orelse,
+                        body: processed_body.into(),
+                        orelse: processed_orelse.into(),
                         is_async: for_stmt.is_async,
                         range: for_stmt.range,
                     }));
                 }
                 Stmt::While(while_stmt) => {
                     let processed_body = self.process_body_recursive_impl(
-                        while_stmt.body.clone(),
+                        while_stmt.body.to_vec(),
                         module_name,
                         module_scope_symbols,
                         true,
                     );
                     let processed_orelse = self.process_body_recursive_impl(
-                        while_stmt.orelse.clone(),
+                        while_stmt.orelse.to_vec(),
                         module_name,
                         module_scope_symbols,
                         true,
@@ -373,14 +373,14 @@ impl Bundler<'_> {
                     result.push(Stmt::While(ruff_python_ast::StmtWhile {
                         node_index: while_stmt.node_index.clone(),
                         test: while_stmt.test.clone(),
-                        body: processed_body,
-                        orelse: processed_orelse,
+                        body: processed_body.into(),
+                        orelse: processed_orelse.into(),
                         range: while_stmt.range,
                     }));
                 }
                 Stmt::With(with_stmt) => {
                     let processed_body = self.process_body_recursive_impl(
-                        with_stmt.body.clone(),
+                        with_stmt.body.to_vec(),
                         module_name,
                         module_scope_symbols,
                         true,
@@ -388,7 +388,7 @@ impl Bundler<'_> {
                     result.push(Stmt::With(ruff_python_ast::StmtWith {
                         node_index: with_stmt.node_index.clone(),
                         items: with_stmt.items.clone(),
-                        body: processed_body,
+                        body: processed_body.into(),
                         is_async: with_stmt.is_async,
                         range: with_stmt.range,
                     }));
@@ -399,7 +399,7 @@ impl Bundler<'_> {
                         .iter()
                         .map(|case| {
                             let processed_body = self.process_body_recursive_impl(
-                                case.body.clone(),
+                                case.body.to_vec(),
                                 module_name,
                                 module_scope_symbols,
                                 true,
@@ -408,7 +408,7 @@ impl Bundler<'_> {
                                 node_index: case.node_index.clone(),
                                 pattern: case.pattern.clone(),
                                 guard: case.guard.clone(),
-                                body: processed_body,
+                                body: processed_body.into(),
                                 range: case.range,
                             }
                         })
@@ -1222,12 +1222,14 @@ impl Bundler<'_> {
             }
             Expr::DictComp(comp) => {
                 let comp_locals = Self::comprehension_local_vars(&comp.generators, local_vars);
-                Self::transform_expr_for_module_vars_with_locals(
-                    &mut comp.key,
-                    module_level_vars,
-                    &comp_locals,
-                    module_var_name,
-                );
+                if let Some(key) = &mut comp.key {
+                    Self::transform_expr_for_module_vars_with_locals(
+                        key,
+                        module_level_vars,
+                        &comp_locals,
+                        module_var_name,
+                    );
+                }
                 Self::transform_expr_for_module_vars_with_locals(
                     &mut comp.value,
                     module_level_vars,
@@ -1889,7 +1891,7 @@ impl Bundler<'_> {
             }
         }
 
-        func_def.body = new_body;
+        func_def.body = new_body.into();
     }
 
     /// Add synchronization statements for global variable modifications

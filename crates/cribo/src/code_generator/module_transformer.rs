@@ -884,12 +884,14 @@ pub(crate) fn transform_expr_for_module_vars(
             }
         }
         Expr::DictComp(comp) => {
-            transform_expr_for_module_vars(
-                &mut comp.key,
-                module_level_vars,
-                module_var_name,
-                python_version,
-            );
+            if let Some(key) = &mut comp.key {
+                transform_expr_for_module_vars(
+                    key,
+                    module_level_vars,
+                    module_var_name,
+                    python_version,
+                );
+            }
             transform_expr_for_module_vars(
                 &mut comp.value,
                 module_level_vars,

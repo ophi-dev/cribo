@@ -67,13 +67,13 @@ disallowed-types = [
     # { path = "std::sync::Mutex", reason = "use tokio::sync::Mutex in async code" },
     # { path = "std::sync::RwLock", reason = "use tokio::sync::RwLock in async code" },
 
-    { path = "rand::rngs::ThreadRng", reason = "ThreadRng is inherently non‐deterministic; use a fixed‐seed or hash‐based approach instead." },
+    { path = "rand::rngs::ThreadRng", reason = "ThreadRng is inherently non‐deterministic; use a fixed‐seed or hash‐based approach instead.", allow-invalid = true },
 ]
 
 # Methods - merging your excellent list with modern practices
 disallowed-methods = [
     # Keep all your determinism rules
-    { path = "rand::random", reason = "Use a deterministic hash (e.g. via a cryptographic hasher like Sha256) instead of `rand::random`." },
+    { path = "rand::random", reason = "Use a deterministic hash (e.g. via a cryptographic hasher like Sha256) instead of `rand::random`.", allow-invalid = true },
     { path = "rand::Rng::gen", reason = "Use a deterministic hash (e.g. via Sha256) rather than generating random bytes at runtime.", allow-invalid = true },
 
     # Keep your cow_utils optimizations
@@ -124,6 +124,10 @@ ignore-interior-mutability = ["ruff_formatter::format_element::Interned", "ruff_
 # These are documented incompatibilities between dependencies (different major versions)
 # Will warn if NEW duplicates are introduced
 allowed-duplicate-crates = [
+    # bitflags: Ruff and git2/libgit2-sys currently depend on different major versions.
+    "bitflags",
+    # foldhash: Ruff depends on 0.1 while hashbrown 0.17 depends on 0.2.
+    "foldhash",
     # itertools: pep508_rs uses 0.13, ruff crates use 0.14 (breaking changes in 0.14)
     "itertools",
     # thiserror: pep508_rs uses 1.0, ruff crates use 2.0 (breaking changes in 2.0)

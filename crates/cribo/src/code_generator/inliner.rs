@@ -85,14 +85,18 @@ impl Bundler<'_> {
         // Reorder statements to ensure proper declaration order
         let statements = if self.circular_modules.contains(&module_id) {
             log::debug!("Module '{module_name}' is circular, applying reordering");
-            self.reorder_statements_for_circular_module(module_name, ast.body, ctx.python_version)
+            self.reorder_statements_for_circular_module(
+                module_name,
+                ast.body.to_vec(),
+                ctx.python_version,
+            )
         } else {
             // For non-circular modules, only reorder if there are actual issues that require it
             // Simple modules should be inlined as-is without reordering
             log::debug!(
                 "Module '{module_name}' is not circular, preserving original statement order"
             );
-            ast.body
+            ast.body.to_vec()
         };
 
         // Build a map of imported symbols to their source modules

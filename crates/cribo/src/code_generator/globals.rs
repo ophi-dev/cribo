@@ -233,12 +233,14 @@ fn transform_introspection_in_expr(
         Expr::DictComp(comp_expr) => {
             // Dict comprehensions: at module level they see module scope,
             // inside functions they see function scope
-            transform_introspection_in_expr(
-                &mut comp_expr.key,
-                target_fn,
-                recurse_into_scopes,
-                module_var_name,
-            );
+            if let Some(key) = &mut comp_expr.key {
+                transform_introspection_in_expr(
+                    key,
+                    target_fn,
+                    recurse_into_scopes,
+                    module_var_name,
+                );
+            }
             transform_introspection_in_expr(
                 &mut comp_expr.value,
                 target_fn,

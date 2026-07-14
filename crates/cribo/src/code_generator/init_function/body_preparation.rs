@@ -64,8 +64,11 @@ impl BodyPreparationPhase {
         let builtin_locals = Self::scan_builtin_locals(ast, ctx);
 
         // Process the body with recursive approach
-        let processed_body_raw =
-            bundler.process_body_recursive(ast.body.clone(), ctx.module_name, module_scope_symbols);
+        let processed_body_raw = bundler.process_body_recursive(
+            ast.body.to_vec(),
+            ctx.module_name,
+            module_scope_symbols,
+        );
 
         // Filter out accidental attempts to (re)initialize the entry package (__init__)
         let processed_body = Self::filter_circular_init_attempts(processed_body_raw);
@@ -288,7 +291,7 @@ impl BodyPreparationPhase {
             debug!(
                 "Declared {} lifted globals: {:?}",
                 lifted_names.len(),
-                &lifted
+                lifted
             );
 
             state.body.push(ast_builder::statements::global(lifted));

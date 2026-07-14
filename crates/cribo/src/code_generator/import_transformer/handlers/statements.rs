@@ -344,7 +344,7 @@ impl StatementsHandler {
         );
 
         // Set function body for compatibility with existing APIs
-        t.state.current_function_body = Some(s.body.clone());
+        t.state.current_function_body = Some(s.body.to_vec());
 
         // Transform the function body
         t.transform_statements(&mut s.body);

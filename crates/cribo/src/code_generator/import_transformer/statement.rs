@@ -98,6 +98,6 @@ impl StatementProcessor {
         });
 
         new_body.insert(insert_at, global_stmt);
-        func_def.body = new_body;
+        func_def.body = new_body.into();
     }
 }

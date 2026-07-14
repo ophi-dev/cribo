@@ -1238,7 +1238,9 @@ impl<'a> GraphBuilder<'a> {
                 }
             }
             Expr::DictComp(comp) => {
-                self.collect_vars_in_expr_with_attrs(&comp.key, vars, attribute_accesses);
+                if let Some(key) = &comp.key {
+                    self.collect_vars_in_expr_with_attrs(key, vars, attribute_accesses);
+                }
                 self.collect_vars_in_expr_with_attrs(&comp.value, vars, attribute_accesses);
                 for generator in &comp.generators {
                     self.collect_vars_in_expr_with_attrs(&generator.iter, vars, attribute_accesses);

@@ -1018,6 +1018,7 @@ mod tests {
             .expect("test module should parse")
             .into_syntax()
             .body
+            .to_vec()
     }
 
     fn assignment_targets(statements: &[Stmt]) -> Vec<String> {

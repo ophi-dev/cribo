@@ -417,7 +417,9 @@ impl ExpressionRewriter {
                 }
             }
             Expr::DictComp(dictcomp_expr) => {
-                Self::transform_expr(transformer, &mut dictcomp_expr.key);
+                if let Some(key) = &mut dictcomp_expr.key {
+                    Self::transform_expr(transformer, key);
+                }
                 Self::transform_expr(transformer, &mut dictcomp_expr.value);
                 for generator in &mut dictcomp_expr.generators {
                     Self::transform_expr(transformer, &mut generator.iter);

@@ -206,7 +206,7 @@ impl ImportAnalysisPhase {
                     );
                     debug!(
                         "Tracking stdlib re-export in wrapper module '{}': {} -> {}",
-                        ctx.module_name, local_name, &proxy_path
+                        ctx.module_name, local_name, proxy_path
                     );
                     state
                         .stdlib_reexports

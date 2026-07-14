@@ -155,7 +155,7 @@ pub(crate) fn call(func: Expr, args: Vec<Expr>, keywords: Vec<Keyword>) -> Expr 
         func: Box::new(func),
         arguments: ruff_python_ast::Arguments {
             args: args.into_boxed_slice(),
-            keywords: keywords.into_boxed_slice(),
+            keywords: keywords.into(),
             range: TextRange::default(),
             node_index: AtomicNodeIndex::NONE,
         },

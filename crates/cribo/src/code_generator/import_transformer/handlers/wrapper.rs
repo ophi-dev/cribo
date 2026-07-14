@@ -58,7 +58,7 @@ impl WrapperHandler {
                             .iter()
                             .map(|a| a.name.as_str())
                             .collect::<Vec<_>>(),
-                        &context.current_module_name
+                        context.current_module_name
                     );
                 } else {
                     // Convert relative import to absolute

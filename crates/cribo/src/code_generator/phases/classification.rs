@@ -168,7 +168,7 @@ mod tests {
         let empty_module = ModModule {
             node_index: AtomicNodeIndex::NONE,
             range: TextRange::default(),
-            body: vec![],
+            body: vec![].into(),
         };
 
         let result = ClassificationResult {
@@ -219,12 +219,12 @@ mod tests {
         let empty_module1 = ModModule {
             node_index: AtomicNodeIndex::NONE,
             range: TextRange::default(),
-            body: vec![],
+            body: vec![].into(),
         };
         let empty_module2 = ModModule {
             node_index: AtomicNodeIndex::NONE,
             range: TextRange::default(),
-            body: vec![],
+            body: vec![].into(),
         };
 
         let result = ClassificationResult {
