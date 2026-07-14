@@ -586,6 +586,9 @@ impl<'a> RecursiveImportTransformer<'a> {
                     Stmt::Try(try_stmt) => {
                         StatementsHandler::handle_try(self, try_stmt);
                     }
+                    Stmt::Match(match_stmt) => {
+                        StatementsHandler::handle_match(self, match_stmt);
+                    }
                     Stmt::AnnAssign(ann_assign) => {
                         StatementsHandler::handle_ann_assign(self, ann_assign);
                     }

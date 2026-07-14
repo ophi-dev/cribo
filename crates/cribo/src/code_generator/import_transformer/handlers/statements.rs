@@ -1,6 +1,6 @@
 use ruff_python_ast::{
     ExceptHandler, StmtAnnAssign, StmtAssert, StmtAugAssign, StmtClassDef, StmtExpr, StmtFor,
-    StmtIf, StmtRaise, StmtReturn, StmtTry, StmtWhile, StmtWith,
+    StmtIf, StmtMatch, StmtRaise, StmtReturn, StmtTry, StmtWhile, StmtWith,
 };
 
 use crate::code_generator::import_transformer::RecursiveImportTransformer;
@@ -189,6 +189,22 @@ impl StatementsHandler {
                     "Adding pass statement to empty elif/else clause in import transformer"
                 );
                 clause.body.push(crate::ast_builder::statements::pass());
+            }
+        }
+    }
+
+    pub(in crate::code_generator::import_transformer) fn handle_match(
+        t: &mut RecursiveImportTransformer<'_>,
+        s: &mut StmtMatch,
+    ) {
+        t.transform_expr(&mut s.subject);
+        for case in &mut s.cases {
+            if let Some(guard) = &mut case.guard {
+                t.transform_expr(guard);
+            }
+            t.transform_statements(&mut case.body);
+            if case.body.is_empty() {
+                case.body.push(crate::ast_builder::statements::pass());
             }
         }
     }

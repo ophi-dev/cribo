@@ -79,7 +79,12 @@ impl<'a> GraphBuilder<'a> {
                 Stmt::FunctionDef(func_def) => return self.process_function_def(func_def),
                 Stmt::ClassDef(class_def) => return self.process_class_def(class_def),
                 // Recurse into control flow blocks that may contain imports
-                Stmt::If(_) | Stmt::For(_) | Stmt::While(_) | Stmt::With(_) | Stmt::Try(_) => {
+                Stmt::If(_)
+                | Stmt::For(_)
+                | Stmt::While(_)
+                | Stmt::With(_)
+                | Stmt::Try(_)
+                | Stmt::Match(_) => {
                     // Fall through to regular processing to handle nested imports
                 }
                 _ => return Ok(()),
@@ -119,6 +124,7 @@ impl<'a> GraphBuilder<'a> {
             Stmt::While(while_stmt) => self.process_while_stmt(while_stmt),
             Stmt::With(with_stmt) => self.process_with_stmt(with_stmt),
             Stmt::Try(try_stmt) => self.process_try_stmt(try_stmt),
+            Stmt::Match(match_stmt) => self.process_match_stmt(match_stmt),
             Stmt::Raise(raise_stmt) => {
                 self.process_raise_stmt(raise_stmt);
                 Ok(())
@@ -843,23 +849,7 @@ impl<'a> GraphBuilder<'a> {
         let mut read_vars = FxIndexSet::default();
         self.collect_vars_in_expr(&while_stmt.test, &mut read_vars);
 
-        let item_data = ItemData {
-            item_type: ItemType::Other,
-            var_decls: FxIndexSet::default(),
-            read_vars,
-            eventual_read_vars: FxIndexSet::default(),
-            write_vars: FxIndexSet::default(),
-            eventual_write_vars: FxIndexSet::default(),
-            has_side_effects: true,
-            imported_names: FxIndexSet::default(),
-            reexported_names: FxIndexSet::default(),
-            defined_symbols: FxIndexSet::default(),
-            symbol_dependencies: FxIndexMap::default(),
-            attribute_accesses: FxIndexMap::default(),
-            containing_scope: self.scope_name.clone(),
-        };
-
-        self.graph.add_item(item_data);
+        self.add_control_flow_item(ItemType::Other, read_vars, FxIndexMap::default(), true);
 
         // Process body
         for stmt in &while_stmt.body {
@@ -882,23 +872,7 @@ impl<'a> GraphBuilder<'a> {
             self.collect_vars_in_expr(&item.context_expr, &mut read_vars);
         }
 
-        let item_data = ItemData {
-            item_type: ItemType::Other,
-            var_decls: FxIndexSet::default(),
-            read_vars,
-            eventual_read_vars: FxIndexSet::default(),
-            write_vars: FxIndexSet::default(),
-            eventual_write_vars: FxIndexSet::default(),
-            has_side_effects: true,
-            imported_names: FxIndexSet::default(),
-            reexported_names: FxIndexSet::default(),
-            defined_symbols: FxIndexSet::default(),
-            symbol_dependencies: FxIndexMap::default(),
-            attribute_accesses: FxIndexMap::default(),
-            containing_scope: self.scope_name.clone(),
-        };
-
-        self.graph.add_item(item_data);
+        self.add_control_flow_item(ItemType::Other, read_vars, FxIndexMap::default(), true);
 
         // Process body
         for stmt in &with_stmt.body {
@@ -930,23 +904,7 @@ impl<'a> GraphBuilder<'a> {
              {attribute_accesses:?}"
         );
 
-        let item_data = ItemData {
-            item_type: ItemType::Other,
-            var_decls: FxIndexSet::default(),
-            read_vars,
-            eventual_read_vars: FxIndexSet::default(),
-            write_vars: FxIndexSet::default(),
-            eventual_write_vars: FxIndexSet::default(),
-            has_side_effects: true, // Raise statements have side effects
-            imported_names: FxIndexSet::default(),
-            reexported_names: FxIndexSet::default(),
-            defined_symbols: FxIndexSet::default(),
-            symbol_dependencies: FxIndexMap::default(),
-            attribute_accesses,
-            containing_scope: self.scope_name.clone(),
-        };
-
-        self.graph.add_item(item_data);
+        self.add_control_flow_item(ItemType::Other, read_vars, attribute_accesses, true);
     }
 
     /// Process try statement
@@ -956,23 +914,12 @@ impl<'a> GraphBuilder<'a> {
             try_stmt.body.len()
         );
 
-        let item_data = ItemData {
-            item_type: ItemType::Try,
-            var_decls: FxIndexSet::default(),
-            read_vars: FxIndexSet::default(),
-            eventual_read_vars: FxIndexSet::default(),
-            write_vars: FxIndexSet::default(),
-            eventual_write_vars: FxIndexSet::default(),
-            has_side_effects: true,
-            imported_names: FxIndexSet::default(),
-            reexported_names: FxIndexSet::default(),
-            defined_symbols: FxIndexSet::default(),
-            symbol_dependencies: FxIndexMap::default(),
-            attribute_accesses: FxIndexMap::default(),
-            containing_scope: self.scope_name.clone(),
-        };
-
-        self.graph.add_item(item_data);
+        self.add_control_flow_item(
+            ItemType::Try,
+            FxIndexSet::default(),
+            FxIndexMap::default(),
+            true,
+        );
 
         // Process try body
         for stmt in &try_stmt.body {
@@ -993,23 +940,7 @@ impl<'a> GraphBuilder<'a> {
                     &mut attribute_accesses,
                 );
 
-                // Create an item for the exception handler
-                let item_data = ItemData {
-                    item_type: ItemType::Other,
-                    var_decls: FxIndexSet::default(),
-                    read_vars,
-                    eventual_read_vars: FxIndexSet::default(),
-                    write_vars: FxIndexSet::default(),
-                    eventual_write_vars: FxIndexSet::default(),
-                    has_side_effects: false,
-                    imported_names: FxIndexSet::default(),
-                    reexported_names: FxIndexSet::default(),
-                    defined_symbols: FxIndexSet::default(),
-                    symbol_dependencies: FxIndexMap::default(),
-                    attribute_accesses,
-                    containing_scope: self.scope_name.clone(),
-                };
-                self.graph.add_item(item_data);
+                self.add_control_flow_item(ItemType::Other, read_vars, attribute_accesses, false);
             }
 
             for stmt in &handler.body {
@@ -1028,6 +959,63 @@ impl<'a> GraphBuilder<'a> {
         }
 
         Ok(())
+    }
+
+    /// Process a structural pattern matching statement.
+    fn process_match_stmt(&mut self, match_stmt: &ast::StmtMatch) -> Result<()> {
+        let mut read_vars = FxIndexSet::default();
+        let mut attribute_accesses = FxIndexMap::default();
+
+        self.collect_vars_in_expr_with_attrs(
+            &match_stmt.subject,
+            &mut read_vars,
+            &mut attribute_accesses,
+        );
+        for case in &match_stmt.cases {
+            self.collect_vars_in_pattern(&case.pattern, &mut read_vars, &mut attribute_accesses);
+            if let Some(guard) = &case.guard {
+                self.collect_vars_in_expr_with_attrs(
+                    guard,
+                    &mut read_vars,
+                    &mut attribute_accesses,
+                );
+            }
+        }
+
+        self.add_control_flow_item(ItemType::Other, read_vars, attribute_accesses, true);
+
+        for case in &match_stmt.cases {
+            for stmt in &case.body {
+                self.process_statement(stmt)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Add a dependency item for control flow that does not declare module symbols.
+    fn add_control_flow_item(
+        &mut self,
+        item_type: ItemType,
+        read_vars: FxIndexSet<String>,
+        attribute_accesses: FxIndexMap<String, FxIndexSet<String>>,
+        has_side_effects: bool,
+    ) {
+        self.graph.add_item(ItemData {
+            item_type,
+            var_decls: FxIndexSet::default(),
+            read_vars,
+            eventual_read_vars: FxIndexSet::default(),
+            write_vars: FxIndexSet::default(),
+            eventual_write_vars: FxIndexSet::default(),
+            has_side_effects,
+            imported_names: FxIndexSet::default(),
+            reexported_names: FxIndexSet::default(),
+            defined_symbols: FxIndexSet::default(),
+            symbol_dependencies: FxIndexMap::default(),
+            attribute_accesses,
+            containing_scope: self.scope_name.clone(),
+        });
     }
 
     /// Extract assignment target names
@@ -1336,6 +1324,28 @@ impl<'a> GraphBuilder<'a> {
                         stack.push(&while_stmt.body);
                         stack.push(&while_stmt.orelse);
                     }
+                    Stmt::Match(match_stmt) => {
+                        self.collect_vars_in_expr_with_attrs(
+                            &match_stmt.subject,
+                            read_vars,
+                            attribute_accesses,
+                        );
+                        for case in &match_stmt.cases {
+                            self.collect_vars_in_pattern(
+                                &case.pattern,
+                                read_vars,
+                                attribute_accesses,
+                            );
+                            if let Some(guard) = &case.guard {
+                                self.collect_vars_in_expr_with_attrs(
+                                    guard,
+                                    read_vars,
+                                    attribute_accesses,
+                                );
+                            }
+                            stack.push(&case.body);
+                        }
+                    }
                     Stmt::With(with_stmt) => {
                         self.handle_with_stmt(with_stmt, read_vars, &mut stack, attribute_accesses);
                     }
@@ -1495,6 +1505,53 @@ impl<'a> GraphBuilder<'a> {
                     _ => {} // Other statements
                 }
             }
+        }
+    }
+
+    /// Collect runtime variable reads from a structural pattern.
+    fn collect_vars_in_pattern(
+        &self,
+        pattern: &ast::Pattern,
+        read_vars: &mut FxIndexSet<String>,
+        attribute_accesses: &mut FxIndexMap<String, FxIndexSet<String>>,
+    ) {
+        match pattern {
+            ast::Pattern::MatchValue(pattern) => {
+                self.collect_vars_in_expr_with_attrs(&pattern.value, read_vars, attribute_accesses);
+            }
+            ast::Pattern::MatchSequence(pattern) => {
+                for pattern in &pattern.patterns {
+                    self.collect_vars_in_pattern(pattern, read_vars, attribute_accesses);
+                }
+            }
+            ast::Pattern::MatchMapping(pattern) => {
+                for key in &pattern.keys {
+                    self.collect_vars_in_expr_with_attrs(key, read_vars, attribute_accesses);
+                }
+                for pattern in &pattern.patterns {
+                    self.collect_vars_in_pattern(pattern, read_vars, attribute_accesses);
+                }
+            }
+            ast::Pattern::MatchClass(pattern) => {
+                self.collect_vars_in_expr_with_attrs(&pattern.cls, read_vars, attribute_accesses);
+                for pattern in &pattern.arguments.patterns {
+                    self.collect_vars_in_pattern(pattern, read_vars, attribute_accesses);
+                }
+                for keyword in &pattern.arguments.keywords {
+                    self.collect_vars_in_pattern(&keyword.pattern, read_vars, attribute_accesses);
+                }
+            }
+            ast::Pattern::MatchAs(pattern) => {
+                if let Some(pattern) = &pattern.pattern {
+                    self.collect_vars_in_pattern(pattern, read_vars, attribute_accesses);
+                }
+            }
+            ast::Pattern::MatchOr(pattern) => {
+                for pattern in &pattern.patterns {
+                    self.collect_vars_in_pattern(pattern, read_vars, attribute_accesses);
+                }
+            }
+            ast::Pattern::MatchSingleton(_) | ast::Pattern::MatchStar(_) => {}
         }
     }
 
