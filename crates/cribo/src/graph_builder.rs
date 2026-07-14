@@ -849,23 +849,7 @@ impl<'a> GraphBuilder<'a> {
         let mut read_vars = FxIndexSet::default();
         self.collect_vars_in_expr(&while_stmt.test, &mut read_vars);
 
-        let item_data = ItemData {
-            item_type: ItemType::Other,
-            var_decls: FxIndexSet::default(),
-            read_vars,
-            eventual_read_vars: FxIndexSet::default(),
-            write_vars: FxIndexSet::default(),
-            eventual_write_vars: FxIndexSet::default(),
-            has_side_effects: true,
-            imported_names: FxIndexSet::default(),
-            reexported_names: FxIndexSet::default(),
-            defined_symbols: FxIndexSet::default(),
-            symbol_dependencies: FxIndexMap::default(),
-            attribute_accesses: FxIndexMap::default(),
-            containing_scope: self.scope_name.clone(),
-        };
-
-        self.graph.add_item(item_data);
+        self.add_control_flow_item(ItemType::Other, read_vars, FxIndexMap::default(), true);
 
         // Process body
         for stmt in &while_stmt.body {
@@ -888,23 +872,7 @@ impl<'a> GraphBuilder<'a> {
             self.collect_vars_in_expr(&item.context_expr, &mut read_vars);
         }
 
-        let item_data = ItemData {
-            item_type: ItemType::Other,
-            var_decls: FxIndexSet::default(),
-            read_vars,
-            eventual_read_vars: FxIndexSet::default(),
-            write_vars: FxIndexSet::default(),
-            eventual_write_vars: FxIndexSet::default(),
-            has_side_effects: true,
-            imported_names: FxIndexSet::default(),
-            reexported_names: FxIndexSet::default(),
-            defined_symbols: FxIndexSet::default(),
-            symbol_dependencies: FxIndexMap::default(),
-            attribute_accesses: FxIndexMap::default(),
-            containing_scope: self.scope_name.clone(),
-        };
-
-        self.graph.add_item(item_data);
+        self.add_control_flow_item(ItemType::Other, read_vars, FxIndexMap::default(), true);
 
         // Process body
         for stmt in &with_stmt.body {
@@ -936,23 +904,7 @@ impl<'a> GraphBuilder<'a> {
              {attribute_accesses:?}"
         );
 
-        let item_data = ItemData {
-            item_type: ItemType::Other,
-            var_decls: FxIndexSet::default(),
-            read_vars,
-            eventual_read_vars: FxIndexSet::default(),
-            write_vars: FxIndexSet::default(),
-            eventual_write_vars: FxIndexSet::default(),
-            has_side_effects: true, // Raise statements have side effects
-            imported_names: FxIndexSet::default(),
-            reexported_names: FxIndexSet::default(),
-            defined_symbols: FxIndexSet::default(),
-            symbol_dependencies: FxIndexMap::default(),
-            attribute_accesses,
-            containing_scope: self.scope_name.clone(),
-        };
-
-        self.graph.add_item(item_data);
+        self.add_control_flow_item(ItemType::Other, read_vars, attribute_accesses, true);
     }
 
     /// Process try statement
@@ -962,23 +914,12 @@ impl<'a> GraphBuilder<'a> {
             try_stmt.body.len()
         );
 
-        let item_data = ItemData {
-            item_type: ItemType::Try,
-            var_decls: FxIndexSet::default(),
-            read_vars: FxIndexSet::default(),
-            eventual_read_vars: FxIndexSet::default(),
-            write_vars: FxIndexSet::default(),
-            eventual_write_vars: FxIndexSet::default(),
-            has_side_effects: true,
-            imported_names: FxIndexSet::default(),
-            reexported_names: FxIndexSet::default(),
-            defined_symbols: FxIndexSet::default(),
-            symbol_dependencies: FxIndexMap::default(),
-            attribute_accesses: FxIndexMap::default(),
-            containing_scope: self.scope_name.clone(),
-        };
-
-        self.graph.add_item(item_data);
+        self.add_control_flow_item(
+            ItemType::Try,
+            FxIndexSet::default(),
+            FxIndexMap::default(),
+            true,
+        );
 
         // Process try body
         for stmt in &try_stmt.body {
@@ -999,23 +940,7 @@ impl<'a> GraphBuilder<'a> {
                     &mut attribute_accesses,
                 );
 
-                // Create an item for the exception handler
-                let item_data = ItemData {
-                    item_type: ItemType::Other,
-                    var_decls: FxIndexSet::default(),
-                    read_vars,
-                    eventual_read_vars: FxIndexSet::default(),
-                    write_vars: FxIndexSet::default(),
-                    eventual_write_vars: FxIndexSet::default(),
-                    has_side_effects: false,
-                    imported_names: FxIndexSet::default(),
-                    reexported_names: FxIndexSet::default(),
-                    defined_symbols: FxIndexSet::default(),
-                    symbol_dependencies: FxIndexMap::default(),
-                    attribute_accesses,
-                    containing_scope: self.scope_name.clone(),
-                };
-                self.graph.add_item(item_data);
+                self.add_control_flow_item(ItemType::Other, read_vars, attribute_accesses, false);
             }
 
             for stmt in &handler.body {
@@ -1057,22 +982,7 @@ impl<'a> GraphBuilder<'a> {
             }
         }
 
-        let item_data = ItemData {
-            item_type: ItemType::Other,
-            var_decls: FxIndexSet::default(),
-            read_vars,
-            eventual_read_vars: FxIndexSet::default(),
-            write_vars: FxIndexSet::default(),
-            eventual_write_vars: FxIndexSet::default(),
-            has_side_effects: true,
-            imported_names: FxIndexSet::default(),
-            reexported_names: FxIndexSet::default(),
-            defined_symbols: FxIndexSet::default(),
-            symbol_dependencies: FxIndexMap::default(),
-            attribute_accesses,
-            containing_scope: self.scope_name.clone(),
-        };
-        self.graph.add_item(item_data);
+        self.add_control_flow_item(ItemType::Other, read_vars, attribute_accesses, true);
 
         for case in &match_stmt.cases {
             for stmt in &case.body {
@@ -1081,6 +991,31 @@ impl<'a> GraphBuilder<'a> {
         }
 
         Ok(())
+    }
+
+    /// Add a dependency item for control flow that does not declare module symbols.
+    fn add_control_flow_item(
+        &mut self,
+        item_type: ItemType,
+        read_vars: FxIndexSet<String>,
+        attribute_accesses: FxIndexMap<String, FxIndexSet<String>>,
+        has_side_effects: bool,
+    ) {
+        self.graph.add_item(ItemData {
+            item_type,
+            var_decls: FxIndexSet::default(),
+            read_vars,
+            eventual_read_vars: FxIndexSet::default(),
+            write_vars: FxIndexSet::default(),
+            eventual_write_vars: FxIndexSet::default(),
+            has_side_effects,
+            imported_names: FxIndexSet::default(),
+            reexported_names: FxIndexSet::default(),
+            defined_symbols: FxIndexSet::default(),
+            symbol_dependencies: FxIndexMap::default(),
+            attribute_accesses,
+            containing_scope: self.scope_name.clone(),
+        });
     }
 
     /// Extract assignment target names
