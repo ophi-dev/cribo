@@ -1336,6 +1336,28 @@ impl<'a> GraphBuilder<'a> {
                         stack.push(&while_stmt.body);
                         stack.push(&while_stmt.orelse);
                     }
+                    Stmt::Match(match_stmt) => {
+                        self.collect_vars_in_expr_with_attrs(
+                            &match_stmt.subject,
+                            read_vars,
+                            attribute_accesses,
+                        );
+                        for case in &match_stmt.cases {
+                            self.collect_vars_in_pattern(
+                                &case.pattern,
+                                read_vars,
+                                attribute_accesses,
+                            );
+                            if let Some(guard) = &case.guard {
+                                self.collect_vars_in_expr_with_attrs(
+                                    guard,
+                                    read_vars,
+                                    attribute_accesses,
+                                );
+                            }
+                            stack.push(&case.body);
+                        }
+                    }
                     Stmt::With(with_stmt) => {
                         self.handle_with_stmt(with_stmt, read_vars, &mut stack, attribute_accesses);
                     }
@@ -1495,6 +1517,53 @@ impl<'a> GraphBuilder<'a> {
                     _ => {} // Other statements
                 }
             }
+        }
+    }
+
+    /// Collect runtime variable reads from a structural pattern.
+    fn collect_vars_in_pattern(
+        &self,
+        pattern: &ast::Pattern,
+        read_vars: &mut FxIndexSet<String>,
+        attribute_accesses: &mut FxIndexMap<String, FxIndexSet<String>>,
+    ) {
+        match pattern {
+            ast::Pattern::MatchValue(pattern) => {
+                self.collect_vars_in_expr_with_attrs(&pattern.value, read_vars, attribute_accesses);
+            }
+            ast::Pattern::MatchSequence(pattern) => {
+                for pattern in &pattern.patterns {
+                    self.collect_vars_in_pattern(pattern, read_vars, attribute_accesses);
+                }
+            }
+            ast::Pattern::MatchMapping(pattern) => {
+                for key in &pattern.keys {
+                    self.collect_vars_in_expr_with_attrs(key, read_vars, attribute_accesses);
+                }
+                for pattern in &pattern.patterns {
+                    self.collect_vars_in_pattern(pattern, read_vars, attribute_accesses);
+                }
+            }
+            ast::Pattern::MatchClass(pattern) => {
+                self.collect_vars_in_expr_with_attrs(&pattern.cls, read_vars, attribute_accesses);
+                for pattern in &pattern.arguments.patterns {
+                    self.collect_vars_in_pattern(pattern, read_vars, attribute_accesses);
+                }
+                for keyword in &pattern.arguments.keywords {
+                    self.collect_vars_in_pattern(&keyword.pattern, read_vars, attribute_accesses);
+                }
+            }
+            ast::Pattern::MatchAs(pattern) => {
+                if let Some(pattern) = &pattern.pattern {
+                    self.collect_vars_in_pattern(pattern, read_vars, attribute_accesses);
+                }
+            }
+            ast::Pattern::MatchOr(pattern) => {
+                for pattern in &pattern.patterns {
+                    self.collect_vars_in_pattern(pattern, read_vars, attribute_accesses);
+                }
+            }
+            ast::Pattern::MatchSingleton(_) | ast::Pattern::MatchStar(_) => {}
         }
     }
 
