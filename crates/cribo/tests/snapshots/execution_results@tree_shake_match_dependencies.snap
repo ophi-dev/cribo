@@ -4,6 +4,6 @@ input_file: crates/cribo/tests/fixtures/tree_shake_match_dependencies/main.py
 ---
 ExecutionResults {
     status: Success,
-    stdout: "handled:ready",
+    stdout: "module-ready:handled:ready",
     stderr: "",
 }

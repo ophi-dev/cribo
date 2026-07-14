@@ -79,7 +79,12 @@ impl<'a> GraphBuilder<'a> {
                 Stmt::FunctionDef(func_def) => return self.process_function_def(func_def),
                 Stmt::ClassDef(class_def) => return self.process_class_def(class_def),
                 // Recurse into control flow blocks that may contain imports
-                Stmt::If(_) | Stmt::For(_) | Stmt::While(_) | Stmt::With(_) | Stmt::Try(_) => {
+                Stmt::If(_)
+                | Stmt::For(_)
+                | Stmt::While(_)
+                | Stmt::With(_)
+                | Stmt::Try(_)
+                | Stmt::Match(_) => {
                     // Fall through to regular processing to handle nested imports
                 }
                 _ => return Ok(()),
@@ -119,6 +124,7 @@ impl<'a> GraphBuilder<'a> {
             Stmt::While(while_stmt) => self.process_while_stmt(while_stmt),
             Stmt::With(with_stmt) => self.process_with_stmt(with_stmt),
             Stmt::Try(try_stmt) => self.process_try_stmt(try_stmt),
+            Stmt::Match(match_stmt) => self.process_match_stmt(match_stmt),
             Stmt::Raise(raise_stmt) => {
                 self.process_raise_stmt(raise_stmt);
                 Ok(())
@@ -1025,6 +1031,53 @@ impl<'a> GraphBuilder<'a> {
         // Process finally clause
         for stmt in &try_stmt.finalbody {
             self.process_statement(stmt)?;
+        }
+
+        Ok(())
+    }
+
+    /// Process a structural pattern matching statement.
+    fn process_match_stmt(&mut self, match_stmt: &ast::StmtMatch) -> Result<()> {
+        let mut read_vars = FxIndexSet::default();
+        let mut attribute_accesses = FxIndexMap::default();
+
+        self.collect_vars_in_expr_with_attrs(
+            &match_stmt.subject,
+            &mut read_vars,
+            &mut attribute_accesses,
+        );
+        for case in &match_stmt.cases {
+            self.collect_vars_in_pattern(&case.pattern, &mut read_vars, &mut attribute_accesses);
+            if let Some(guard) = &case.guard {
+                self.collect_vars_in_expr_with_attrs(
+                    guard,
+                    &mut read_vars,
+                    &mut attribute_accesses,
+                );
+            }
+        }
+
+        let item_data = ItemData {
+            item_type: ItemType::Other,
+            var_decls: FxIndexSet::default(),
+            read_vars,
+            eventual_read_vars: FxIndexSet::default(),
+            write_vars: FxIndexSet::default(),
+            eventual_write_vars: FxIndexSet::default(),
+            has_side_effects: true,
+            imported_names: FxIndexSet::default(),
+            reexported_names: FxIndexSet::default(),
+            defined_symbols: FxIndexSet::default(),
+            symbol_dependencies: FxIndexMap::default(),
+            attribute_accesses,
+            containing_scope: self.scope_name.clone(),
+        };
+        self.graph.add_item(item_data);
+
+        for case in &match_stmt.cases {
+            for stmt in &case.body {
+                self.process_statement(stmt)?;
+            }
         }
 
         Ok(())
