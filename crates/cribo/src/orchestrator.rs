@@ -31,88 +31,6 @@ use crate::{
 /// Static empty parsed module for creating Stylist instances
 static EMPTY_PARSED_MODULE: OnceLock<ruff_python_parser::Parsed<ModModule>> = OnceLock::new();
 
-/// Immutable module information stored in the registry
-#[derive(Debug, Clone)]
-pub(crate) struct ModuleInfo {
-    /// The unique module ID assigned by the dependency graph
-    pub id: ModuleId,
-    /// The canonical module name (e.g., "requests.compat")
-    pub canonical_name: String,
-    /// The resolved filesystem path
-    pub resolved_path: PathBuf,
-}
-
-/// Central registry for module information
-/// This is the single source of truth for module identity throughout the bundling process
-#[derive(Debug)]
-pub(crate) struct ModuleRegistry {
-    /// Map from `ModuleId` to complete module information
-    modules: FxIndexMap<ModuleId, ModuleInfo>,
-    /// Map from canonical name to `ModuleId` for fast lookups
-    name_to_id: FxIndexMap<String, ModuleId>,
-    /// Map from resolved path to `ModuleId` for fast lookups
-    path_to_id: FxIndexMap<PathBuf, ModuleId>,
-}
-
-impl Default for ModuleRegistry {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ModuleRegistry {
-    /// Create a new empty module registry
-    pub(crate) fn new() -> Self {
-        Self {
-            modules: FxIndexMap::default(),
-            name_to_id: FxIndexMap::default(),
-            path_to_id: FxIndexMap::default(),
-        }
-    }
-
-    /// Add a module to the registry
-    pub(crate) fn add_module(&mut self, info: ModuleInfo) {
-        let id = info.id;
-        let name = info.canonical_name.clone();
-        let path = info.resolved_path.clone();
-
-        // Check if module already exists
-        if let Some(existing) = self.modules.get(&id) {
-            // For the same ModuleId, we allow different canonical names
-            // (e.g., "__init__" and "yaml" for the same file)
-            // but the path must be the same
-            assert!(
-                existing.resolved_path == path,
-                "Attempting to register module {:?} with conflicting paths. Existing: {} at {}, \
-                 New: {} at {}",
-                id,
-                existing.canonical_name,
-                existing.resolved_path.display(),
-                name,
-                path.display()
-            );
-
-            // Add this new name as an alias for the same ModuleId
-            self.name_to_id.insert(name, id);
-            return; // Module already registered, just added new name mapping
-        }
-
-        self.name_to_id.insert(name, id);
-        self.path_to_id.insert(path, id);
-        self.modules.insert(id, info);
-    }
-
-    /// Get module ID by canonical name
-    pub(crate) fn get_id_by_name(&self, name: &str) -> Option<ModuleId> {
-        self.name_to_id.get(name).copied()
-    }
-
-    /// Check if a module exists by `ModuleId`
-    pub(crate) fn contains_module(&self, id: ModuleId) -> bool {
-        self.modules.contains_key(&id)
-    }
-}
-
 /// Get or create the empty parsed module for Stylist creation
 fn get_empty_parsed_module() -> &'static ruff_python_parser::Parsed<ModModule> {
     EMPTY_PARSED_MODULE
@@ -175,8 +93,6 @@ struct ProcessedModule {
     source: String,
     /// Shared module facts reused by discovery and later graph-driven analyses.
     facts: Arc<ModuleFacts>,
-    /// Module ID if already added to dependency graph
-    module_id: Option<ModuleId>,
 }
 
 /// Main orchestrator for bundling operations
@@ -186,8 +102,6 @@ struct ProcessedModule {
 pub struct BundleOrchestrator {
     config: Config,
     conflict_resolver: SymbolConflictResolver,
-    /// Central registry for module information
-    module_registry: ModuleRegistry,
     /// Cache of processed modules to ensure we only parse and transform once
     module_cache: std::sync::Mutex<FxIndexMap<PathBuf, ProcessedModule>>,
 }
@@ -198,7 +112,6 @@ impl BundleOrchestrator {
         Self {
             config,
             conflict_resolver: SymbolConflictResolver::new(),
-            module_registry: ModuleRegistry::new(),
             module_cache: std::sync::Mutex::new(FxIndexMap::default()),
         }
     }
@@ -209,16 +122,9 @@ impl BundleOrchestrator {
     /// Pipeline:
     /// 1. Check cache
     /// 2. Read file and parse
-    /// 3. Semantic analysis (on raw AST)
-    /// 4. Stdlib normalization (transforms AST)
-    /// 5. Cache result
-    fn process_module(
-        &mut self,
-        module_path: &Path,
-        module_name: &str,
-        graph: Option<&mut DependencyGraph>,
-        resolver: Option<&ModuleResolver>,
-    ) -> Result<ProcessedModule> {
+    /// 3. Derive reusable module facts
+    /// 4. Cache parse products
+    fn process_module(&self, module_path: &Path, module_name: &str) -> Result<ProcessedModule> {
         // Canonicalize path for consistent caching
         let canonical_path = module_path
             .canonicalize()
@@ -235,42 +141,10 @@ impl BundleOrchestrator {
 
         if let Some(cached) = cached_data {
             debug!("Using cached module: {module_name}");
-
-            // If graph is provided but cached module doesn't have module_id,
-            // we need to add it to the graph
-            let module_id = if let Some(graph) = graph {
-                if cached.module_id.is_none() {
-                    // Get or register module ID with resolver (required when graph is Some)
-                    let resolver = resolver.expect("Resolver must be provided when graph is Some");
-                    let module_id = resolver.register_module(module_name, module_path);
-
-                    graph.add_module(module_id, module_name.to_owned(), module_path);
-
-                    // Perform semantic analysis
-                    self.conflict_resolver
-                        .analyze_module(module_id, &cached.ast, &canonical_path);
-
-                    // Add to module registry
-                    let module_info = ModuleInfo {
-                        id: module_id,
-                        canonical_name: module_name.to_owned(),
-                        resolved_path: canonical_path,
-                    };
-                    self.module_registry.add_module(module_info);
-
-                    Some(module_id)
-                } else {
-                    cached.module_id
-                }
-            } else {
-                cached.module_id
-            };
-
             return Ok(ProcessedModule {
                 ast: cached.ast.clone(),
                 source: cached.source.clone(),
                 facts: Arc::clone(&cached.facts),
-                module_id,
             });
         }
 
@@ -290,37 +164,12 @@ impl BundleOrchestrator {
         let python_version = self.config.python_version().unwrap_or(10);
         let facts = Arc::new(ModuleFacts::from_ast(&ast, python_version)?);
 
-        // Step 2: Add to graph and perform semantic analysis (if graph provided)
-        let module_id = if let Some(graph) = graph {
-            // Get or register module ID with resolver (required when graph is Some)
-            let resolver = resolver.expect("Resolver must be provided when graph is Some");
-            let module_id = resolver.register_module(module_name, module_path);
-
-            graph.add_module(module_id, module_name.to_owned(), module_path);
-
-            // Semantic analysis on raw AST
-            self.conflict_resolver
-                .analyze_module(module_id, &ast, &canonical_path);
-
-            // Add to module registry
-            let module_info = ModuleInfo {
-                id: module_id,
-                canonical_name: module_name.to_owned(),
-                resolved_path: canonical_path.clone(),
-            };
-            self.module_registry.add_module(module_info);
-
-            Some(module_id)
-        } else {
-            None
-        };
-
-        // Step 3: Cache the result
+        // Step 2: Cache the parse products. Identity and graph lifecycle are owned by
+        // the resolver and dependency-graph build phase, respectively.
         let processed = ProcessedModule {
             ast: ast.clone(),
             source: source.clone(),
             facts: Arc::clone(&facts),
-            module_id,
         };
 
         {
@@ -331,12 +180,7 @@ impl BundleOrchestrator {
             cache.insert(canonical_path, processed);
         }
 
-        Ok(ProcessedModule {
-            ast,
-            source,
-            facts,
-            module_id,
-        })
+        Ok(ProcessedModule { ast, source, facts })
     }
 
     /// Format error message for unresolvable cycles
@@ -928,9 +772,8 @@ impl BundleOrchestrator {
                 continue;
             }
 
-            // Process module through the pipeline (parse, semantic analysis, normalization)
-            let processed =
-                self.process_module(&module_path, &module_name, None, Some(params.resolver))?;
+            // Parse the module and cache its reusable facts.
+            let processed = self.process_module(&module_path, &module_name)?;
 
             // Extract imports from the processed AST
             let imports_with_context = self.extract_imports_from_facts(
@@ -981,7 +824,7 @@ impl BundleOrchestrator {
         // PHASE 2: Add all modules to graph and create dependency edges
         info!("Phase 2: Adding modules to graph...");
 
-        // First, add all modules to the graph and parse them
+        // First, add all modules to the graph and run semantic analysis.
         let mut parsed_modules: Vec<ParsedModuleData> = Vec::new();
 
         for (discovered_module_id, module_path, imports, _ast, _source) in discovered_modules {
@@ -991,22 +834,15 @@ impl BundleOrchestrator {
                 .unwrap_or_else(|| format!("module_{}", discovered_module_id.as_u32()));
             debug!("Phase 2: Processing module '{module_name}'");
 
-            // Re-process the module WITH graph context this time
-            // This will use cache but also add to graph and do semantic analysis
-            let processed = self.process_module(
-                &module_path,
-                &module_name,
-                Some(params.graph),
-                Some(params.resolver),
-            )?;
-
-            let module_id = processed
-                .module_id
-                .expect("module_id should be set when graph provided");
+            let processed = self.process_module(&module_path, &module_name)?;
+            let module_id = discovered_module_id;
+            params.graph.add_module(module_id, params.resolver);
+            self.conflict_resolver
+                .analyze_module(module_id, &processed.ast, &module_path);
             debug!("Added module to graph: {module_name} with ID {module_id:?}");
 
             // Build dependency graph BEFORE no-ops removal
-            if let Some(module) = params.graph.get_module_by_name_mut(&module_name) {
+            if let Some(module) = params.graph.get_module_mut(module_id) {
                 debug_assert!(
                     module.items.is_empty(),
                     "Module graph should be empty before populating cached facts"
@@ -1055,8 +891,10 @@ impl BundleOrchestrator {
                             .unwrap_or_else(|| base_name.clone());
 
                         // Try to resolve the accessed module name to a ModuleId
-                        if let Some(accessed_module) =
-                            params.graph.get_module_by_name(&resolved_module_name)
+                        if let Some(accessed_module) = params
+                            .resolver
+                            .get_module_id_by_name(&resolved_module_name)
+                            .and_then(|id| params.graph.get_module(id))
                         {
                             // This module accesses resolved_module.__all__
                             all_accesses.push((*accessing_module_id, accessed_module.module_id));
@@ -1754,7 +1592,7 @@ impl BundleOrchestrator {
             }
         }
 
-        let mut static_bundler = Bundler::new(Some(&self.module_registry), params.resolver);
+        let mut static_bundler = Bundler::new(params.resolver);
 
         // Parse all modules and prepare them for bundling
         let mut module_asts = Vec::new();

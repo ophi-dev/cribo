@@ -90,6 +90,16 @@ impl<'a> TreeShaker<'a> {
         )
     }
 
+    /// Resolve a registered name and ensure the module participates in this graph.
+    pub(crate) fn get_graph_module_id(&self, module_name: &str) -> Option<ModuleId> {
+        let id = self.resolver.get_module_id_by_name(module_name)?;
+        self.graph
+            .modules
+            .get(&id)
+            .filter(|module| module.module_name == module_name)
+            .map(|module| module.module_id)
+    }
+
     /// Analyze which symbols should be kept based on entry point
     pub(crate) fn analyze(&mut self, entry_module: &str) {
         info!("Starting tree-shaking analysis from entry module: {entry_module}");
@@ -97,7 +107,7 @@ impl<'a> TreeShaker<'a> {
         self.seeded_dynamic_all_modules.borrow_mut().clear();
 
         // Verify that the entry module is registered with the expected ID
-        let entry_id = self.graph.module_names.get(entry_module).copied();
+        let entry_id = self.get_graph_module_id(entry_module);
         if entry_id != Some(ModuleId::ENTRY) {
             warn!("Entry module '{entry_module}' not registered as ModuleId::ENTRY");
             if entry_id.is_none() {
@@ -161,7 +171,7 @@ impl<'a> TreeShaker<'a> {
                         binding.level,
                     );
 
-                    if let Some(&resolved_id) = self.graph.module_names.get(&resolved_module_name) {
+                    if let Some(resolved_id) = self.get_graph_module_id(&resolved_module_name) {
                         return Some((resolved_id, binding.original_name.clone()));
                     }
                 }
@@ -173,7 +183,7 @@ impl<'a> TreeShaker<'a> {
                     &wildcard_import.module,
                     wildcard_import.level,
                 );
-                if let Some(&resolved_id) = self.graph.module_names.get(&resolved_module_name)
+                if let Some(resolved_id) = self.get_graph_module_id(&resolved_module_name)
                     && let Some(target_dep) = self.graph.modules.get(&resolved_id)
                     && target_dep.is_in_all_export(alias)
                 {
@@ -193,7 +203,7 @@ impl<'a> TreeShaker<'a> {
         if let Some(module_dep) = self.graph.modules.get(&current_module_id) {
             if let Some(targets) = module_dep.module_import_aliases_for(alias) {
                 for target in targets {
-                    if let Some(&module_id) = self.graph.module_names.get(target) {
+                    if let Some(module_id) = self.get_graph_module_id(target) {
                         return Some(module_id);
                     }
                 }
@@ -219,7 +229,7 @@ impl<'a> TreeShaker<'a> {
 
                     let potential_full_module =
                         format!("{resolved_module}.{}", binding.original_name);
-                    if let Some(&module_id) = self.graph.module_names.get(&potential_full_module) {
+                    if let Some(module_id) = self.get_graph_module_id(&potential_full_module) {
                         return Some(module_id);
                     }
                 }
@@ -392,8 +402,8 @@ impl<'a> TreeShaker<'a> {
                     let resolved_module_name =
                         self.resolve_import_module_name(module_id, &binding.module, binding.level);
 
-                    if let Some(&resolved_module_id) =
-                        self.graph.module_names.get(&resolved_module_name)
+                    if let Some(resolved_module_id) =
+                        self.get_graph_module_id(&resolved_module_name)
                     {
                         debug!(
                             "Symbol {symbol} is re-exported from \
@@ -413,8 +423,7 @@ impl<'a> TreeShaker<'a> {
                     wildcard_import.level,
                 );
 
-                if let Some(&resolved_module_id) =
-                    self.graph.module_names.get(&resolved_module_name)
+                if let Some(resolved_module_id) = self.get_graph_module_id(&resolved_module_name)
                     && let Some(target_dep) = self.graph.modules.get(&resolved_module_id)
                     && target_dep.is_in_all_export(symbol)
                 {
@@ -507,7 +516,7 @@ impl<'a> TreeShaker<'a> {
         debug!("Marking import {imported_module} as used (inside scope {scope_name})");
 
         // If this imported module has side effects, seed them
-        let Some(&imported_module_id) = self.graph.module_names.get(imported_module) else {
+        let Some(imported_module_id) = self.get_graph_module_id(imported_module) else {
             return;
         };
 
@@ -536,7 +545,7 @@ impl<'a> TreeShaker<'a> {
 
         let resolved_module_name = self.resolve_import_module_name(module_id, from_module, *level);
 
-        if let Some(&from_module_id) = self.graph.module_names.get(&resolved_module_name)
+        if let Some(from_module_id) = self.get_graph_module_id(&resolved_module_name)
             && self.module_has_side_effects(from_module_id)
         {
             self.seed_side_effects_for_module(from_module_id, worklist);
@@ -572,7 +581,7 @@ impl<'a> TreeShaker<'a> {
         resolved_module_name: &str,
         worklist: &mut VecDeque<(ModuleId, String)>,
     ) {
-        let Some(&resolved_module_id) = self.graph.module_names.get(resolved_module_name) else {
+        let Some(resolved_module_id) = self.get_graph_module_id(resolved_module_name) else {
             return;
         };
 
@@ -610,7 +619,7 @@ impl<'a> TreeShaker<'a> {
         potential_module: &str,
         worklist: &mut VecDeque<(ModuleId, String)>,
     ) {
-        let Some(&submodule_id) = self.graph.module_names.get(potential_module) else {
+        let Some(submodule_id) = self.get_graph_module_id(potential_module) else {
             return;
         };
 
@@ -753,27 +762,23 @@ impl<'a> TreeShaker<'a> {
 
     /// Get symbols that survive tree-shaking for a module
     pub(crate) fn get_used_symbols_for_module(&self, module_name: &str) -> FxIndexSet<String> {
-        // Get the ModuleId for this module name
-        if let Some(&module_id) = self.graph.module_names.get(module_name) {
-            self.used_symbols
-                .iter()
-                .filter(|(id, _)| *id == module_id)
-                .map(|(_, symbol)| symbol.clone())
-                .collect()
-        } else {
-            FxIndexSet::default()
-        }
+        self.get_graph_module_id(module_name)
+            .map_or_else(FxIndexSet::default, |module_id| {
+                self.used_symbols
+                    .iter()
+                    .filter(|(id, _)| *id == module_id)
+                    .map(|(_, symbol)| symbol.clone())
+                    .collect()
+            })
     }
 
     /// Check if a symbol is used after tree-shaking
     pub(crate) fn is_symbol_used(&self, module_name: &str, symbol_name: &str) -> bool {
-        // Get the ModuleId for this module name
-        if let Some(&module_id) = self.graph.module_names.get(module_name) {
-            self.used_symbols
-                .contains(&(module_id, symbol_name.to_owned()))
-        } else {
-            false
-        }
+        self.get_graph_module_id(module_name)
+            .is_some_and(|module_id| {
+                self.used_symbols
+                    .contains(&(module_id, symbol_name.to_owned()))
+            })
     }
 
     // Removed get_unused_symbols_for_module: dead code
@@ -909,7 +914,7 @@ impl<'a> TreeShaker<'a> {
                     worklist.push_back((source_module_id, attr.clone()));
                 }
             // 4) Direct module reference like `import greetings`
-            } else if let Some(&base_module_id) = self.graph.module_names.get(base_var) {
+            } else if let Some(base_module_id) = self.get_graph_module_id(base_var) {
                 for attr in accessed_attrs {
                     debug!(
                         "Found direct module attribute access in {module_name}: {base_var}.{attr}"
@@ -933,9 +938,9 @@ impl<'a> TreeShaker<'a> {
     ) {
         let is_namespace = self
             .graph
-            .module_names
-            .keys()
-            .any(|name| name.starts_with(&format!("{base_var}.")));
+            .modules
+            .values()
+            .any(|module| module.module_name.starts_with(&format!("{base_var}.")));
 
         if !is_namespace {
             debug!("Unknown base variable for attribute access in {context}: {base_var}");
@@ -962,13 +967,9 @@ impl<'a> TreeShaker<'a> {
     /// Find which submodule defines an attribute
     fn find_attribute_in_submodules(&self, base_var: &str, attr: &str) -> Option<ModuleId> {
         let prefix = format!("{base_var}.");
-        for (name, &module_id) in &self.graph.module_names {
-            if name.starts_with(&prefix) {
-                if let Some(module_dep) = self.graph.modules.get(&module_id)
-                    && module_dep.defines_symbol(attr)
-                {
-                    return Some(module_id);
-                }
+        for (&module_id, module) in &self.graph.modules {
+            if module.module_name.starts_with(&prefix) && module.defines_symbol(attr) {
+                return Some(module_id);
             }
         }
         None
@@ -1158,13 +1159,11 @@ mod tests {
     fn test_basic_tree_shaking() {
         let mut graph = DependencyGraph::new();
         let resolver = ModuleResolver::new(crate::config::Config::default());
+        let entry_id = resolver.register_module("__main__", std::path::Path::new("main.py"));
+        let module_id = resolver.register_module("test_module", std::path::Path::new("test.py"));
 
         // Create a simple module with used and unused functions
-        let module_id = graph.add_module(
-            ModuleId::new(1),
-            "test_module".to_owned(),
-            &std::path::PathBuf::from("test.py"),
-        );
+        graph.add_module(module_id, &resolver);
         let module = graph
             .modules
             .get_mut(&module_id)
@@ -1209,11 +1208,7 @@ mod tests {
         });
 
         // Add entry module that uses only used_func
-        let entry_id = graph.add_module(
-            ModuleId::new(0),
-            "__main__".to_owned(),
-            &std::path::PathBuf::from("main.py"),
-        );
+        graph.add_module(entry_id, &resolver);
         let entry = graph
             .modules
             .get_mut(&entry_id)
@@ -1251,12 +1246,11 @@ mod tests {
     fn test_mark_all_symbols_from_module_all_as_used_falls_back_to_local_symbol() {
         let mut graph = DependencyGraph::new();
         let resolver = ModuleResolver::new(crate::config::Config::default());
+        resolver.register_module("__main__", std::path::Path::new("main.py"));
+        let module_id =
+            resolver.register_module("all_module", std::path::Path::new("all_module.py"));
 
-        let module_id = graph.add_module(
-            ModuleId::new(1),
-            "all_module".to_owned(),
-            &std::path::PathBuf::from("all_module.py"),
-        );
+        graph.add_module(module_id, &resolver);
         let module = graph
             .modules
             .get_mut(&module_id)
@@ -1296,12 +1290,11 @@ mod tests {
     fn test_mark_scoped_imports_marks_local_import_bindings_used() {
         let mut graph = DependencyGraph::new();
         let resolver = ModuleResolver::new(crate::config::Config::default());
+        resolver.register_module("__main__", std::path::Path::new("main.py"));
+        let module_id =
+            resolver.register_module("scoped_imports", std::path::Path::new("scoped_imports.py"));
 
-        let module_id = graph.add_module(
-            ModuleId::new(1),
-            "scoped_imports".to_owned(),
-            &std::path::PathBuf::from("scoped_imports.py"),
-        );
+        graph.add_module(module_id, &resolver);
         let module = graph
             .modules
             .get_mut(&module_id)
@@ -1324,12 +1317,13 @@ mod tests {
     fn test_find_attribute_in_submodules_returns_matching_namespace_submodule() {
         let mut graph = DependencyGraph::new();
         let resolver = ModuleResolver::new(crate::config::Config::default());
-
-        let submodule_id = graph.add_module(
-            ModuleId::new(1),
-            "namespace_pkg.feature".to_owned(),
-            &std::path::PathBuf::from("namespace_pkg/feature.py"),
+        resolver.register_module("__main__", std::path::Path::new("main.py"));
+        let submodule_id = resolver.register_module(
+            "namespace_pkg.feature",
+            std::path::Path::new("namespace_pkg/feature.py"),
         );
+
+        graph.add_module(submodule_id, &resolver);
         let submodule = graph
             .modules
             .get_mut(&submodule_id)

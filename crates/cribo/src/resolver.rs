@@ -1473,6 +1473,29 @@ mod tests {
     }
 
     #[test]
+    fn test_registry_owns_alias_identity() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let module_path = temp_dir.path().join("utils.py");
+        create_test_file(&module_path, "")?;
+        let resolver = ModuleResolver::new(Config::default());
+
+        let primary_id = resolver.register_module("utils", &module_path);
+        let alias_id = resolver.register_module("src.utils", &module_path);
+
+        assert_eq!(primary_id, alias_id);
+        assert_eq!(resolver.get_module_id_by_name("utils"), Some(primary_id));
+        assert_eq!(
+            resolver.get_module_id_by_name("src.utils"),
+            Some(primary_id)
+        );
+        assert_eq!(
+            resolver.get_module_id_by_path(&module_path),
+            Some(primary_id)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_module_first_resolution() -> Result<()> {
         // Test that foo/__init__.py is preferred over foo.py
         let temp_dir = TempDir::new()?;

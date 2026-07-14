@@ -377,12 +377,6 @@ impl<'a> RecursiveImportTransformer<'a> {
             .get_module_id(&full_submodule_path)
             .is_some_and(|id| {
                 self.state.bundler.bundled_modules.contains(&id)
-                    || self
-                        .state
-                        .bundler
-                        .module_info_registry
-                        .as_ref()
-                        .is_some_and(|reg| reg.contains_module(id))
                     || self.state.bundler.inlined_modules.contains(&id)
             });
         if is_actually_a_module {
@@ -1435,25 +1429,7 @@ fn rewrite_import_with_renames(
 
             let target_name = alias.asname.as_ref().unwrap_or(&alias.name);
 
-            if bundler
-                .module_info_registry
-                .is_some_and(|reg| reg.contains_module(module_id))
-            {
-                // Module uses wrapper approach - need to initialize it now
-
-                // First, ensure the module is initialized
-                if let Some(module_id) = bundler.get_module_id(module_name) {
-                    result_stmts.extend(bundler.create_module_initialization_for_import(module_id));
-                }
-
-                // Then create assignment if needed (skip self-assignments)
-                if target_name.as_str() != module_name {
-                    result_stmts.push(
-                        bundler
-                            .create_module_reference_assignment(target_name.as_str(), module_name),
-                    );
-                }
-            } else {
+            if bundler.inlined_modules.contains(&module_id) {
                 // Module was inlined - create a namespace object
 
                 // Create namespace object with the module's exports
@@ -1491,6 +1467,21 @@ fn rewrite_import_with_renames(
                     );
                     result_stmts.extend(new_stmts);
                     populated_modules.insert(module_id);
+                }
+            } else {
+                // Module uses wrapper approach - need to initialize it now
+
+                // First, ensure the module is initialized
+                if let Some(module_id) = bundler.get_module_id(module_name) {
+                    result_stmts.extend(bundler.create_module_initialization_for_import(module_id));
+                }
+
+                // Then create assignment if needed (skip self-assignments)
+                if target_name.as_str() != module_name {
+                    result_stmts.push(
+                        bundler
+                            .create_module_reference_assignment(target_name.as_str(), module_name),
+                    );
                 }
             }
         }

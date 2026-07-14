@@ -249,7 +249,10 @@ impl Bundler<'_> {
     ) -> Option<(String, String)> {
         // We need to check if this symbol is imported from a submodule and re-exported
         let graph = self.graph?;
-        let module = graph.get_module_by_name(module_name)?;
+        let module = self
+            .resolver
+            .get_module_id_by_name(module_name)
+            .and_then(|id| graph.get_module(id))?;
 
         for item_data in module.items.values() {
             let crate::dependency_graph::ItemType::FromImport {

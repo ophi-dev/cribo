@@ -54,7 +54,7 @@ impl SubmoduleHandler {
             {
                 crate::code_generator::module_registry::is_wrapper_submodule(
                     submodule_id,
-                    transformer.state.bundler.module_info_registry,
+                    &transformer.state.bundler.bundled_modules,
                     &transformer.state.bundler.inlined_modules,
                 )
             } else {

@@ -129,30 +129,23 @@ fn benchmark_module_resolution(c: &mut Criterion) {
 
 /// Benchmark dependency graph construction
 fn benchmark_dependency_graph(c: &mut Criterion) {
-    use std::path::PathBuf;
+    use std::path::Path;
 
-    use cribo::{dependency_graph::DependencyGraph, resolver::ModuleId};
+    use cribo::{config::Config, dependency_graph::DependencyGraph, resolver::ModuleResolver};
+
+    let resolver = ModuleResolver::new(Config::default());
+    let main_id = resolver.register_module("main", Path::new("main.py"));
+    let utils_id = resolver.register_module("utils.helpers", Path::new("utils/helpers.py"));
+    let models_id = resolver.register_module("models.user", Path::new("models/user.py"));
 
     c.bench_function("build_dependency_graph", |b| {
         b.iter(|| {
             let mut graph = DependencyGraph::new();
 
             // Add modules
-            let main_id = graph.add_module(
-                ModuleId::new(0),
-                "main".to_owned(),
-                &PathBuf::from("main.py"),
-            );
-            let utils_id = graph.add_module(
-                ModuleId::new(1),
-                "utils.helpers".to_owned(),
-                &PathBuf::from("utils/helpers.py"),
-            );
-            let models_id = graph.add_module(
-                ModuleId::new(2),
-                "models.user".to_owned(),
-                &PathBuf::from("models/user.py"),
-            );
+            graph.add_module(main_id, &resolver);
+            graph.add_module(utils_id, &resolver);
+            graph.add_module(models_id, &resolver);
 
             // Add dependencies - main depends on utils and models
             graph.add_module_dependency(main_id, utils_id);

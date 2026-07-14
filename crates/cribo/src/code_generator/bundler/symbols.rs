@@ -1067,7 +1067,7 @@ else:
     #[test]
     fn test_reorder_statements_for_circular_module_preserves_entry_order() {
         let resolver = ModuleResolver::new(Config::default());
-        let mut bundler = Bundler::new(None, &resolver);
+        let mut bundler = Bundler::new(&resolver);
         bundler.entry_module_name = "entry_module".to_owned();
 
         let statements = parse_assignment_statements("first = 1\nsecond = 2\nthird = 3\n");
@@ -1081,7 +1081,7 @@ else:
     #[test]
     fn test_reorder_statements_for_circular_module_preserves_non_entry_order() {
         let resolver = ModuleResolver::new(Config::default());
-        let mut bundler = Bundler::new(None, &resolver);
+        let mut bundler = Bundler::new(&resolver);
         bundler.entry_module_name = "entry_module".to_owned();
 
         let statements = parse_assignment_statements("first = 1\nsecond = 2\nthird = 3\n");

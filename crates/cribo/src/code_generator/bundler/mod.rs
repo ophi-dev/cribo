@@ -60,8 +60,6 @@ pub(crate) struct Bundler<'a> {
     /// Modules that are imported as namespaces (e.g., from package import module)
     /// Maps module ID to set of importing module IDs
     pub(crate) namespace_imported_modules: FxIndexMap<ModuleId, FxIndexSet<ModuleId>>,
-    /// Reference to the central module registry
-    pub(crate) module_info_registry: Option<&'a crate::orchestrator::ModuleRegistry>,
     /// Reference to the module resolver
     pub(crate) resolver: &'a ModuleResolver,
     /// Modules that are part of circular dependencies (may be pruned for entry package)
@@ -324,10 +322,7 @@ impl<'a> Bundler<'a> {
     }
 
     /// Create a new bundler instance
-    pub(crate) fn new(
-        module_info_registry: Option<&'a crate::orchestrator::ModuleRegistry>,
-        resolver: &'a ModuleResolver,
-    ) -> Self {
+    pub(crate) fn new(resolver: &'a ModuleResolver) -> Self {
         Self {
             module_synthetic_names: FxIndexMap::default(),
             module_init_functions: FxIndexMap::default(),
@@ -341,7 +336,6 @@ impl<'a> Bundler<'a> {
             module_exports: FxIndexMap::default(),
             semantic_exports: FxIndexMap::default(),
             namespace_imported_modules: FxIndexMap::default(),
-            module_info_registry,
             resolver,
             circular_modules: FxIndexSet::default(),
             all_circular_modules: FxIndexSet::default(),

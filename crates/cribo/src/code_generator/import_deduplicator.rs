@@ -300,7 +300,7 @@ pub(super) fn trim_unused_imports_from_modules(
                                     let potential_submodule =
                                         format!("{resolved_from_module}.{imported_name}");
                                     // Check if this module exists in the graph
-                                    graph.get_module_by_name(&potential_submodule).is_some()
+                                    shaker.get_graph_module_id(&potential_submodule).is_some()
                                 };
 
                                 // If this is a submodule import, check if the submodule has side
@@ -315,9 +315,8 @@ pub(super) fn trim_unused_imports_from_modules(
                                     // Check if the submodule has side effects or symbols that
                                     // survived Even if no
                                     // symbols survived, if it has side effects, we need to keep it
-                                    let has_side_effects = graph
-                                        .get_module_by_name(&submodule_name)
-                                        .map(|m| m.module_id)
+                                    let has_side_effects = shaker
+                                        .get_graph_module_id(&submodule_name)
                                         .is_some_and(|id| shaker.module_has_side_effects(id));
                                     let has_used_symbols = !shaker
                                         .get_used_symbols_for_module(&submodule_name)
@@ -414,9 +413,8 @@ pub(super) fn trim_unused_imports_from_modules(
                             // where a wrapper module with side effects is imported
                             // but not directly used (e.g., import mypackage where mypackage has
                             // print statements)
-                            let module_has_side_effects = graph
-                                .get_module_by_name(module)
-                                .map(|m| m.module_id)
+                            let module_has_side_effects = shaker
+                                .get_graph_module_id(module)
                                 .is_some_and(|id| shaker.module_has_side_effects(id));
                             if module_has_side_effects {
                                 log::debug!(
