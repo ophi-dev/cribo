@@ -6,7 +6,8 @@
 use std::cell::RefCell;
 
 use ruff_python_ast::{
-    AtomicNodeIndex, Identifier, Pattern, PatternMatchAs, Singleton, Stmt,
+    AtomicNodeIndex, Identifier, Pattern, PatternMatchAs, PatternMatchClass, PatternMatchMapping,
+    Singleton, Stmt,
     visitor::{
         Visitor,
         transformer::{Transformer, walk_match_case},
@@ -128,38 +129,8 @@ fn write_pattern(pattern: &Pattern, stylist: &Stylist<'_>, output: &mut String) 
             write_patterns(&sequence.patterns, stylist, output);
             output.push(']');
         }
-        Pattern::MatchMapping(mapping) => {
-            output.push('{');
-            let mut needs_separator = false;
-            for (key, value) in mapping.keys.iter().zip(&mapping.patterns) {
-                push_separator(output, &mut needs_separator);
-                output.push_str(&Generator::from(stylist).expr(key));
-                output.push_str(": ");
-                write_pattern(value, stylist, output);
-            }
-            if let Some(rest) = &mapping.rest {
-                push_separator(output, &mut needs_separator);
-                output.push_str("**");
-                output.push_str(rest);
-            }
-            output.push('}');
-        }
-        Pattern::MatchClass(class) => {
-            output.push_str(&Generator::from(stylist).expr(&class.cls));
-            output.push('(');
-            let mut needs_separator = false;
-            for argument in &class.arguments.patterns {
-                push_separator(output, &mut needs_separator);
-                write_pattern(argument, stylist, output);
-            }
-            for keyword in &class.arguments.keywords {
-                push_separator(output, &mut needs_separator);
-                output.push_str(&keyword.attr);
-                output.push('=');
-                write_pattern(&keyword.pattern, stylist, output);
-            }
-            output.push(')');
-        }
+        Pattern::MatchMapping(mapping) => write_mapping_pattern(mapping, stylist, output),
+        Pattern::MatchClass(class) => write_class_pattern(class, stylist, output),
         Pattern::MatchStar(star) => {
             output.push('*');
             output.push_str(star.name.as_deref().unwrap_or("_"));
@@ -182,6 +153,44 @@ fn write_pattern(pattern: &Pattern, stylist: &Stylist<'_>, output: &mut String) 
             }
         }
     }
+}
+
+fn write_mapping_pattern(
+    mapping: &PatternMatchMapping,
+    stylist: &Stylist<'_>,
+    output: &mut String,
+) {
+    output.push('{');
+    let mut needs_separator = false;
+    for (key, value) in mapping.keys.iter().zip(&mapping.patterns) {
+        push_separator(output, &mut needs_separator);
+        output.push_str(&Generator::from(stylist).expr(key));
+        output.push_str(": ");
+        write_pattern(value, stylist, output);
+    }
+    if let Some(rest) = &mapping.rest {
+        push_separator(output, &mut needs_separator);
+        output.push_str("**");
+        output.push_str(rest);
+    }
+    output.push('}');
+}
+
+fn write_class_pattern(class: &PatternMatchClass, stylist: &Stylist<'_>, output: &mut String) {
+    output.push_str(&Generator::from(stylist).expr(&class.cls));
+    output.push('(');
+    let mut needs_separator = false;
+    for argument in &class.arguments.patterns {
+        push_separator(output, &mut needs_separator);
+        write_pattern(argument, stylist, output);
+    }
+    for keyword in &class.arguments.keywords {
+        push_separator(output, &mut needs_separator);
+        output.push_str(&keyword.attr);
+        output.push('=');
+        write_pattern(&keyword.pattern, stylist, output);
+    }
+    output.push(')');
 }
 
 fn write_patterns(patterns: &[Pattern], stylist: &Stylist<'_>, output: &mut String) {
