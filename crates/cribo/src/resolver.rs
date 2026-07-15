@@ -14,7 +14,10 @@ use log::{debug, info, warn};
 use pep508_rs::PackageName;
 use ruff_python_stdlib::sys;
 
-use crate::{config::Config, types::FxIndexMap};
+use crate::{
+    config::Config,
+    types::{FxIndexMap, FxIndexSet},
+};
 
 /// Unique identifier for a module in the dependency graph
 /// The entry module ALWAYS has ID 0 - this is a fundamental invariant
@@ -467,6 +470,16 @@ impl ModuleResolver {
     pub fn get_module_id_by_name(&self, name: &str) -> Option<ModuleId> {
         let registry = self.registry.lock().expect("Module registry lock poisoned");
         registry.get_id_by_name(name).copied()
+    }
+
+    /// Get registered module IDs whose names start with `prefix`.
+    pub(crate) fn get_module_ids_by_name_prefix(&self, prefix: &str) -> FxIndexSet<ModuleId> {
+        let registry = self.registry.lock().expect("Module registry lock poisoned");
+        registry
+            .by_name
+            .iter()
+            .filter_map(|(name, &id)| name.starts_with(prefix).then_some(id))
+            .collect()
     }
 
     /// Get module ID by path (reverse lookup)

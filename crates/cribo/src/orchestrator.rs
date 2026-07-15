@@ -749,8 +749,8 @@ impl BundleOrchestrator {
         modules_to_process.push((ModuleId::ENTRY, entry_path));
         queued_modules.insert(ModuleId::ENTRY);
 
-        // Store module data for phase 2 including parsed AST
-        type DiscoveryData = (ModuleId, PathBuf, Vec<String>, ModModule, String); // (id, path, imports, ast, source) for discovery phase
+        // Store module data for phase 2, including the parse products.
+        type DiscoveryData = (ModuleId, PathBuf, Vec<String>, ProcessedModule);
         let mut discovered_modules: Vec<DiscoveryData> = Vec::new();
 
         // PHASE 1: Discover and collect all modules
@@ -787,14 +787,7 @@ impl BundleOrchestrator {
                 .collect();
             debug!("Extracted imports from {module_name}: {imports:?}");
 
-            // Store module data including parsed AST for later processing
-            discovered_modules.push((
-                module_id,
-                module_path.clone(),
-                imports.clone(),
-                processed.ast,
-                processed.source,
-            ));
+            discovered_modules.push((module_id, module_path.clone(), imports, processed));
             processed_modules.insert(module_id);
 
             // Find and queue first-party imports for discovery
@@ -827,15 +820,13 @@ impl BundleOrchestrator {
         // First, add all modules to the graph and run semantic analysis.
         let mut parsed_modules: Vec<ParsedModuleData> = Vec::new();
 
-        for (discovered_module_id, module_path, imports, _ast, _source) in discovered_modules {
+        for (module_id, module_path, imports, processed) in discovered_modules {
             let module_name = params
                 .resolver
-                .get_module_name(discovered_module_id)
-                .unwrap_or_else(|| format!("module_{}", discovered_module_id.as_u32()));
+                .get_module_name(module_id)
+                .unwrap_or_else(|| format!("module_{}", module_id.as_u32()));
             debug!("Phase 2: Processing module '{module_name}'");
 
-            let processed = self.process_module(&module_path, &module_name)?;
-            let module_id = discovered_module_id;
             params.graph.add_module(module_id, params.resolver);
             self.conflict_resolver
                 .analyze_module(module_id, &processed.ast, &module_path);
@@ -851,7 +842,7 @@ impl BundleOrchestrator {
             }
 
             // Store parsed module data for later use
-            parsed_modules.push((module_id, imports.clone(), processed.ast, processed.source));
+            parsed_modules.push((module_id, imports, processed.ast, processed.source));
         }
 
         info!("Added {} modules to graph", params.graph.modules.len());

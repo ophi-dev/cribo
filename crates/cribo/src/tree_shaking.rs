@@ -93,7 +93,7 @@ impl<'a> TreeShaker<'a> {
     /// Resolve a registered name and ensure the module participates in this graph.
     pub(crate) fn get_graph_module_id(&self, module_name: &str) -> Option<ModuleId> {
         let id = self.resolver.get_module_id_by_name(module_name)?;
-        self.graph.modules.get(&id).map(|module| module.module_id)
+        self.graph.modules.contains_key(&id).then_some(id)
     }
 
     /// Analyze which symbols should be kept based on entry point
@@ -932,13 +932,11 @@ impl<'a> TreeShaker<'a> {
         worklist: &mut VecDeque<(ModuleId, String)>,
         context: &str,
     ) {
-        let is_namespace = self
-            .graph
-            .modules
-            .values()
-            .any(|module| module.module_name.starts_with(&format!("{base_var}.")));
+        let prefix = format!("{base_var}.");
+        let mut submodule_ids = self.resolver.get_module_ids_by_name_prefix(&prefix);
+        submodule_ids.retain(|id| self.graph.modules.contains_key(id));
 
-        if !is_namespace {
+        if submodule_ids.is_empty() {
             debug!("Unknown base variable for attribute access in {context}: {base_var}");
             return;
         }
@@ -948,7 +946,7 @@ impl<'a> TreeShaker<'a> {
             debug!("Looking for {attr} in submodules of {base_var}");
 
             // Find which submodule defines this attribute
-            if let Some(module_id) = self.find_attribute_in_submodules(base_var, attr) {
+            if let Some(module_id) = self.find_attribute_in_submodules(&submodule_ids, attr) {
                 debug!(
                     "Found {attr} defined in {}",
                     self.get_module_display_name(module_id)
@@ -961,14 +959,17 @@ impl<'a> TreeShaker<'a> {
     }
 
     /// Find which submodule defines an attribute
-    fn find_attribute_in_submodules(&self, base_var: &str, attr: &str) -> Option<ModuleId> {
-        let prefix = format!("{base_var}.");
-        for (&module_id, module) in &self.graph.modules {
-            if module.module_name.starts_with(&prefix) && module.defines_symbol(attr) {
-                return Some(module_id);
-            }
-        }
-        None
+    fn find_attribute_in_submodules(
+        &self,
+        submodule_ids: &FxIndexSet<ModuleId>,
+        attr: &str,
+    ) -> Option<ModuleId> {
+        submodule_ids.iter().copied().find(|module_id| {
+            self.graph
+                .modules
+                .get(module_id)
+                .is_some_and(|module| module.defines_symbol(attr))
+        })
     }
 
     /// Mark symbols defined in __all__ as used for star imports
@@ -1325,13 +1326,17 @@ mod tests {
     }
 
     #[test]
-    fn test_find_attribute_in_submodules_returns_matching_namespace_submodule() {
+    fn test_find_attribute_in_namespace_resolves_alias_submodule() {
         let mut graph = DependencyGraph::new();
         let resolver = ModuleResolver::new(crate::config::Config::default());
         resolver.register_module("__main__", std::path::Path::new("main.py"));
         let submodule_id = resolver.register_module(
+            "real_pkg.feature",
+            std::path::Path::new("real_pkg/feature.py"),
+        );
+        let alias_id = resolver.register_module(
             "namespace_pkg.feature",
-            std::path::Path::new("namespace_pkg/feature.py"),
+            std::path::Path::new("real_pkg/feature.py"),
         );
 
         graph.add_module(submodule_id, &resolver);
@@ -1343,10 +1348,19 @@ mod tests {
         submodule.add_item(function_item("exported_attr"));
 
         let shaker = TreeShaker::from_graph(&graph, &resolver);
-        let resolved_id = shaker.find_attribute_in_submodules("namespace_pkg", "exported_attr");
-        let missing_id = shaker.find_attribute_in_submodules("namespace_pkg", "nonexistent_attr");
+        let accessed_attrs = std::iter::once("exported_attr".to_owned()).collect();
+        let mut worklist = VecDeque::new();
+        shaker.find_attribute_in_namespace(
+            "namespace_pkg",
+            &accessed_attrs,
+            &mut worklist,
+            "test_module",
+        );
 
-        assert_eq!(resolved_id, Some(submodule_id));
-        assert_eq!(missing_id, None);
+        assert_eq!(alias_id, submodule_id);
+        assert_eq!(
+            worklist.into_iter().collect::<Vec<_>>(),
+            vec![(submodule_id, "exported_attr".to_owned())]
+        );
     }
 }
