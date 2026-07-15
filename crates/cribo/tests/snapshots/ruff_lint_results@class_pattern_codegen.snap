@@ -1,0 +1,10 @@
+---
+source: crates/cribo/tests/test_bundling_snapshots.rs
+input_file: crates/cribo/tests/fixtures/class_pattern_codegen/main.py
+---
+RuffLintResults {
+    f401: [],
+    f404: [],
+    other: [],
+    total: 0,
+}

@@ -19,6 +19,7 @@ pub(crate) mod module_registry;
 pub(crate) mod module_transformer;
 pub(crate) mod namespace_manager;
 pub(crate) mod phases;
+pub(crate) mod python_codegen;
 pub(crate) mod symbol_source;
 
 // Re-export the main bundler and key types

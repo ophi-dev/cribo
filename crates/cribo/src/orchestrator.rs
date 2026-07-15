@@ -1681,8 +1681,8 @@ impl BundleOrchestrator {
                     std::mem::discriminant(stmt)
                 );
             }
-            let generator = ruff_python_codegen::Generator::from(&stylist);
-            let stmt_code = generator.stmt(stmt);
+            let stmt_code =
+                crate::code_generator::python_codegen::generate_statement(stmt, &stylist);
             code_parts.push(stmt_code);
         }
 
