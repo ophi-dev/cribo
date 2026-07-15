@@ -34,7 +34,8 @@ def summarize(value: object) -> str:
         ) if priority > 0:
             return f"{source}:event:{text}:{priority}"
         case _:
-            return "no-match"
+            pass
+    return "no-match"
 
 
 def inspect_patterns(value: object) -> str:
@@ -51,4 +52,5 @@ def inspect_patterns(value: object) -> str:
         case Text("left" | "right"):
             return "or-pattern"
         case _:
-            return "other"
+            pass
+    return "other"

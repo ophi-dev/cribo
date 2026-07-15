@@ -55,7 +55,8 @@ def summarize(value: object) -> str:
         case Envelope(Record("event", Text(str(text)), priority=int(priority)), source=str(source)) if (priority > 0):
             return f"{source}:event:{text}:{priority}"
         case _:
-            return "no-match"
+            pass
+    return "no-match"
 def inspect_patterns(value: object) -> str:
     match value:
         case {"active": True, "items": [Text(str(first)), *remaining], **metadata} as whole:
@@ -63,7 +64,8 @@ def inspect_patterns(value: object) -> str:
         case Text("left" | "right"):
             return "or-pattern"
         case _:
-            return "other"
+            pass
+    return "other"
 records.Envelope = Envelope
 records.Record = Record
 records.Text = Text
