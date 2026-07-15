@@ -93,11 +93,7 @@ impl<'a> TreeShaker<'a> {
     /// Resolve a registered name and ensure the module participates in this graph.
     pub(crate) fn get_graph_module_id(&self, module_name: &str) -> Option<ModuleId> {
         let id = self.resolver.get_module_id_by_name(module_name)?;
-        self.graph
-            .modules
-            .get(&id)
-            .filter(|module| module.module_name == module_name)
-            .map(|module| module.module_id)
+        self.graph.modules.get(&id).map(|module| module.module_id)
     }
 
     /// Analyze which symbols should be kept based on entry point
@@ -1153,6 +1149,21 @@ mod tests {
             attribute_accesses: FxIndexMap::default(),
             containing_scope: Some(scope_name.to_owned()),
         }
+    }
+
+    #[test]
+    fn test_graph_module_id_accepts_resolver_alias() {
+        let mut graph = DependencyGraph::new();
+        let resolver = ModuleResolver::new(crate::config::Config::default());
+        resolver.register_module("__main__", std::path::Path::new("main.py"));
+        let module_id = resolver.register_module("utils", std::path::Path::new("utils.py"));
+        let alias_id = resolver.register_module("src.utils", std::path::Path::new("utils.py"));
+        graph.add_module(module_id, &resolver);
+
+        let shaker = TreeShaker::from_graph(&graph, &resolver);
+
+        assert_eq!(alias_id, module_id);
+        assert_eq!(shaker.get_graph_module_id("src.utils"), Some(module_id));
     }
 
     #[test]

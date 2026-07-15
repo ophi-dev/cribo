@@ -1472,9 +1472,7 @@ fn rewrite_import_with_renames(
                 // Module uses wrapper approach - need to initialize it now
 
                 // First, ensure the module is initialized
-                if let Some(module_id) = bundler.get_module_id(module_name) {
-                    result_stmts.extend(bundler.create_module_initialization_for_import(module_id));
-                }
+                result_stmts.extend(bundler.create_module_initialization_for_import(module_id));
 
                 // Then create assignment if needed (skip self-assignments)
                 if target_name.as_str() != module_name {
