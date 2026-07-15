@@ -88,12 +88,14 @@ pub(crate) fn generate_statement(stmt: &Stmt, stylist: &Stylist<'_>) -> String {
     generated
 }
 
+/// Return whether a statement contains a structural class pattern.
 fn statement_contains_class_pattern(stmt: &Stmt) -> bool {
     let mut detector = ClassPatternDetector { found: false };
     detector.visit_stmt(stmt);
     detector.found
 }
 
+/// Return whether a pattern or any nested pattern is a structural class pattern.
 fn pattern_contains_class(pattern: &Pattern) -> bool {
     match pattern {
         Pattern::MatchClass(_) => true,
@@ -108,12 +110,14 @@ fn pattern_contains_class(pattern: &Pattern) -> bool {
     }
 }
 
+/// Render a complete pattern, delegating embedded expressions to Ruff.
 fn generate_pattern(pattern: &Pattern, stylist: &Stylist<'_>) -> String {
     let mut output = String::new();
     write_pattern(pattern, stylist, &mut output);
     output
 }
 
+/// Append a pattern's Python source to the output buffer.
 fn write_pattern(pattern: &Pattern, stylist: &Stylist<'_>, output: &mut String) {
     match pattern {
         Pattern::MatchValue(value) => {
@@ -142,19 +146,31 @@ fn write_pattern(pattern: &Pattern, stylist: &Stylist<'_>, output: &mut String) 
             }
             output.push_str(as_pattern.name.as_deref().unwrap_or("_"));
         }
-        Pattern::MatchOr(or_pattern) => {
-            let mut needs_separator = false;
-            for pattern in &or_pattern.patterns {
-                if needs_separator {
-                    output.push_str(" | ");
-                }
-                write_pattern(pattern, stylist, output);
-                needs_separator = true;
-            }
-        }
+        Pattern::MatchOr(or_pattern) => write_or_pattern(&or_pattern.patterns, stylist, output),
     }
 }
 
+/// Append an OR pattern, preserving grouping around `as` alternatives.
+fn write_or_pattern(patterns: &[Pattern], stylist: &Stylist<'_>, output: &mut String) {
+    let mut needs_separator = false;
+    for pattern in patterns {
+        if needs_separator {
+            output.push_str(" | ");
+        }
+        let needs_parentheses =
+            matches!(pattern, Pattern::MatchAs(as_pattern) if as_pattern.pattern.is_some());
+        if needs_parentheses {
+            output.push('(');
+        }
+        write_pattern(pattern, stylist, output);
+        if needs_parentheses {
+            output.push(')');
+        }
+        needs_separator = true;
+    }
+}
+
+/// Append a mapping pattern and its optional rest capture.
 fn write_mapping_pattern(
     mapping: &PatternMatchMapping,
     stylist: &Stylist<'_>,
@@ -176,6 +192,7 @@ fn write_mapping_pattern(
     output.push('}');
 }
 
+/// Append a class pattern with positional and keyword subpatterns.
 fn write_class_pattern(class: &PatternMatchClass, stylist: &Stylist<'_>, output: &mut String) {
     output.push_str(&Generator::from(stylist).expr(&class.cls));
     output.push('(');
@@ -193,6 +210,7 @@ fn write_class_pattern(class: &PatternMatchClass, stylist: &Stylist<'_>, output:
     output.push(')');
 }
 
+/// Append comma-separated patterns to the output buffer.
 fn write_patterns(patterns: &[Pattern], stylist: &Stylist<'_>, output: &mut String) {
     let mut needs_separator = false;
     for pattern in patterns {
@@ -201,6 +219,7 @@ fn write_patterns(patterns: &[Pattern], stylist: &Stylist<'_>, output: &mut Stri
     }
 }
 
+/// Append a comma separator after the first emitted item.
 fn push_separator(output: &mut String, needs_separator: &mut bool) {
     if *needs_separator {
         output.push_str(", ");
@@ -208,6 +227,7 @@ fn push_separator(output: &mut String, needs_separator: &mut bool) {
     *needs_separator = true;
 }
 
+/// Replace a generated match-case marker with its rendered pattern source.
 fn replace_case_marker(generated: &mut String, replacement: &PatternReplacement) {
     let target = format!("case {}", replacement.marker);
     let mut offset = 0;

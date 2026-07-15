@@ -54,3 +54,12 @@ def inspect_patterns(value: object) -> str:
         case _:
             pass
     return "other"
+
+
+def inspect_grouped_as(value: object) -> str:
+    match value:
+        case (Text("left") as matched) | (Text("right") as matched):
+            return f"grouped-as:{matched.value}"
+        case _:
+            pass
+    return "other"

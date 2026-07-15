@@ -25,6 +25,7 @@ print(
     )
 )
 print(records.inspect_patterns(records.Text("left")))
+print(records.inspect_grouped_as(records.Text("right")))
 
 match Outcome(200, event):
     case Outcome(
