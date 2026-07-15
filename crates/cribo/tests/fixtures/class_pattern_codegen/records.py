@@ -63,3 +63,12 @@ def inspect_grouped_as(value: object) -> str:
         case _:
             pass
     return "other"
+
+
+def inspect_nested_as(value: object) -> str:
+    match value:
+        case (Text("nested") as matched) as whole:
+            return f"nested-as:{matched.value}:{whole.value}"
+        case _:
+            pass
+    return "other"

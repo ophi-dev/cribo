@@ -73,10 +73,18 @@ def inspect_grouped_as(value: object) -> str:
         case _:
             pass
     return "other"
+def inspect_nested_as(value: object) -> str:
+    match value:
+        case (Text("nested") as matched) as whole:
+            return f"nested-as:{matched.value}:{whole.value}"
+        case _:
+            pass
+    return "other"
 records.Envelope = Envelope
 records.Record = Record
 records.Text = Text
 records.inspect_grouped_as = inspect_grouped_as
+records.inspect_nested_as = inspect_nested_as
 records.inspect_patterns = inspect_patterns
 records.summarize = summarize
 class Outcome:
@@ -90,6 +98,7 @@ print(records.summarize(event))
 print(records.inspect_patterns({"active": True, "items": [records.Text("first"), records.Text("second")], "source": "fixture"}))
 print(records.inspect_patterns(records.Text("left")))
 print(records.inspect_grouped_as(records.Text("right")))
+print(records.inspect_nested_as(records.Text("nested")))
 match Outcome(200, event):
     case Outcome(int(code), payload=records.Envelope(records.Record("event", records.Text(str(text)), priority=int(priority)), source=str(source))):
         print(f"entry:{code}:{source}:{text}:{priority}")

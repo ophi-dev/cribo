@@ -4,6 +4,6 @@ input_file: crates/cribo/tests/fixtures/class_pattern_codegen/main.py
 ---
 ExecutionResults {
     status: Success,
-    stdout: "api:event:hello:3\nmapping:first:1:fixture:3\nor-pattern\ngrouped-as:right\nentry:200:api:hello:3",
+    stdout: "api:event:hello:3\nmapping:first:1:fixture:3\nor-pattern\ngrouped-as:right\nnested-as:nested:nested\nentry:200:api:hello:3",
     stderr: "",
 }

@@ -139,15 +139,25 @@ fn write_pattern(pattern: &Pattern, stylist: &Stylist<'_>, output: &mut String) 
             output.push('*');
             output.push_str(star.name.as_deref().unwrap_or("_"));
         }
-        Pattern::MatchAs(as_pattern) => {
-            if let Some(pattern) = &as_pattern.pattern {
-                write_pattern(pattern, stylist, output);
-                output.push_str(" as ");
-            }
-            output.push_str(as_pattern.name.as_deref().unwrap_or("_"));
-        }
+        Pattern::MatchAs(as_pattern) => write_as_pattern(as_pattern, stylist, output),
         Pattern::MatchOr(or_pattern) => write_or_pattern(&or_pattern.patterns, stylist, output),
     }
+}
+
+/// Append an `as` pattern, preserving grouping around a nested `as` pattern.
+fn write_as_pattern(as_pattern: &PatternMatchAs, stylist: &Stylist<'_>, output: &mut String) {
+    if let Some(pattern) = &as_pattern.pattern {
+        let needs_parentheses = matches!(pattern.as_ref(), Pattern::MatchAs(_));
+        if needs_parentheses {
+            output.push('(');
+        }
+        write_pattern(pattern, stylist, output);
+        if needs_parentheses {
+            output.push(')');
+        }
+        output.push_str(" as ");
+    }
+    output.push_str(as_pattern.name.as_deref().unwrap_or("_"));
 }
 
 /// Append an OR pattern, preserving grouping around `as` alternatives.
