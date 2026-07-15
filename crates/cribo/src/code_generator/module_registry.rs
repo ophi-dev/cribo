@@ -216,7 +216,6 @@ pub(crate) fn initialize_submodule_if_needed(
 /// Parameters for creating assignments for inlined imports
 pub(crate) struct InlinedImportParams<'a> {
     pub symbol_renames: &'a FxIndexMap<crate::resolver::ModuleId, FxIndexMap<String, String>>,
-    pub module_registry: Option<&'a crate::orchestrator::ModuleRegistry>,
     pub inlined_modules: &'a FxIndexSet<crate::resolver::ModuleId>,
     pub bundled_modules: &'a FxIndexSet<crate::resolver::ModuleId>,
     pub resolver: &'a crate::resolver::ModuleResolver,
@@ -252,9 +251,8 @@ pub(crate) fn create_assignments_for_inlined_imports(
         // Check if this is a module import
         // First check if it's a wrapped module
         if let Some(module_id) = params.resolver.get_module_id_by_name(&full_module_path) {
-            if params
-                .module_registry
-                .is_some_and(|reg| reg.contains_module(module_id))
+            if params.bundled_modules.contains(&module_id)
+                && !params.inlined_modules.contains(&module_id)
             {
                 // Skip wrapped modules - they will be handled as deferred imports
                 log::debug!("Module '{full_module_path}' is a wrapped module, deferring import");
@@ -463,14 +461,12 @@ pub(crate) fn register_module(
 
 /// Check if a module is a wrapper submodule (not inlined)
 ///
-/// A module is considered a wrapper submodule if:
-/// - It exists in the module registry (meaning it has an init function)
-/// - It is NOT in the inlined modules set
+/// A module is considered a wrapper submodule when it participates in the
+/// bundle but is not currently classified as inlined.
 pub(crate) fn is_wrapper_submodule(
     module_id: crate::resolver::ModuleId,
-    module_info_registry: Option<&crate::orchestrator::ModuleRegistry>,
+    bundled_modules: &FxIndexSet<crate::resolver::ModuleId>,
     inlined_modules: &FxIndexSet<crate::resolver::ModuleId>,
 ) -> bool {
-    module_info_registry.is_some_and(|reg| reg.contains_module(module_id))
-        && !inlined_modules.contains(&module_id)
+    bundled_modules.contains(&module_id) && !inlined_modules.contains(&module_id)
 }

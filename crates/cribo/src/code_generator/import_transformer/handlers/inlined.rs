@@ -676,7 +676,6 @@ impl InlinedHandler {
 
         let params = crate::code_generator::module_registry::InlinedImportParams {
             symbol_renames,
-            module_registry: bundler.module_info_registry,
             inlined_modules: &bundler.inlined_modules,
             bundled_modules: &bundler.bundled_modules,
             resolver: bundler.resolver,

@@ -1,5 +1,3 @@
-use std::path::{Path, PathBuf};
-
 /// `DependencyGraph`: Advanced dependency graph implementation for Python bundling
 ///
 /// This module provides a sophisticated dependency tracking system that combines:
@@ -21,7 +19,7 @@ use petgraph::{
 };
 
 use crate::{
-    resolver::ModuleId,
+    resolver::{ModuleId, ModuleResolver},
     types::{FxIndexMap, FxIndexSet},
 };
 
@@ -407,24 +405,10 @@ impl ModuleDepGraph {
 pub struct DependencyGraph {
     /// All modules in the graph
     pub(crate) modules: FxIndexMap<ModuleId, ModuleDepGraph>,
-    /// Module name to ID mapping
-    pub(crate) module_names: FxIndexMap<String, ModuleId>,
-    /// Module path to ID mapping
-    pub(crate) module_paths: FxIndexMap<PathBuf, ModuleId>,
     /// Petgraph for efficient algorithms (inspired by Mako)
     graph: DiGraph<ModuleId, ()>,
     /// Node index mapping
     node_indices: FxIndexMap<ModuleId, NodeIndex>,
-
-    // Fields for file-based deduplication
-    /// Track canonical paths for each module
-    module_canonical_paths: FxIndexMap<ModuleId, PathBuf>,
-    /// Track all import names that resolve to each canonical file
-    /// This includes regular imports AND static importlib calls
-    file_to_import_names: FxIndexMap<PathBuf, FxIndexSet<String>>,
-    /// Track the primary module ID for each file
-    /// (The first import name discovered for this file)
-    file_primary_module: FxIndexMap<PathBuf, (String, ModuleId)>,
     /// Track modules whose __all__ attribute is accessed
     /// Maps (`accessing_module_id`, `accessed_module_id`) for __all__ access tracking to prevent
     /// alias collisions
@@ -437,91 +421,30 @@ impl DependencyGraph {
     pub fn new() -> Self {
         Self {
             modules: FxIndexMap::default(),
-            module_names: FxIndexMap::default(),
-            module_paths: FxIndexMap::default(),
             graph: DiGraph::new(),
             node_indices: FxIndexMap::default(),
-            module_canonical_paths: FxIndexMap::default(),
-            file_to_import_names: FxIndexMap::default(),
-            file_primary_module: FxIndexMap::default(),
             modules_accessing_all: FxIndexSet::default(),
         }
     }
 
     /// Add a module to the graph with a pre-assigned `ModuleId` from the resolver
     #[allow(unreachable_pub)]
-    pub fn add_module(&mut self, id: ModuleId, name: String, path: &Path) -> ModuleId {
-        // Always work with canonical paths
-        let canonical_path = path.canonicalize().unwrap_or_else(|_| path.to_owned());
-
-        // Check if this exact import name already exists
-        if let Some(&existing_id) = self.module_names.get(&name) {
-            // Verify it's the same file
-            if let Some(existing_canonical) = self.module_canonical_paths.get(&existing_id) {
-                if existing_canonical == &canonical_path {
-                    // Same import name, same file - track and reuse
-                    self.file_to_import_names
-                        .entry(canonical_path)
-                        .or_default()
-                        .insert(name.clone());
-                    return existing_id;
-                }
-                // Same import name but different files: reuse existing mapping deterministically.
-                // Prevents alias flapping and preserves previously built edges.
-                log::warn!(
-                    "Import name '{name}' refers to different files: {} and {}. Reusing existing \
-                     ModuleId {} to keep mapping stable.",
-                    existing_canonical.display(),
-                    canonical_path.display(),
-                    existing_id.as_u32()
-                );
-                return existing_id;
-            }
+    pub fn add_module(&mut self, id: ModuleId, resolver: &ModuleResolver) -> ModuleId {
+        if self.modules.contains_key(&id) {
+            return id;
         }
 
-        // Track this import name for the file
-        self.file_to_import_names
-            .entry(canonical_path.clone())
-            .or_default()
-            .insert(name.clone());
-
-        // Check if this file already has a primary module
-        if let Some((primary_name, primary_id)) = self.file_primary_module.get(&canonical_path) {
-            log::info!(
-                "File {} already imported as '{primary_name}', reusing ModuleId for import name \
-                 '{name}'",
-                canonical_path.display()
-            );
-
-            // IMPORTANT: Return the SAME ModuleId for the same physical file
-            // This ensures circular dependency detection and all other processing
-            // operates on physical files, not module names
-            self.module_names.insert(name, *primary_id);
-
-            return *primary_id;
-        }
-
-        // Use the pre-assigned ID from the resolver
-        // The resolver guarantees that the entry module gets ID 0
-
-        // Create module
+        let name = resolver
+            .get_module_name(id)
+            .expect("Dependency graph modules must be registered with the resolver");
         let module_graph = ModuleDepGraph::new(id, name.clone());
         self.modules.insert(id, module_graph);
-        self.module_names.insert(name.clone(), id);
-        self.module_paths.insert(canonical_path.clone(), id);
-        self.module_canonical_paths
-            .insert(id, canonical_path.clone());
-        self.file_primary_module
-            .insert(canonical_path.clone(), (name.clone(), id));
 
         // Add to petgraph
         let node_idx = self.graph.add_node(id);
         self.node_indices.insert(id, node_idx);
 
-        log::debug!(
-            "Registered module '{name}' as primary for file {}",
-            canonical_path.display()
-        );
+        log::debug!("Added resolver module '{name}' ({id}) to dependency graph");
 
         id
     }
@@ -531,20 +454,9 @@ impl DependencyGraph {
         self.modules.get(&id)
     }
 
-    /// Get a module by name (for compatibility during migration)
-    pub(crate) fn get_module_by_name(&self, name: &str) -> Option<&ModuleDepGraph> {
-        self.module_names
-            .get(name)
-            .and_then(|&id| self.modules.get(&id))
-    }
-
-    /// Get a mutable module by name (for compatibility during migration)
-    pub(crate) fn get_module_by_name_mut(&mut self, name: &str) -> Option<&mut ModuleDepGraph> {
-        if let Some(&id) = self.module_names.get(name) {
-            self.modules.get_mut(&id)
-        } else {
-            None
-        }
+    /// Get a mutable module by ID.
+    pub(crate) fn get_module_mut(&mut self, id: ModuleId) -> Option<&mut ModuleDepGraph> {
+        self.modules.get_mut(&id)
     }
 
     /// Get modules that access __all__ attribute
@@ -761,22 +673,27 @@ impl Default for DependencyGraph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analyzers::types::{CircularDependencyType, ResolutionStrategy};
+    use crate::{
+        analyzers::types::{CircularDependencyType, ResolutionStrategy},
+        config::Config,
+    };
+
+    fn register_modules(names: &[&str]) -> (ModuleResolver, Vec<ModuleId>) {
+        let resolver = ModuleResolver::new(Config::default());
+        let ids = names
+            .iter()
+            .map(|name| resolver.register_module(name, std::path::Path::new(name)))
+            .collect();
+        (resolver, ids)
+    }
 
     #[test]
     fn test_basic_module_graph() {
         let mut graph = DependencyGraph::new();
+        let (resolver, ids) = register_modules(&["utils", "main"]);
 
-        let utils_id = graph.add_module(
-            ModuleId::new(0),
-            "utils".to_owned(),
-            &PathBuf::from("utils.py"),
-        );
-        let main_id = graph.add_module(
-            ModuleId::new(1),
-            "main".to_owned(),
-            &PathBuf::from("main.py"),
-        );
+        let utils_id = graph.add_module(ids[0], &resolver);
+        let main_id = graph.add_module(ids[1], &resolver);
 
         graph.add_module_dependency(main_id, utils_id);
 
@@ -790,23 +707,12 @@ mod tests {
     #[test]
     fn test_circular_dependency_detection() {
         let mut graph = DependencyGraph::new();
+        let (resolver, ids) = register_modules(&["module_a", "module_b", "module_c"]);
 
         // Create a three-module circular dependency: A -> B -> C -> A
-        let module_a = graph.add_module(
-            ModuleId::new(0),
-            "module_a".to_owned(),
-            &PathBuf::from("module_a.py"),
-        );
-        let module_b = graph.add_module(
-            ModuleId::new(1),
-            "module_b".to_owned(),
-            &PathBuf::from("module_b.py"),
-        );
-        let module_c = graph.add_module(
-            ModuleId::new(2),
-            "module_c".to_owned(),
-            &PathBuf::from("module_c.py"),
-        );
+        let module_a = graph.add_module(ids[0], &resolver);
+        let module_b = graph.add_module(ids[1], &resolver);
+        let module_c = graph.add_module(ids[2], &resolver);
 
         graph.add_module_dependency(module_a, module_b);
         graph.add_module_dependency(module_b, module_c);
@@ -831,17 +737,10 @@ mod tests {
         //           constants_b.py: `from constants_a import A_VALUE; B_VALUE = A_VALUE * 2`
         // Both modules read a cross-cycle import at module level → temporal paradox.
         let mut graph = DependencyGraph::new();
+        let (resolver, ids) = register_modules(&["mod_a", "mod_b"]);
 
-        let mod_a = graph.add_module(
-            ModuleId::new(0),
-            "mod_a".to_owned(),
-            &PathBuf::from("mod_a.py"),
-        );
-        let mod_b = graph.add_module(
-            ModuleId::new(1),
-            "mod_b".to_owned(),
-            &PathBuf::from("mod_b.py"),
-        );
+        let mod_a = graph.add_module(ids[0], &resolver);
+        let mod_b = graph.add_module(ids[1], &resolver);
 
         // mod_a: from mod_b import B_VALUE
         if let Some(module_a) = graph.modules.get_mut(&mod_a) {
@@ -948,12 +847,11 @@ mod tests {
     }
 
     #[test]
-    fn test_file_based_deduplication() {
+    fn test_duplicate_module_id_is_idempotent() {
         let mut graph = DependencyGraph::new();
+        let (resolver, ids) = register_modules(&["utils"]);
 
-        // Add a module with a canonical path
-        let path = PathBuf::from("src/utils.py");
-        let utils_id = graph.add_module(ModuleId::new(0), "utils".to_owned(), &path);
+        let utils_id = graph.add_module(ids[0], &resolver);
 
         // Add some items to the utils module
         let utils_module = graph
@@ -978,19 +876,15 @@ mod tests {
             containing_scope: None,
         });
 
-        // Add the same file with a different import name
-        // This should return the SAME ModuleId due to file-based deduplication
-        let alt_utils_id = graph.add_module(ModuleId::new(1), "src.utils".to_owned(), &path);
+        // Aliases are resolved before graph insertion, so adding the resolver's
+        // existing ID again must leave the graph unchanged.
+        let alt_utils_id = graph.add_module(utils_id, &resolver);
 
-        // Verify that both names map to the same ModuleId (file-based deduplication)
-        assert_eq!(utils_id, alt_utils_id, "Same file should get same ModuleId");
+        assert_eq!(utils_id, alt_utils_id);
+        assert_eq!(graph.modules.len(), 1);
 
         // Verify the module exists
         assert!(graph.modules.contains_key(&utils_id));
-
-        // Verify that both names are tracked
-        assert_eq!(graph.module_names.get("utils"), Some(&utils_id));
-        assert_eq!(graph.module_names.get("src.utils"), Some(&utils_id));
 
         // Get the module
         let utils_module = &graph.modules[&utils_id];
