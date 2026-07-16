@@ -266,7 +266,13 @@ impl Bundler<'_> {
                     );
                 }
                 Stmt::TypeAlias(type_alias) => {
-                    self.inline_type_alias(type_alias, module_name, &mut module_renames, ctx);
+                    self.inline_type_alias(
+                        type_alias,
+                        module_name,
+                        module_id,
+                        &mut module_renames,
+                        ctx,
+                    );
                 }
                 // Pass statements are no-ops and safe
                 Stmt::Pass(_) => {
@@ -329,6 +335,7 @@ impl Bundler<'_> {
         &self,
         type_alias: &StmtTypeAlias,
         module_name: &str,
+        module_id: crate::resolver::ModuleId,
         module_renames: &mut FxIndexMap<String, String>,
         ctx: &mut InlineContext<'_>,
     ) {
@@ -345,6 +352,17 @@ impl Bundler<'_> {
         let mut type_alias_clone = type_alias.clone();
         if let Expr::Name(name) = type_alias_clone.name.as_mut() {
             name.id = renamed_name.into();
+        }
+        expression_handlers::resolve_import_aliases_in_expr(
+            &mut type_alias_clone.value,
+            &ctx.import_aliases,
+        );
+        expression_handlers::rewrite_aliases_in_expr(&mut type_alias_clone.value, module_renames);
+        if let Some(semantic_renames) = ctx.module_renames.get(&module_id) {
+            expression_handlers::rewrite_aliases_in_expr(
+                &mut type_alias_clone.value,
+                semantic_renames,
+            );
         }
         ctx.inlined_stmts.push(Stmt::TypeAlias(type_alias_clone));
     }

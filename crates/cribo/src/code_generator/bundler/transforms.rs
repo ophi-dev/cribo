@@ -305,7 +305,10 @@ impl Bundler<'_> {
                 transformer.visit_annotation(&mut assign.annotation);
                 transformer.visit_expr(&mut assign.target);
             }
-            Stmt::For(for_stmt) => transformer.visit_expr(&mut for_stmt.iter),
+            Stmt::For(for_stmt) => {
+                transformer.visit_expr(&mut for_stmt.iter);
+                transformer.visit_expr(&mut for_stmt.target);
+            }
             Stmt::While(while_stmt) => transformer.visit_expr(&mut while_stmt.test),
             Stmt::If(if_stmt) => {
                 transformer.visit_expr(&mut if_stmt.test);

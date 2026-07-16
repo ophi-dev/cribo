@@ -27,6 +27,10 @@ match "subject":
 
 assert GUARD_VALUE == "guard"
 
+TARGET_SLOTS = [None]
+for TARGET_SLOTS[(FOR_TARGET_VALUE := 0)] in ("for-target",):
+    assert TARGET_SLOTS[FOR_TARGET_VALUE] == "for-target"
+
 COMPREHENSION_RESULT = [
     item for item in ("comprehension",) if (COMPREHENSION_VALUE := item)
 ]

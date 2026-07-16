@@ -306,6 +306,7 @@ impl<'a> SemanticModelBuilder<'a> {
             }
             Stmt::For(for_stmt) => {
                 self.visit_expr(&for_stmt.iter);
+                self.visit_expr(&for_stmt.target);
                 self.bind_assignment_target(&for_stmt.target, AssignmentBindingKind::LoopVar);
                 self.traverse_and_bind(&for_stmt.body);
                 self.traverse_and_bind(&for_stmt.orelse);
@@ -882,6 +883,9 @@ for loop_value, *loop_rest in (iter_named := ()):
 else:
     loop_else_value = 1
 
+for loop_slots[(for_target_named := 0)] in (1,):
+    pass
+
 while (while_named := False):
     while_value = 1
 else:
@@ -929,6 +933,7 @@ lambda_value = lambda: (lambda_local := 1)
             "loop_body_value",
             "loop_else_value",
             "iter_named",
+            "for_target_named",
             "while_value",
             "while_else_value",
             "while_named",

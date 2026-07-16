@@ -1,4 +1,5 @@
-from first import SharedAlias as FirstAlias
-from second import SharedAlias as SecondAlias
+from first import alias_is_recursive as first_alias_is_recursive
+from second import alias_is_recursive as second_alias_is_recursive
 
-print(FirstAlias is SecondAlias)
+print(first_alias_is_recursive())
+print(second_alias_is_recursive())

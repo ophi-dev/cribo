@@ -4,6 +4,6 @@ input_file: crates/cribo/tests/fixtures/conditional_named_expression_bindings/ma
 ---
 ExecutionResults {
     status: Success,
-    stdout: "if\ndefault default\nTrue\ndecorated\ncontext\nguard\ncomprehension ['comprehension']\nFalse",
+    stdout: "if\ndefault default\nTrue\ndecorated\ncontext\nguard\n0 ['for-target']\ncomprehension ['comprehension']\nFalse",
     stderr: "",
 }

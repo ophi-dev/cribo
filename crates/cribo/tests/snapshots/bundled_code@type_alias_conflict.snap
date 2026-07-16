@@ -29,11 +29,16 @@ class _Cribo():
         return _CriboModule(m, n)
 _cribo = _Cribo()
 first = _cribo.types.SimpleNamespace(__name__='first')
-type SharedAlias_2 = int
-first.SharedAlias = SharedAlias_2
+type SharedAlias_2 = list[SharedAlias_2]
+def alias_is_recursive_2():
+    return SharedAlias_2.__value__.__args__[0] is SharedAlias_2
+first.alias_is_recursive = alias_is_recursive_2
 second = _cribo.types.SimpleNamespace(__name__='second')
-type SharedAlias_1 = str
-second.SharedAlias = SharedAlias_1
-FirstAlias = first.SharedAlias
-SecondAlias = second.SharedAlias
-print(FirstAlias is SecondAlias)
+type SharedAlias_1 = list[SharedAlias_1]
+def alias_is_recursive_1():
+    return SharedAlias_1.__value__.__args__[0] is SharedAlias_1
+second.alias_is_recursive = alias_is_recursive_1
+first_alias_is_recursive = first.alias_is_recursive
+second_alias_is_recursive = second.alias_is_recursive
+print(first_alias_is_recursive())
+print(second_alias_is_recursive())
