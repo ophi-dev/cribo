@@ -633,9 +633,9 @@ impl ModuleResolver {
 
     /// Resolve a module to its file path using Python's resolution rules
     /// Per docs/resolution.md:
-    /// 1. Check for package (foo/__init__.py)
-    /// 2. Check for file module (foo.py)
-    /// 3. Check for namespace package (foo/ directory without __init__.py)
+    /// 1. Check for package initializer (foo/__init__.py or native equivalent)
+    /// 2. Check for file module (foo.py or native equivalent)
+    /// 3. Check for namespace package (foo/ directory without a package initializer)
     pub fn resolve_module_path(&self, module_name: &str) -> Result<Option<PathBuf>> {
         // For absolute imports, delegate to the context-aware version
         if !module_name.starts_with('.') {
@@ -839,24 +839,37 @@ impl ModuleResolver {
         // Process all parts except the last one
         for (i, part) in descriptor.name_parts.iter().enumerate() {
             let is_last = i == descriptor.name_parts.len() - 1;
+            let package_dir = current_path.join(part);
+            let package_init = package_dir.join(crate::python::constants::INIT_FILE);
 
             if is_last {
                 // For the last part, check in order:
                 // 1. Package (foo/__init__.py)
-                // 2. Module file (foo.py)
-                // 3. C extension (foo.so, foo.pyd, etc.)
-                // 4. Namespace package (foo/ directory)
+                // 2. Native extension package (foo/__init__.so, foo/__init__.pyd, etc.)
+                // 3. Module file (foo.py)
+                // 4. Native extension module (foo.so, foo.pyd, etc.)
+                // 5. Namespace package (foo/ directory)
 
                 // Check for package first
-                let package_init = current_path
-                    .join(part)
-                    .join(crate::python::constants::INIT_FILE);
                 if package_init.is_file() {
                     debug!("Found package at: {}", package_init.display());
                     let canonical = self.canonicalize_path(package_init);
                     return Some(ResolvedModule {
                         path: canonical,
                         source: ImportSource::Python,
+                    });
+                }
+
+                if let Some(extension_path) = self
+                    .find_native_extension_module(&package_dir, crate::python::constants::INIT_STEM)
+                {
+                    debug!(
+                        "Found native extension package at: {}",
+                        extension_path.display()
+                    );
+                    return Some(ResolvedModule {
+                        path: extension_path,
+                        source: ImportSource::NativeExtension,
                     });
                 }
 
@@ -884,11 +897,10 @@ impl ModuleResolver {
                 }
 
                 // Check for namespace package (directory without __init__.py)
-                let namespace_dir = current_path.join(part);
-                if crate::python::module_path::is_namespace_package_dir(&namespace_dir) {
-                    debug!("Found namespace package at: {}", namespace_dir.display());
+                if crate::python::module_path::is_namespace_package_dir(&package_dir) {
+                    debug!("Found namespace package at: {}", package_dir.display());
                     // Return the directory path to indicate this is a namespace package
-                    let canonical = self.canonicalize_path(namespace_dir);
+                    let canonical = self.canonicalize_path(package_dir);
                     return Some(ResolvedModule {
                         path: canonical,
                         source: ImportSource::NamespacePackage,
@@ -896,10 +908,15 @@ impl ModuleResolver {
                 }
             } else {
                 // For intermediate parts, they must be packages
-                let package_dir = current_path.join(part);
-                let package_init = package_dir.join(crate::python::constants::INIT_FILE);
-
                 if package_init.is_file() {
+                    current_path = package_dir;
+                } else if let Some(extension_path) = self
+                    .find_native_extension_module(&package_dir, crate::python::constants::INIT_STEM)
+                {
+                    debug!(
+                        "Found intermediate native extension package at: {}",
+                        extension_path.display()
+                    );
                     current_path = package_dir;
                 } else if crate::python::module_path::is_namespace_package_dir(&package_dir) {
                     // Namespace package - continue but don't add to resolved paths
@@ -1901,6 +1918,34 @@ mod tests {
                 .is_none(),
             "native extensions must not be sent to the Python parser"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_native_package_initializers_remain_external() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let root = temp_dir.path();
+        create_test_file(&root.join("native_parent/__init__.cpython-312-test.so"), "")?;
+        create_test_file(
+            &root.join("native_parent/native_child/__init__.cp312-win_amd64.pyd"),
+            "",
+        )?;
+
+        let resolver = ModuleResolver::new(Config {
+            src: vec![root.to_path_buf()],
+            ..Default::default()
+        });
+
+        for module_name in ["native_parent", "native_parent.native_child"] {
+            let classification = resolver.classify_import(module_name);
+            assert_eq!(classification.source, ImportSource::NativeExtension);
+            assert_eq!(classification.bundle, BundleDisposition::External);
+            assert!(
+                resolver.resolve_module_path(module_name)?.is_none(),
+                "native package initializers must not be sent to the Python parser"
+            );
+        }
 
         Ok(())
     }

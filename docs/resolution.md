@@ -63,11 +63,12 @@ Search path for imports in `main.py`:
 
 For each import (e.g., `import tada`), Cribo searches each directory in the search path:
 
-#### Step 1: Check for Package
+#### Step 1: Check for Package Initializer
 
 ```
-Look for: <search_dir>/tada/__init__.py
-If found: Load as package module
+Look for: <search_dir>/tada/__init__.py or __init__.<platform-extension>
+If Python source is found: Load as a package module
+If a native initializer is found: Preserve as an external import
 ```
 
 #### Step 2: Check for File Module
@@ -90,7 +91,7 @@ If found: Preserve as an external import
 ```
 Look for: <search_dir>/tada/ (directory)
 If found: Continue searching other paths
-Only use if no __init__.py version exists anywhere
+Only use if no Python or native package initializer exists anywhere
 ```
 
 **First match wins** - the search stops as soon as a module is found.
@@ -134,7 +135,8 @@ After locating a module, Cribo derives each classification fact independently:
 2. **Source kind**
    - `.py` files and package `__init__.py` files are Python source.
    - PEP 420 directories are namespace packages.
-   - Platform extension files such as `.so` and `.pyd` are native extensions.
+   - Platform extension files such as `.so` and `.pyd`, including native package initializers, are
+     native extensions.
 
 3. **Bundle disposition**
    - Python source and namespace packages found through bundle search paths are included unless
