@@ -937,10 +937,9 @@ impl ModuleResolver {
             }
         }
 
-        candidates.sort();
         candidates
             .into_iter()
-            .next()
+            .min()
             .map(|path| self.canonicalize_path(path))
     }
 

@@ -1323,11 +1323,12 @@ fn rewrite_import_with_renames(
             // Check if it's actually bundled
             if let Some(module_id) = bundler.get_module_id(module_name) {
                 if !bundler.bundled_modules.contains(&module_id) {
-                    // This is a FirstParty module that failed to resolve (e.g., due to shadowing)
+                    // This module was selected for bundling but failed to resolve (e.g., due to
+                    // shadowing)
                     // Transform it to raise ImportError
                     log::debug!(
-                        "Module '{module_name}' is FirstParty but not bundled - transforming to \
-                         raise ImportError"
+                        "Module '{module_name}' was selected for bundling but is not bundled - \
+                         transforming to raise ImportError"
                     );
                     // Create a statement that raises ImportError
                     let error_msg = format!(
@@ -1349,8 +1350,8 @@ fn rewrite_import_with_renames(
             } else {
                 // No module ID means it wasn't resolved at all
                 log::debug!(
-                    "Module '{module_name}' is FirstParty but has no module ID - transforming to \
-                     raise ImportError"
+                    "Module '{module_name}' was selected for bundling but has no module ID - \
+                     transforming to raise ImportError"
                 );
                 let parent = module_name.split('.').next().unwrap_or(module_name);
                 let error_msg =
