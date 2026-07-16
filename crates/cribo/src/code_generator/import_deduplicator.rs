@@ -242,6 +242,14 @@ pub(super) fn trim_unused_imports_from_modules(
                     module_name
                 );
                 for (item_id, import_item) in import_items {
+                    if import_item.containing_scope.is_some() {
+                        log::debug!(
+                            "Leaving scoped import {:?} to local unused-import analysis",
+                            import_item.containing_scope
+                        );
+                        continue;
+                    }
+
                     match &import_item.item_type {
                         crate::dependency_graph::ItemType::FromImport {
                             module: from_module,
