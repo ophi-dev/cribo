@@ -1101,24 +1101,26 @@ impl ModuleResolver {
         &self,
         virtualenv_override: Option<&str>,
     ) -> Vec<PathBuf> {
-        let configured_virtualenv = virtualenv_override.or(self.virtualenv_override.as_deref());
-        let virtualenv_paths = configured_virtualenv.map_or_else(
-            || {
-                std::env::var("VIRTUAL_ENV").ok().map_or_else(
-                    || self.detect_fallback_virtualenv_paths(),
-                    |virtualenv_path| Self::explicit_virtualenv_paths(&virtualenv_path),
-                )
-            },
-            Self::explicit_virtualenv_paths,
-        );
-
         let mut site_packages_dirs = IndexSet::new();
-        for virtualenv_path in virtualenv_paths {
+        for virtualenv_path in self.resolve_virtualenv_paths(virtualenv_override) {
             for directory in self.get_virtualenv_site_packages_directories(&virtualenv_path) {
                 site_packages_dirs.insert(self.canonicalize_path(directory));
             }
         }
         site_packages_dirs.into_iter().collect()
+    }
+
+    fn resolve_virtualenv_paths(&self, virtualenv_override: Option<&str>) -> Vec<PathBuf> {
+        if let Some(path) = virtualenv_override {
+            return Self::explicit_virtualenv_paths(path);
+        }
+        if let Some(path) = self.virtualenv_override.as_deref() {
+            return Self::explicit_virtualenv_paths(path);
+        }
+        if let Ok(path) = std::env::var("VIRTUAL_ENV") {
+            return Self::explicit_virtualenv_paths(&path);
+        }
+        self.detect_fallback_virtualenv_paths()
     }
 
     fn explicit_virtualenv_paths(virtualenv_path: &str) -> Vec<PathBuf> {
