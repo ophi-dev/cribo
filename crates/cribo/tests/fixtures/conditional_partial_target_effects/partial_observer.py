@@ -17,3 +17,19 @@ class FailingTarget:
             not hasattr(partial_source, "DELETED"),
         )
         raise RuntimeError
+
+
+class FailingUnpackTarget:
+    def __init__(self, expected_bindings):
+        object.__setattr__(self, "expected_bindings", expected_bindings)
+
+    def __setattr__(self, name, value):
+        object.__setattr__(
+            self,
+            "unpacking_visible",
+            all(
+                getattr(partial_source, binding) == expected
+                for binding, expected in self.expected_bindings
+            ),
+        )
+        raise RuntimeError

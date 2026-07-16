@@ -4,6 +4,6 @@ input_file: crates/cribo/tests/fixtures/conditional_partial_target_effects/main.
 ---
 ExecutionResults {
     status: Success,
-    stdout: "assigned\nTrue\nFalse\nTrue",
+    stdout: "assigned\nTrue\nFalse\nTrue\nfirst\nTrue\nouter inner\nTrue\nfirst ['middle']\nTrue",
     stderr: "",
 }

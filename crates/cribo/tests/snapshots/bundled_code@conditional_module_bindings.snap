@@ -46,9 +46,12 @@ def _cribo_init___cribo_8618fb_first(self):
         first.AUGMENTED_VALUE = AUGMENTED_VALUE
         AUGMENTED_VALUE += 1
         first.AUGMENTED_VALUE = AUGMENTED_VALUE
-        UNPACKED_LEFT, *UNPACKED_MIDDLE, UNPACKED_RIGHT = "left", "middle", "right"
+        _cribo_assignment_target_187_0, *_cribo_assignment_target_187_1, _cribo_assignment_target_187_2 = "left", "middle", "right"
+        UNPACKED_LEFT = _cribo_assignment_target_187_0
         first.UNPACKED_LEFT = UNPACKED_LEFT
+        UNPACKED_MIDDLE = _cribo_assignment_target_187_1
         first.UNPACKED_MIDDLE = UNPACKED_MIDDLE
+        UNPACKED_RIGHT = _cribo_assignment_target_187_2
         first.UNPACKED_RIGHT = UNPACKED_RIGHT
 
         def conditional_function():

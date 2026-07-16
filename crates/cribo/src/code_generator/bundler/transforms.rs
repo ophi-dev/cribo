@@ -150,6 +150,130 @@ impl Transformer for NamedExprSyncTransformer<'_> {
     }
 }
 
+/// Lowers conditional assignment targets so each successful name store is synchronized
+/// immediately, while preserving Python's unpacking and target evaluation order.
+struct ConditionalAssignmentLowerer<'a> {
+    module_name: &'a str,
+    module_scope_symbols: Option<&'a FxIndexSet<String>>,
+    reserved_names: FxIndexSet<String>,
+    temporary_name_prefix: String,
+    temporary_name_index: usize,
+    statements: Vec<Stmt>,
+}
+
+impl<'a> ConditionalAssignmentLowerer<'a> {
+    /// Create a lowerer with all existing module-scope names reserved.
+    fn new(
+        module_name: &'a str,
+        module_scope_symbols: Option<&'a FxIndexSet<String>>,
+        range: TextRange,
+    ) -> Self {
+        Self {
+            module_name,
+            module_scope_symbols,
+            reserved_names: module_scope_symbols.cloned().unwrap_or_default(),
+            temporary_name_prefix: format!("_cribo_assignment_target_{}", u32::from(range.start())),
+            temporary_name_index: 0,
+            statements: Vec::new(),
+        }
+    }
+
+    /// Return the lowered statements after all targets have been processed.
+    fn finish(self) -> Vec<Stmt> {
+        self.statements
+    }
+
+    /// Allocate a private temporary name that cannot shadow a module-scope binding.
+    fn next_temporary_name(&mut self) -> String {
+        let base_name = format!(
+            "{}_{}",
+            self.temporary_name_prefix, self.temporary_name_index
+        );
+        self.temporary_name_index += 1;
+        self.reserve_temporary_name(&base_name)
+    }
+
+    /// Reserve a specific temporary base name, adding a suffix when necessary.
+    fn reserve_temporary_name(&mut self, base_name: &str) -> String {
+        let name = generate_unique_name(base_name, &self.reserved_names);
+        self.reserved_names.insert(name.clone());
+        name
+    }
+
+    /// Store a value into one target, recursively lowering nested unpacking targets.
+    fn lower_store(&mut self, target: &Expr, value: Expr) {
+        match target {
+            Expr::Tuple(_) | Expr::List(_) => self.lower_unpack(target, value),
+            Expr::Starred(starred) => self.lower_store(&starred.value, value),
+            _ => {
+                self.statements
+                    .push(statements::assign(vec![target.clone()], value));
+                let names = crate::visitors::utils::collect_names_from_assignment_target(target)
+                    .into_iter()
+                    .map(str::to_owned);
+                self.statements
+                    .extend(Bundler::conditional_module_attr_assignments(
+                        self.module_name,
+                        self.module_scope_symbols,
+                        names,
+                    ));
+            }
+        }
+    }
+
+    /// Unpack into private temporaries before applying real target stores left to right.
+    fn lower_unpack(&mut self, target: &Expr, value: Expr) {
+        let elements = match target {
+            Expr::Tuple(tuple) => tuple.elts.clone(),
+            Expr::List(list) => list.elts.clone(),
+            _ => return,
+        };
+        let temporary_names: Vec<String> = elements
+            .iter()
+            .map(|_| self.next_temporary_name())
+            .collect();
+        let temporary_elements = elements
+            .iter()
+            .zip(&temporary_names)
+            .map(|(element, name)| match element {
+                Expr::Starred(starred) => {
+                    let mut temporary = starred.clone();
+                    temporary.value = Box::new(expressions::name(name, ExprContext::Store));
+                    Expr::Starred(temporary)
+                }
+                _ => expressions::name(name, ExprContext::Store),
+            })
+            .collect();
+        let temporary_target = match target {
+            Expr::Tuple(tuple) => {
+                let mut temporary = tuple.clone();
+                temporary.elts = temporary_elements;
+                Expr::Tuple(temporary)
+            }
+            Expr::List(list) => {
+                let mut temporary = list.clone();
+                temporary.elts = temporary_elements;
+                Expr::List(temporary)
+            }
+            _ => return,
+        };
+        self.statements
+            .push(statements::assign(vec![temporary_target], value));
+
+        for (element, temporary_name) in elements.iter().zip(&temporary_names) {
+            let store_target = if let Expr::Starred(starred) = element {
+                starred.value.as_ref()
+            } else {
+                element
+            };
+            self.lower_store(
+                store_target,
+                expressions::name(temporary_name, ExprContext::Load),
+            );
+        }
+    }
+}
+
 impl Bundler<'_> {
     /// Process module body recursively to handle conditional imports
     pub(crate) fn process_body_recursive(
@@ -395,34 +519,94 @@ impl Bundler<'_> {
         module_name: &str,
         module_scope_symbols: Option<&FxIndexSet<String>>,
     ) -> Vec<Stmt> {
-        let base_name = format!(
+        let mut lowerer =
+            ConditionalAssignmentLowerer::new(module_name, module_scope_symbols, assign.range);
+        let value_name = lowerer.reserve_temporary_name(&format!(
             "_cribo_assignment_value_{}",
             u32::from(assign.range.start())
-        );
-        let value_name = module_scope_symbols.map_or_else(
-            || base_name.clone(),
-            |symbols| generate_unique_name(&base_name, symbols),
-        );
-        let mut result = vec![statements::simple_assign(
+        ));
+        lowerer.statements.push(statements::simple_assign(
             &value_name,
             assign.value.as_ref().clone(),
-        )];
+        ));
 
         for target in &assign.targets {
-            result.push(statements::assign(
-                vec![target.clone()],
-                expressions::name(&value_name, ExprContext::Load),
-            ));
-            let names = crate::visitors::utils::collect_names_from_assignment_target(target)
-                .into_iter()
-                .map(str::to_owned);
-            result.extend(Self::conditional_module_attr_assignments(
-                module_name,
-                module_scope_symbols,
-                names,
-            ));
+            lowerer.lower_store(target, expressions::name(&value_name, ExprContext::Load));
         }
 
+        lowerer.finish()
+    }
+
+    /// Preserve partial effects while lowering a single destructuring assignment target.
+    fn conditional_destructuring_assignment(
+        assign: &ruff_python_ast::StmtAssign,
+        module_name: &str,
+        module_scope_symbols: Option<&FxIndexSet<String>>,
+    ) -> Vec<Stmt> {
+        let mut lowerer =
+            ConditionalAssignmentLowerer::new(module_name, module_scope_symbols, assign.range);
+        if let Some(target) = assign.targets.first() {
+            lowerer.lower_store(target, assign.value.as_ref().clone());
+        }
+        lowerer.finish()
+    }
+
+    /// Process one assignment, lowering conditional targets when partial stores are observable.
+    fn process_assignment_statement(
+        assign: &ruff_python_ast::StmtAssign,
+        body: &[Stmt],
+        index: usize,
+        module_name: &str,
+        module_scope_symbols: Option<&FxIndexSet<String>>,
+        in_conditional_context: bool,
+    ) -> Vec<Stmt> {
+        if in_conditional_context && assign.targets.len() > 1 {
+            return Self::conditional_chained_assignment(assign, module_name, module_scope_symbols);
+        }
+        if in_conditional_context
+            && assign
+                .targets
+                .first()
+                .is_some_and(|target| matches!(target, Expr::Tuple(_) | Expr::List(_)))
+        {
+            return Self::conditional_destructuring_assignment(
+                assign,
+                module_name,
+                module_scope_symbols,
+            );
+        }
+
+        let mut result = vec![Stmt::Assign(assign.clone())];
+        if !in_conditional_context {
+            return result;
+        }
+
+        let module_var = sanitize_module_name_for_identifier(module_name);
+        let immediately_following_syncs: FxIndexSet<&str> = body[index + 1..]
+            .iter()
+            .map_while(|stmt| {
+                module_attr_sync_name(stmt, &module_var).or_else(|| {
+                    module_attr_sync_name(
+                        stmt,
+                        crate::code_generator::module_transformer::SELF_PARAM,
+                    )
+                })
+            })
+            .collect();
+        let names = assign
+            .targets
+            .iter()
+            .flat_map(|target| {
+                crate::visitors::utils::collect_names_from_assignment_target(target)
+                    .into_iter()
+                    .map(str::to_owned)
+            })
+            .filter(|name| !immediately_following_syncs.contains(name.as_str()));
+        result.extend(Self::conditional_module_attr_assignments(
+            module_name,
+            module_scope_symbols,
+            names,
+        ));
         result
     }
 
@@ -780,47 +964,14 @@ impl Bundler<'_> {
                     ));
                 }
                 Stmt::Assign(assign) => {
-                    if in_conditional_context && assign.targets.len() > 1 {
-                        result.extend(Self::conditional_chained_assignment(
-                            assign,
-                            module_name,
-                            module_scope_symbols,
-                        ));
-                        continue;
-                    }
-
-                    // Add the assignment itself
-                    result.push(stmt.clone());
-
-                    // Check if this assignment should create a module attribute when in conditional
-                    // context
-                    if in_conditional_context {
-                        let immediately_following_syncs: FxIndexSet<&str> = body[index + 1..]
-                            .iter()
-                            .map_while(|stmt| {
-                                module_attr_sync_name(stmt, &module_var).or_else(|| {
-                                    module_attr_sync_name(
-                                        stmt,
-                                        crate::code_generator::module_transformer::SELF_PARAM,
-                                    )
-                                })
-                            })
-                            .collect();
-                        let names = assign
-                            .targets
-                            .iter()
-                            .flat_map(|target| {
-                                crate::visitors::utils::collect_names_from_assignment_target(target)
-                                    .into_iter()
-                                    .map(str::to_owned)
-                            })
-                            .filter(|name| !immediately_following_syncs.contains(name.as_str()));
-                        result.extend(Self::conditional_module_attr_assignments(
-                            module_name,
-                            module_scope_symbols,
-                            names,
-                        ));
-                    }
+                    result.extend(Self::process_assignment_statement(
+                        assign,
+                        body,
+                        index,
+                        module_name,
+                        module_scope_symbols,
+                        in_conditional_context,
+                    ));
                 }
                 Stmt::AnnAssign(assign) => {
                     result.push(stmt.clone());
@@ -854,18 +1005,16 @@ impl Bundler<'_> {
                 }
                 Stmt::TypeAlias(type_alias) => {
                     result.push(stmt.clone());
-                    if in_conditional_context {
-                        let names = crate::visitors::utils::collect_names_from_assignment_target(
-                            &type_alias.name,
-                        )
-                        .into_iter()
-                        .map(str::to_owned);
-                        result.extend(Self::conditional_module_attr_assignments(
-                            module_name,
-                            module_scope_symbols,
-                            names,
-                        ));
-                    }
+                    let names = crate::visitors::utils::collect_names_from_assignment_target(
+                        &type_alias.name,
+                    )
+                    .into_iter()
+                    .map(str::to_owned);
+                    result.extend(Self::conditional_module_attr_assignments(
+                        module_name,
+                        module_scope_symbols,
+                        names,
+                    ));
                 }
                 Stmt::FunctionDef(function) => {
                     result.push(stmt.clone());
