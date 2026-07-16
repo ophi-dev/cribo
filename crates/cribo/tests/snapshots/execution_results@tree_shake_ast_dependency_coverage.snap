@@ -1,0 +1,9 @@
+---
+source: crates/cribo/tests/test_bundling_snapshots.rs
+input_file: crates/cribo/tests/fixtures/tree_shake_ast_dependency_coverage/main.py
+---
+ExecutionResults {
+    status: Success,
+    stdout: "named|named|lambda|await|yield|yield-from|starred|slice|annotated|class-annotation-nested-annotations|base-augmented|keep|str",
+    stderr: "",
+}

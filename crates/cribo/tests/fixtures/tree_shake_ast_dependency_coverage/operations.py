@@ -1,0 +1,131 @@
+async def await_value() -> str:
+    return "await"
+
+
+def named_value() -> str:
+    return "named"
+
+
+def lambda_value() -> str:
+    return "lambda"
+
+
+def yield_value() -> str:
+    return "yield"
+
+
+def yield_from_values() -> list[str]:
+    return ["yield-from"]
+
+
+def starred_values() -> list[str]:
+    return ["starred"]
+
+
+def sequence_values() -> list[str]:
+    return ["before", "slice", "after"]
+
+
+def slice_lower() -> int:
+    return 1
+
+
+def slice_upper() -> int:
+    return 2
+
+
+def slice_step() -> int:
+    return 1
+
+
+def annotated_value() -> str:
+    return "annotated"
+
+
+def function_local_annotation():
+    return "unused-function-annotation"
+
+
+def method_local_annotation():
+    return "unused-method-annotation"
+
+
+def class_annotation_value() -> str:
+    return "class-annotation"
+
+
+def nested_function_annotation():
+    return str
+
+
+def nested_method_annotation():
+    return str
+
+
+def annotation_scope_value() -> str:
+    local: function_local_annotation
+
+    def nested(value: nested_function_annotation()) -> str:
+        return value
+
+    class Annotated:
+        retained: class_annotation_value
+
+        def read(self, value: nested_method_annotation()) -> str:
+            local: method_local_annotation
+            return f"{self.__annotations__['retained']()}-{value}"
+
+    return Annotated().read(nested("nested-annotations"))
+
+
+def augmented_value() -> str:
+    return "-augmented"
+
+
+def delete_index() -> int:
+    return 0
+
+
+def type_alias_value():
+    return str
+
+
+def generated_value():
+    yield yield_value()
+
+
+def delegated_values():
+    yield from yield_from_values()
+
+
+async def exercise() -> str:
+    named = (result := named_value())
+    callback = lambda: lambda_value()
+    awaited = await await_value()
+    starred = [*starred_values()]
+    sliced = sequence_values()[slice_lower() : slice_upper() : slice_step()]
+    annotated: str = annotated_value()
+    augmented = "base"
+    augmented += augmented_value()
+    deleted = ["remove", "keep"]
+    del deleted[delete_index()]
+    generated = list(generated_value())
+    delegated = list(delegated_values())
+    type RuntimeAlias = type_alias_value()
+
+    values = [
+        named,
+        result,
+        callback(),
+        awaited,
+        *generated,
+        *delegated,
+        *starred,
+        *sliced,
+        annotated,
+        annotation_scope_value(),
+        augmented,
+        *deleted,
+        RuntimeAlias.__value__.__name__,
+    ]
+    return "|".join(values)
