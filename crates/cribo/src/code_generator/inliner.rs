@@ -330,6 +330,20 @@ impl Bundler<'_> {
         // Statements are accumulated in ctx.inlined_stmts
     }
 
+    /// Return aliases visible in a type-alias body after its type parameters shadow outer names.
+    fn type_alias_visible_aliases(
+        type_alias: &StmtTypeAlias,
+        aliases: &FxIndexMap<String, String>,
+    ) -> FxIndexMap<String, String> {
+        let mut visible_aliases = aliases.clone();
+        if let Some(type_params) = &type_alias.type_params {
+            for type_param in type_params.as_ref() {
+                visible_aliases.shift_remove(type_param.name().as_str());
+            }
+        }
+        visible_aliases
+    }
+
     /// Inline a type alias definition, applying semantic conflict renames to its binding.
     fn inline_type_alias(
         &self,
@@ -356,15 +370,20 @@ impl Bundler<'_> {
         if let Expr::Name(name) = type_alias_clone.name.as_mut() {
             name.id = renamed_name.into();
         }
+        let import_aliases =
+            Self::type_alias_visible_aliases(&type_alias_clone, &ctx.import_aliases);
         expression_handlers::resolve_import_aliases_in_expr(
             &mut type_alias_clone.value,
-            &ctx.import_aliases,
+            &import_aliases,
         );
-        expression_handlers::rewrite_aliases_in_expr(&mut type_alias_clone.value, module_renames);
+        let local_renames = Self::type_alias_visible_aliases(&type_alias_clone, module_renames);
+        expression_handlers::rewrite_aliases_in_expr(&mut type_alias_clone.value, &local_renames);
         if let Some(semantic_renames) = ctx.module_renames.get(&module_id) {
+            let semantic_renames =
+                Self::type_alias_visible_aliases(&type_alias_clone, semantic_renames);
             expression_handlers::rewrite_aliases_in_expr(
                 &mut type_alias_clone.value,
-                semantic_renames,
+                &semantic_renames,
             );
         }
         ctx.inlined_stmts.push(Stmt::TypeAlias(type_alias_clone));
