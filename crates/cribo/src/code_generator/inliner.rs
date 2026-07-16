@@ -345,6 +345,9 @@ impl Bundler<'_> {
         };
 
         let alias_name = name.id.to_string();
+        if !self.should_inline_symbol(&alias_name, module_id, ctx.module_exports_map) {
+            return;
+        }
         let renamed_name = self.resolve_renamed_name(&alias_name, module_name, ctx);
         module_renames.insert(alias_name, renamed_name.clone());
         ctx.global_symbols.insert(renamed_name.clone());

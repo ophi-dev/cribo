@@ -57,8 +57,8 @@ def _cribo_init___cribo_8618fb_first(self):
 
         class ConditionalClass:
             VALUE = CONDITIONAL_VALUE
-        ConditionalClass.__module__ = 'first'
         first.ConditionalClass = ConditionalClass
+        ConditionalClass.__module__ = 'first'
     for LOOP_VALUE in ("loop",):
         first.LOOP_VALUE = LOOP_VALUE
         pass

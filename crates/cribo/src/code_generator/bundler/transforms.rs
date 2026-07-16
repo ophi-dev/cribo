@@ -9,7 +9,10 @@ use ruff_text_size::TextRange;
 use super::Bundler;
 use crate::{
     ast_builder::{expressions, other, statements},
-    code_generator::{expression_handlers, module_registry::sanitize_module_name_for_identifier},
+    code_generator::{
+        expression_handlers,
+        module_registry::{generate_unique_name, sanitize_module_name_for_identifier},
+    },
     types::{FxIndexMap, FxIndexSet},
     visitors::LocalVarCollector,
 };
@@ -383,6 +386,86 @@ impl Bundler<'_> {
         statements::if_stmt(exists, vec![delete], vec![])
     }
 
+    /// Preserve target-by-target effects for chained assignments before synchronizing each name.
+    fn conditional_chained_assignment(
+        assign: &ruff_python_ast::StmtAssign,
+        module_name: &str,
+        module_scope_symbols: Option<&FxIndexSet<String>>,
+    ) -> Vec<Stmt> {
+        let base_name = format!(
+            "_cribo_assignment_value_{}",
+            u32::from(assign.range.start())
+        );
+        let value_name = module_scope_symbols.map_or_else(
+            || base_name.clone(),
+            |symbols| generate_unique_name(&base_name, symbols),
+        );
+        let mut result = vec![statements::simple_assign(
+            &value_name,
+            assign.value.as_ref().clone(),
+        )];
+
+        for target in &assign.targets {
+            result.push(statements::assign(
+                vec![target.clone()],
+                expressions::name(&value_name, ExprContext::Load),
+            ));
+            let names = crate::visitors::utils::collect_names_from_assignment_target(target)
+                .into_iter()
+                .map(str::to_owned);
+            result.extend(Self::conditional_module_attr_assignments(
+                module_name,
+                module_scope_symbols,
+                names,
+            ));
+        }
+
+        result
+    }
+
+    /// Flatten grouped delete targets in their left-to-right execution order.
+    fn flatten_delete_targets(target: &Expr, targets: &mut Vec<Expr>) {
+        match target {
+            Expr::Tuple(tuple) => {
+                for element in &tuple.elts {
+                    Self::flatten_delete_targets(element, targets);
+                }
+            }
+            Expr::List(list) => {
+                for element in &list.elts {
+                    Self::flatten_delete_targets(element, targets);
+                }
+            }
+            Expr::Starred(starred) => Self::flatten_delete_targets(&starred.value, targets),
+            _ => targets.push(target.clone()),
+        }
+    }
+
+    /// Delete grouped targets one at a time and immediately remove synchronized names.
+    fn conditional_delete_statements(
+        delete: &ruff_python_ast::StmtDelete,
+        module_name: &str,
+        module_scope_symbols: Option<&FxIndexSet<String>>,
+    ) -> Vec<Stmt> {
+        let mut targets = Vec::new();
+        for target in &delete.targets {
+            Self::flatten_delete_targets(target, &mut targets);
+        }
+
+        let mut result = Vec::new();
+        for target in targets {
+            let mut delete = delete.clone();
+            delete.targets = vec![target.clone()];
+            result.push(Stmt::Delete(delete));
+            for name in crate::visitors::utils::collect_names_from_assignment_target(&target) {
+                if Self::should_sync_conditional_module_attr(name, module_scope_symbols) {
+                    result.push(Self::conditional_module_attr_delete(module_name, name));
+                }
+            }
+        }
+        result
+    }
+
     /// Process an exception handler and expose its target only for the handler's lifetime.
     fn process_except_handler(
         &self,
@@ -687,21 +770,22 @@ impl Bundler<'_> {
                     }
                 }
                 Stmt::Delete(delete) => {
-                    result.push(stmt.clone());
-                    let names: FxIndexSet<&str> = delete
-                        .targets
-                        .iter()
-                        .flat_map(|target| {
-                            crate::visitors::utils::collect_names_from_assignment_target(target)
-                        })
-                        .collect();
-                    for name in names {
-                        if Self::should_sync_conditional_module_attr(name, module_scope_symbols) {
-                            result.push(Self::conditional_module_attr_delete(module_name, name));
-                        }
-                    }
+                    result.extend(Self::conditional_delete_statements(
+                        delete,
+                        module_name,
+                        module_scope_symbols,
+                    ));
                 }
                 Stmt::Assign(assign) => {
+                    if in_conditional_context && assign.targets.len() > 1 {
+                        result.extend(Self::conditional_chained_assignment(
+                            assign,
+                            module_name,
+                            module_scope_symbols,
+                        ));
+                        continue;
+                    }
+
                     // Add the assignment itself
                     result.push(stmt.clone());
 
@@ -793,15 +877,15 @@ impl Bundler<'_> {
                 Stmt::ClassDef(class) => {
                     result.push(stmt.clone());
                     if in_conditional_context {
-                        result.push(statements::assign_attribute(
-                            class.name.as_str(),
-                            "__module__",
-                            expressions::string_literal(module_name),
-                        ));
                         result.extend(Self::conditional_module_attr_assignments(
                             module_name,
                             module_scope_symbols,
                             [class.name.to_string()],
+                        ));
+                        result.push(statements::assign_attribute(
+                            class.name.as_str(),
+                            "__module__",
+                            expressions::string_literal(module_name),
                         ));
                     }
                 }

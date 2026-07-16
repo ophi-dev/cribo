@@ -1,4 +1,5 @@
 type SharedAlias = list[SharedAlias]
+type _PrivateAlias = tuple[SharedAlias]
 
 
 def alias_is_recursive():
