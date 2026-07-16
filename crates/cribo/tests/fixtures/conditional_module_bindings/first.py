@@ -3,6 +3,7 @@ from contextlib import nullcontext
 if __name__ != "__main__":
     CONDITIONAL_VALUE = "first"
     _PRIVATE_CONDITIONAL_VALUE = "private"
+    assert _PRIVATE_CONDITIONAL_VALUE == "private"
     ANNOTATED_VALUE: str = "annotated"
     AUGMENTED_VALUE = 1
     AUGMENTED_VALUE += 1

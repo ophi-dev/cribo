@@ -999,7 +999,8 @@ impl<'a> GraphBuilder<'a> {
                 }
             }
             for name in type_param_names {
-                eventual_read_vars.swap_remove(&name);
+                eventual_read_vars.shift_remove(&name);
+                attribute_accesses.shift_remove(&name);
             }
         }
 
@@ -1590,5 +1591,32 @@ impl<'a> GraphBuilder<'a> {
         {
             self.collect_vars_in_expr(annotation, vars);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ruff_python_parser::parse_module;
+
+    use super::*;
+    use crate::resolver::ModuleId;
+
+    #[test]
+    fn type_parameter_attributes_do_not_create_module_dependencies() {
+        let ast = parse_module("type Alias[T] = T.member")
+            .expect("Type alias should parse")
+            .into_syntax();
+        let mut graph = ModuleDepGraph::new(ModuleId::ENTRY, "module".to_owned());
+        GraphBuilder::new(&mut graph, 13)
+            .build_from_ast(&ast)
+            .expect("Dependency graph should build");
+
+        let alias = graph
+            .items
+            .values()
+            .find(|item| item.var_decls.contains("Alias"))
+            .expect("Type alias item should exist");
+        assert!(!alias.eventual_read_vars.contains("T"));
+        assert!(!alias.attribute_accesses.contains_key("T"));
     }
 }

@@ -4,6 +4,6 @@ input_file: crates/cribo/tests/fixtures/type_alias_conflict/main.py
 ---
 ExecutionResults {
     status: Success,
-    stdout: "True\nTrue\nTrue\nTrue",
+    stdout: "True\nTrue\nTrue\nTrue\nTrue\nTrue",
     stderr: "",
 }

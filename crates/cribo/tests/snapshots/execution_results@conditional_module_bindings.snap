@@ -4,6 +4,6 @@ input_file: crates/cribo/tests/fixtures/conditional_module_bindings/main.py
 ---
 ExecutionResults {
     status: Success,
-    stdout: "first\nprivate\nprivate\nsecond\nfirst\nsecond\nfirst\nfirst\nannotated\n2\nleft ['middle'] right\nloop\nFalse\nwith ['rest']\nmatched {'rest': 'captured'}",
+    stdout: "first\nprivate\nprivate\nsecond\nupdated\nsecond\nfirst\nfirst\nannotated\n2\nleft ['middle'] right\nloop\nFalse\nwith ['rest']\nmatched {'rest': 'captured'}",
     stderr: "",
 }

@@ -4,6 +4,6 @@ input_file: crates/cribo/tests/fixtures/conditional_loop_reentrant_visibility/ma
 ---
 ExecutionResults {
     status: Success,
-    stdout: "loop\nTrue",
+    stdout: "loop\nTrue\npartial",
     stderr: "",
 }

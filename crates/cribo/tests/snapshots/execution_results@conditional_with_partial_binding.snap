@@ -4,6 +4,6 @@ input_file: crates/cribo/tests/fixtures/conditional_with_partial_binding/main.py
 ---
 ExecutionResults {
     status: Success,
-    stdout: "with",
+    stdout: "with\npartial",
     stderr: "",
 }

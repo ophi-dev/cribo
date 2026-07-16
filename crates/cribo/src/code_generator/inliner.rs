@@ -6,7 +6,9 @@
 use std::path::Path;
 
 use log::debug;
-use ruff_python_ast::{Expr, Identifier, ModModule, Stmt, StmtAssign, StmtClassDef, StmtTypeAlias};
+use ruff_python_ast::{
+    Expr, Identifier, ModModule, Stmt, StmtAssign, StmtClassDef, StmtTypeAlias, TypeParam,
+};
 use ruff_text_size::TextRange;
 
 use super::{
@@ -344,6 +346,20 @@ impl Bundler<'_> {
         visible_aliases
     }
 
+    /// Apply the type-alias rename pipeline to one lazily evaluated expression.
+    fn rewrite_type_alias_expr(
+        expr: &mut Expr,
+        import_aliases: &FxIndexMap<String, String>,
+        local_renames: &FxIndexMap<String, String>,
+        semantic_renames: Option<&FxIndexMap<String, String>>,
+    ) {
+        expression_handlers::resolve_import_aliases_in_expr(expr, import_aliases);
+        expression_handlers::rewrite_aliases_in_expr(expr, local_renames);
+        if let Some(semantic_renames) = semantic_renames {
+            expression_handlers::rewrite_aliases_in_expr(expr, semantic_renames);
+        }
+    }
+
     /// Inline a type alias definition, applying semantic conflict renames to its binding.
     fn inline_type_alias(
         &self,
@@ -372,19 +388,59 @@ impl Bundler<'_> {
         }
         let import_aliases =
             Self::type_alias_visible_aliases(&type_alias_clone, &ctx.import_aliases);
-        expression_handlers::resolve_import_aliases_in_expr(
+        let local_renames = Self::type_alias_visible_aliases(&type_alias_clone, module_renames);
+        let semantic_renames = ctx
+            .module_renames
+            .get(&module_id)
+            .map(|renames| Self::type_alias_visible_aliases(&type_alias_clone, renames));
+
+        Self::rewrite_type_alias_expr(
             &mut type_alias_clone.value,
             &import_aliases,
+            &local_renames,
+            semantic_renames.as_ref(),
         );
-        let local_renames = Self::type_alias_visible_aliases(&type_alias_clone, module_renames);
-        expression_handlers::rewrite_aliases_in_expr(&mut type_alias_clone.value, &local_renames);
-        if let Some(semantic_renames) = ctx.module_renames.get(&module_id) {
-            let semantic_renames =
-                Self::type_alias_visible_aliases(&type_alias_clone, semantic_renames);
-            expression_handlers::rewrite_aliases_in_expr(
-                &mut type_alias_clone.value,
-                &semantic_renames,
-            );
+        if let Some(type_params) = &mut type_alias_clone.type_params {
+            for type_param in &mut type_params.type_params {
+                match type_param {
+                    TypeParam::TypeVar(type_var) => {
+                        for expr in [
+                            type_var.bound.as_deref_mut(),
+                            type_var.default.as_deref_mut(),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        {
+                            Self::rewrite_type_alias_expr(
+                                expr,
+                                &import_aliases,
+                                &local_renames,
+                                semantic_renames.as_ref(),
+                            );
+                        }
+                    }
+                    TypeParam::TypeVarTuple(type_var_tuple) => {
+                        if let Some(default) = type_var_tuple.default.as_deref_mut() {
+                            Self::rewrite_type_alias_expr(
+                                default,
+                                &import_aliases,
+                                &local_renames,
+                                semantic_renames.as_ref(),
+                            );
+                        }
+                    }
+                    TypeParam::ParamSpec(param_spec) => {
+                        if let Some(default) = param_spec.default.as_deref_mut() {
+                            Self::rewrite_type_alias_expr(
+                                default,
+                                &import_aliases,
+                                &local_renames,
+                                semantic_renames.as_ref(),
+                            );
+                        }
+                    }
+                }
+            }
         }
         ctx.inlined_stmts.push(Stmt::TypeAlias(type_alias_clone));
     }

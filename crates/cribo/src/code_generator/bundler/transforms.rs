@@ -602,6 +602,52 @@ impl Bundler<'_> {
         lowerer.finish()
     }
 
+    /// Replace a compound target with a generated name and lower its stores into body statements.
+    fn lower_conditional_compound_target(
+        target: &Expr,
+        module_name: &str,
+        module_scope_symbols: Option<&FxIndexSet<String>>,
+        range: TextRange,
+        value_name_base: &str,
+    ) -> (Expr, Vec<Stmt>) {
+        let mut lowerer =
+            ConditionalAssignmentLowerer::new(module_name, module_scope_symbols, range);
+        let value_name = lowerer.reserve_temporary_name(value_name_base);
+        lowerer.lower_store(target, expressions::name(&value_name, ExprContext::Load));
+        (
+            expressions::name(&value_name, ExprContext::Store),
+            lowerer.finish(),
+        )
+    }
+
+    /// Remove generated target syncs from the leading synchronization run of a loop body.
+    fn remove_leading_target_syncs(
+        body: &[Stmt],
+        module_var: &str,
+        target_names: &FxIndexSet<String>,
+    ) -> Vec<Stmt> {
+        let mut in_leading_syncs = true;
+        let mut result = Vec::with_capacity(body.len());
+        for stmt in body {
+            if in_leading_syncs {
+                if let Some(name) = module_attr_sync_name(stmt, module_var).or_else(|| {
+                    module_attr_sync_name(
+                        stmt,
+                        crate::code_generator::module_transformer::SELF_PARAM,
+                    )
+                }) {
+                    if target_names.contains(name) {
+                        continue;
+                    }
+                } else {
+                    in_leading_syncs = false;
+                }
+            }
+            result.push(stmt.clone());
+        }
+        result
+    }
+
     /// Process one assignment, lowering conditional targets when partial stores are observable.
     fn process_assignment_statement(
         assign: &ruff_python_ast::StmtAssign,
@@ -743,6 +789,84 @@ impl Bundler<'_> {
         })
     }
 
+    /// Process a loop target and recursively transform its body and `else` suite.
+    fn process_for_statement(
+        &self,
+        for_stmt: &ruff_python_ast::StmtFor,
+        module_name: &str,
+        module_scope_symbols: Option<&FxIndexSet<String>>,
+    ) -> Stmt {
+        let module_var = sanitize_module_name_for_identifier(module_name);
+        let leading_syncs: FxIndexSet<&str> = for_stmt
+            .body
+            .iter()
+            .map_while(|stmt| {
+                module_attr_sync_name(stmt, &module_var).or_else(|| {
+                    module_attr_sync_name(
+                        stmt,
+                        crate::code_generator::module_transformer::SELF_PARAM,
+                    )
+                })
+            })
+            .collect();
+        let target_names: FxIndexSet<String> =
+            crate::visitors::utils::collect_names_from_assignment_target(&for_stmt.target)
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
+        let (target, mut processed_body, body) =
+            if matches!(&*for_stmt.target, Expr::Tuple(_) | Expr::List(_)) {
+                let value_name = format!("_cribo_for_target_{}", u32::from(for_stmt.range.start()));
+                let (target, lowered_stores) = Self::lower_conditional_compound_target(
+                    &for_stmt.target,
+                    module_name,
+                    module_scope_symbols,
+                    for_stmt.range,
+                    &value_name,
+                );
+                (
+                    target,
+                    lowered_stores,
+                    Self::remove_leading_target_syncs(&for_stmt.body, &module_var, &target_names),
+                )
+            } else {
+                let names = target_names
+                    .iter()
+                    .filter(|name| !leading_syncs.contains(name.as_str()))
+                    .cloned();
+                (
+                    for_stmt.target.as_ref().clone(),
+                    Self::conditional_module_attr_assignments(
+                        module_name,
+                        module_scope_symbols,
+                        names,
+                    ),
+                    for_stmt.body.to_vec(),
+                )
+            };
+        processed_body.extend(self.process_body_recursive_impl(
+            &body,
+            module_name,
+            module_scope_symbols,
+            true,
+        ));
+        let processed_orelse = self.process_body_recursive_impl(
+            &for_stmt.orelse,
+            module_name,
+            module_scope_symbols,
+            true,
+        );
+        Stmt::For(ruff_python_ast::StmtFor {
+            node_index: for_stmt.node_index.clone(),
+            target: Box::new(target),
+            iter: for_stmt.iter.clone(),
+            body: processed_body.into(),
+            orelse: processed_orelse.into(),
+            is_async: for_stmt.is_async,
+            range: for_stmt.range,
+        })
+    }
+
     /// Implementation of `process_body_recursive` with conditional context tracking
     fn process_body_recursive_impl(
         &self,
@@ -752,7 +876,6 @@ impl Bundler<'_> {
         in_conditional_context: bool,
     ) -> Vec<Stmt> {
         let mut result = Vec::new();
-        let module_var = sanitize_module_name_for_identifier(module_name);
 
         for index in 0..body.len() {
             let mut stmt = body[index].clone();
@@ -1088,51 +1211,11 @@ impl Bundler<'_> {
                     }
                 }
                 Stmt::For(for_stmt) => {
-                    let leading_syncs: FxIndexSet<&str> = for_stmt
-                        .body
-                        .iter()
-                        .map_while(|stmt| {
-                            module_attr_sync_name(stmt, &module_var).or_else(|| {
-                                module_attr_sync_name(
-                                    stmt,
-                                    crate::code_generator::module_transformer::SELF_PARAM,
-                                )
-                            })
-                        })
-                        .collect();
-                    let names = crate::visitors::utils::collect_names_from_assignment_target(
-                        &for_stmt.target,
-                    )
-                    .into_iter()
-                    .map(str::to_owned)
-                    .filter(|name| !leading_syncs.contains(name.as_str()));
-                    let module_attr_assignments = Self::conditional_module_attr_assignments(
+                    result.push(self.process_for_statement(
+                        for_stmt,
                         module_name,
                         module_scope_symbols,
-                        names,
-                    );
-                    let mut processed_body = module_attr_assignments;
-                    processed_body.extend(self.process_body_recursive_impl(
-                        &for_stmt.body,
-                        module_name,
-                        module_scope_symbols,
-                        true,
                     ));
-                    let processed_orelse = self.process_body_recursive_impl(
-                        &for_stmt.orelse,
-                        module_name,
-                        module_scope_symbols,
-                        true,
-                    );
-                    result.push(Stmt::For(ruff_python_ast::StmtFor {
-                        node_index: for_stmt.node_index.clone(),
-                        target: for_stmt.target.clone(),
-                        iter: for_stmt.iter.clone(),
-                        body: processed_body.into(),
-                        orelse: processed_orelse.into(),
-                        is_async: for_stmt.is_async,
-                        range: for_stmt.range,
-                    }));
                 }
                 Stmt::While(while_stmt) => {
                     let processed_body = self.process_body_recursive_impl(
@@ -1164,17 +1247,39 @@ impl Bundler<'_> {
                     );
 
                     for (index, item) in with_stmt.items.iter().enumerate().rev() {
-                        let names = item
-                            .optional_vars
-                            .as_deref()
-                            .into_iter()
-                            .flat_map(crate::visitors::utils::collect_names_from_assignment_target)
-                            .map(str::to_owned);
-                        let mut item_body = Self::conditional_module_attr_assignments(
-                            module_name,
-                            module_scope_symbols,
-                            names,
-                        );
+                        let mut item = item.clone();
+                        let mut item_body = if let Some(target) = item.optional_vars.as_deref()
+                            && matches!(target, Expr::Tuple(_) | Expr::List(_))
+                        {
+                            let value_name = format!(
+                                "_cribo_with_target_{}_{}",
+                                u32::from(with_stmt.range.start()),
+                                index
+                            );
+                            let (target, lowered_stores) = Self::lower_conditional_compound_target(
+                                target,
+                                module_name,
+                                module_scope_symbols,
+                                with_stmt.range,
+                                &value_name,
+                            );
+                            item.optional_vars = Some(Box::new(target));
+                            lowered_stores
+                        } else {
+                            let names = item
+                                .optional_vars
+                                .as_deref()
+                                .into_iter()
+                                .flat_map(
+                                    crate::visitors::utils::collect_names_from_assignment_target,
+                                )
+                                .map(str::to_owned);
+                            Self::conditional_module_attr_assignments(
+                                module_name,
+                                module_scope_symbols,
+                                names,
+                            )
+                        };
                         item_body.extend(nested_body);
                         nested_body = vec![Stmt::With(ruff_python_ast::StmtWith {
                             node_index: if index == 0 {
@@ -1182,7 +1287,7 @@ impl Bundler<'_> {
                             } else {
                                 ruff_python_ast::AtomicNodeIndex::NONE
                             },
-                            items: vec![item.clone()],
+                            items: vec![item],
                             body: item_body.into(),
                             is_async: with_stmt.is_async,
                             range: with_stmt.range,

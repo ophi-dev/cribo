@@ -29,7 +29,7 @@ class _Cribo():
         return _CriboModule(m, n)
 _cribo = _Cribo()
 with_source = _cribo.types.SimpleNamespace(__name__='with_source', __initializing__=False, __initialized__=False)
-def _cribo_init___cribo_bfcd0d_with_source(self):
+def _cribo_init___cribo_e1cf19_with_source(self):
     if getattr(self, '__initialized__', False):
         return self
     if getattr(self, '__initializing__', False):
@@ -55,6 +55,23 @@ def _cribo_init___cribo_bfcd0d_with_source(self):
             return False
     FailingContext.__module__ = 'with_source'
     self.FailingContext = FailingContext
+
+    class CompoundContext:
+
+        def __enter__(self):
+            return "partial", "failure"
+
+        def __exit__(self, _exc_type, _exc_value, _traceback):
+            return False
+    CompoundContext.__module__ = 'with_source'
+    self.CompoundContext = CompoundContext
+
+    class FailingTarget:
+
+        def __setattr__(self, _name, _value):
+            raise RuntimeError
+    FailingTarget.__module__ = 'with_source'
+    self.FailingTarget = FailingTarget
     try:
         with SuccessfulContext() as EARLY_WITH_VALUE:
             with_source.EARLY_WITH_VALUE = EARLY_WITH_VALUE
@@ -62,9 +79,19 @@ def _cribo_init___cribo_bfcd0d_with_source(self):
                 pass
     except RuntimeError:
         assert EARLY_WITH_VALUE == "with"
+    try:
+        with CompoundContext() as _cribo_with_target_727_0:
+            _cribo_assignment_target_727_0, _cribo_assignment_target_727_1 = _cribo_with_target_727_0
+            WITH_PARTIAL_VALUE = _cribo_assignment_target_727_0
+            with_source.WITH_PARTIAL_VALUE = WITH_PARTIAL_VALUE
+            FailingTarget().value = _cribo_assignment_target_727_1
+            pass
+    except RuntimeError:
+        assert WITH_PARTIAL_VALUE == "partial"
     self.__initialized__ = True
     self.__initializing__ = False
     return self
-with_source.__init__ = _cribo_init___cribo_bfcd0d_with_source
-with_source = _cribo_init___cribo_bfcd0d_with_source(with_source)
+with_source.__init__ = _cribo_init___cribo_e1cf19_with_source
+with_source = _cribo_init___cribo_e1cf19_with_source(with_source)
 print(with_source.EARLY_WITH_VALUE)
+print(with_source.WITH_PARTIAL_VALUE)

@@ -37,7 +37,7 @@ def _cribo_init___cribo_fb64cc_loop_observer(self):
         return self
     self.__initializing__ = True
     global loop_source
-    loop_source = _cribo_init___cribo_a34374_loop_source(loop_source)
+    loop_source = _cribo_init___cribo_f42fc2_loop_source(loop_source)
     self.loop_source = loop_source
 
     def observe_loop_value():
@@ -51,7 +51,7 @@ def _cribo_init___cribo_fb64cc_loop_observer(self):
     self.__initializing__ = False
     return self
 loop_observer.__init__ = _cribo_init___cribo_fb64cc_loop_observer
-def _cribo_init___cribo_a34374_loop_source(self):
+def _cribo_init___cribo_f42fc2_loop_source(self):
     if getattr(self, '__initialized__', False):
         return self
     if getattr(self, '__initializing__', False):
@@ -71,10 +71,27 @@ def _cribo_init___cribo_a34374_loop_source(self):
         CLEANED_LOOP_VALUE = loop_observer.loop_value_was_cleaned()
         loop_source.CLEANED_LOOP_VALUE = CLEANED_LOOP_VALUE
         assert CLEANED_LOOP_VALUE
+
+    class FailingTarget:
+
+        def __setattr__(self, _name, _value):
+            raise RuntimeError
+    FailingTarget.__module__ = 'loop_source'
+    self.FailingTarget = FailingTarget
+    try:
+        for _cribo_for_target_377 in (("partial", "failure"),):
+            _cribo_assignment_target_377_0, _cribo_assignment_target_377_1 = _cribo_for_target_377
+            LOOP_PARTIAL_VALUE = _cribo_assignment_target_377_0
+            loop_source.LOOP_PARTIAL_VALUE = LOOP_PARTIAL_VALUE
+            FailingTarget().value = _cribo_assignment_target_377_1
+            pass
+    except RuntimeError:
+        assert LOOP_PARTIAL_VALUE == "partial"
     self.__initialized__ = True
     self.__initializing__ = False
     return self
-loop_source.__init__ = _cribo_init___cribo_a34374_loop_source
-loop_source = _cribo_init___cribo_a34374_loop_source(loop_source)
+loop_source.__init__ = _cribo_init___cribo_f42fc2_loop_source
+loop_source = _cribo_init___cribo_f42fc2_loop_source(loop_source)
 print(loop_source.OBSERVED_LOOP_VALUE)
 print(loop_source.CLEANED_LOOP_VALUE)
+print(loop_source.LOOP_PARTIAL_VALUE)

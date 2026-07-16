@@ -612,9 +612,14 @@ pub(crate) fn process_statements_for_init_function(
                 // Use actual module-level variables if available, but filter to only exported
                 // ones
                 let module_level_vars = get_exported_module_vars(bundler, ctx);
+                let mut function_module_level_vars = module_level_vars.clone();
+                if let Some(module_scope_symbols) = module_scope_symbols {
+                    function_module_level_vars.extend(module_scope_symbols.iter().cloned());
+                }
                 let transform_ctx = ModuleVarTransformContext {
                     bundler,
                     module_level_vars: &module_level_vars,
+                    function_module_level_vars: &function_module_level_vars,
                     module_var_name: SELF_PARAM, /* Use "self" instead of module_var_name inside
                                                   * init function */
                     global_declarations: ctx.global_info.as_ref().map(|g| &g.global_declarations),
@@ -1452,6 +1457,7 @@ fn transform_stmt_for_module_vars(
 struct ModuleVarTransformContext<'a> {
     bundler: &'a Bundler<'a>,
     module_level_vars: &'a FxIndexSet<String>,
+    function_module_level_vars: &'a FxIndexSet<String>,
     module_var_name: &'a str,
     global_declarations: Option<&'a FxIndexMap<String, Vec<ruff_text_size::TextRange>>>,
     lifted_names: Option<&'a FxIndexMap<String, String>>,
@@ -1465,27 +1471,12 @@ fn transform_stmt_for_module_vars_with_bundler(
     ctx: &ModuleVarTransformContext<'_>,
 ) {
     if let Stmt::FunctionDef(nested_func) = stmt {
-        // For function definitions, use the global-aware transformation
-        if let Some(globals_map) = ctx.global_declarations {
-            ctx.bundler
-                .transform_nested_function_for_module_vars_with_global_info(
-                    nested_func,
-                    ctx.module_level_vars,
-                    globals_map,
-                    ctx.lifted_names,
-                    ctx.module_var_name,
-                );
-        } else {
-            // Fallback to legacy path when no global info is available
-            transform_nested_function_for_module_vars(
-                nested_func,
-                ctx.module_level_vars,
-                ctx.module_var_name,
-                ctx.python_version,
-            );
-        }
+        transform_function_for_module_vars_with_bundler(nested_func, ctx);
         return;
     }
+
+    transform_conditional_functions_for_module_vars_with_bundler(stmt, ctx);
+
     // Non-function statements: reuse the existing traversal
     transform_stmt_for_module_vars(
         stmt,
@@ -1493,6 +1484,79 @@ fn transform_stmt_for_module_vars_with_bundler(
         ctx.module_var_name,
         ctx.python_version,
     );
+}
+
+/// Transform one function using global and lifted-name information when available.
+fn transform_function_for_module_vars_with_bundler(
+    nested_func: &mut StmtFunctionDef,
+    ctx: &ModuleVarTransformContext<'_>,
+) {
+    if let Some(globals_map) = ctx.global_declarations {
+        ctx.bundler
+            .transform_nested_function_for_module_vars_with_global_info(
+                nested_func,
+                ctx.function_module_level_vars,
+                globals_map,
+                ctx.lifted_names,
+                ctx.module_var_name,
+            );
+    } else {
+        transform_nested_function_for_module_vars(
+            nested_func,
+            ctx.function_module_level_vars,
+            ctx.module_var_name,
+            ctx.python_version,
+        );
+    }
+}
+
+/// Apply the function-aware transform to definitions nested in module-level compound statements.
+fn transform_conditional_functions_for_module_vars_with_bundler(
+    stmt: &mut Stmt,
+    ctx: &ModuleVarTransformContext<'_>,
+) {
+    let transform_body = |body: &mut [Stmt]| {
+        for stmt in body {
+            if let Stmt::FunctionDef(function) = stmt {
+                transform_function_for_module_vars_with_bundler(function, ctx);
+            } else {
+                transform_conditional_functions_for_module_vars_with_bundler(stmt, ctx);
+            }
+        }
+    };
+
+    match stmt {
+        Stmt::If(if_stmt) => {
+            transform_body(&mut if_stmt.body);
+            for clause in &mut if_stmt.elif_else_clauses {
+                transform_body(&mut clause.body);
+            }
+        }
+        Stmt::For(for_stmt) => {
+            transform_body(&mut for_stmt.body);
+            transform_body(&mut for_stmt.orelse);
+        }
+        Stmt::While(while_stmt) => {
+            transform_body(&mut while_stmt.body);
+            transform_body(&mut while_stmt.orelse);
+        }
+        Stmt::With(with_stmt) => transform_body(&mut with_stmt.body),
+        Stmt::Try(try_stmt) => {
+            transform_body(&mut try_stmt.body);
+            for handler in &mut try_stmt.handlers {
+                let ExceptHandler::ExceptHandler(handler) = handler;
+                transform_body(&mut handler.body);
+            }
+            transform_body(&mut try_stmt.orelse);
+            transform_body(&mut try_stmt.finalbody);
+        }
+        Stmt::Match(match_stmt) => {
+            for case in &mut match_stmt.cases {
+                transform_body(&mut case.body);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Transform nested function to use module attributes for module-level variables
