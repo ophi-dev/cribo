@@ -9,3 +9,5 @@ match get_subject():
 match get_subject():
     case REBOUND_GUARD_VALUE if (REBOUND_GUARD_VALUE := "rebound"):
         pass
+
+assert REBOUND_GUARD_VALUE == "rebound"

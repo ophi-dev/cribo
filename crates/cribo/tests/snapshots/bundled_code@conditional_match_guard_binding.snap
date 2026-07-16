@@ -29,7 +29,7 @@ class _Cribo():
         return _CriboModule(m, n)
 _cribo = _Cribo()
 guarded = _cribo.types.SimpleNamespace(__name__='guarded', __initializing__=False, __initialized__=False)
-def _cribo_init___cribo_fc732a_guarded(self):
+def _cribo_init___cribo_7e6071_guarded(self):
     if getattr(self, '__initialized__', False):
         return self
     if getattr(self, '__initializing__', False):
@@ -45,10 +45,11 @@ def _cribo_init___cribo_fc732a_guarded(self):
     match get_subject():
         case REBOUND_GUARD_VALUE if ((_cribo.builtins.setattr(guarded, 'REBOUND_GUARD_VALUE', REBOUND_GUARD_VALUE),), (REBOUND_GUARD_VALUE := "rebound"), (_cribo.builtins.setattr(guarded, 'REBOUND_GUARD_VALUE', REBOUND_GUARD_VALUE),))[1]:
             pass
+    assert REBOUND_GUARD_VALUE == "rebound"
     self.__initialized__ = True
     self.__initializing__ = False
     return self
-guarded.__init__ = _cribo_init___cribo_fc732a_guarded
-guarded = _cribo_init___cribo_fc732a_guarded(guarded)
+guarded.__init__ = _cribo_init___cribo_7e6071_guarded
+guarded = _cribo_init___cribo_7e6071_guarded(guarded)
 print(guarded.GUARDED_VALUE)
 print(guarded.REBOUND_GUARD_VALUE)
