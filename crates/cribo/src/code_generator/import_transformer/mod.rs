@@ -1245,10 +1245,9 @@ fn rewrite_import_with_renames(
     for alias in &import_stmt.names {
         let module_name = alias.name.as_str();
 
-        // Check if this module is classified as FirstParty but not bundled
-        // This indicates a module that can't exist due to shadowing
-        let import_type = bundler.resolver.classify_import(module_name);
-        if import_type == crate::resolver::ImportType::FirstParty {
+        // A module selected for bundling but absent from the bundle cannot exist at runtime.
+        let classification = bundler.resolver.classify_import(module_name);
+        if classification.should_bundle() {
             // Check if it's actually bundled
             if let Some(module_id) = bundler.get_module_id(module_name) {
                 if !bundler.bundled_modules.contains(&module_id) {
