@@ -66,7 +66,8 @@ def _cribo_init___cribo_a34374_loop_source(self):
         loop_source.OBSERVED_LOOP_VALUE = OBSERVED_LOOP_VALUE
         assert OBSERVED_LOOP_VALUE == LOOP_VALUE
         del LOOP_VALUE
-        _cribo.builtins.delattr(loop_source, 'LOOP_VALUE')
+        if _cribo.builtins.hasattr(loop_source, 'LOOP_VALUE'):
+            _cribo.builtins.delattr(loop_source, 'LOOP_VALUE')
         CLEANED_LOOP_VALUE = loop_observer.loop_value_was_cleaned()
         loop_source.CLEANED_LOOP_VALUE = CLEANED_LOOP_VALUE
         assert CLEANED_LOOP_VALUE

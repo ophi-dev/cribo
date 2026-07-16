@@ -67,13 +67,15 @@ def _cribo_init___cribo_a6eb08_test_import(self):
         try:
             print(f"ImportError: {e}")
         finally:
-            _cribo.builtins.delattr(test_import, 'e')
+            if _cribo.builtins.hasattr(test_import, 'e'):
+                _cribo.builtins.delattr(test_import, 'e')
     except AttributeError as e:
         test_import.e = e
         try:
             print(f"AttributeError: {e}")
         finally:
-            _cribo.builtins.delattr(test_import, 'e')
+            if _cribo.builtins.hasattr(test_import, 'e'):
+                _cribo.builtins.delattr(test_import, 'e')
     try:
         pandera = _cribo_init___cribo_2b5490_pandera(pandera)
         test_import.pandera = pandera
@@ -88,7 +90,8 @@ def _cribo_init___cribo_a6eb08_test_import(self):
         try:
             print(f"\nFailed to import pandera: {e}")
         finally:
-            _cribo.builtins.delattr(test_import, 'e')
+            if _cribo.builtins.hasattr(test_import, 'e'):
+                _cribo.builtins.delattr(test_import, 'e')
     self.__initialized__ = True
     self.__initializing__ = False
     return self

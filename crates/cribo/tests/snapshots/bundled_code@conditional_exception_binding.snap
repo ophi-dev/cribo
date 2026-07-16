@@ -37,7 +37,7 @@ def _cribo_init___cribo_124c30_exception_observer(self):
         return self
     self.__initializing__ = True
     global exception_source
-    exception_source = _cribo_init___cribo_5145cf_exception_source(exception_source)
+    exception_source = _cribo_init___cribo_b407bb_exception_source(exception_source)
     self.exception_source = exception_source
 
     def observe_error():
@@ -51,7 +51,7 @@ def _cribo_init___cribo_124c30_exception_observer(self):
     self.__initializing__ = False
     return self
 exception_observer.__init__ = _cribo_init___cribo_124c30_exception_observer
-def _cribo_init___cribo_5145cf_exception_source(self):
+def _cribo_init___cribo_b407bb_exception_source(self):
     if getattr(self, '__initialized__', False):
         return self
     if getattr(self, '__initializing__', False):
@@ -67,14 +67,18 @@ def _cribo_init___cribo_5145cf_exception_source(self):
             exception_source.exception_observer = exception_observer
             OBSERVED_ERROR = exception_observer.observe_error()
             exception_source.OBSERVED_ERROR = OBSERVED_ERROR
+            del error
+            if _cribo.builtins.hasattr(exception_source, 'error'):
+                _cribo.builtins.delattr(exception_source, 'error')
         finally:
-            _cribo.builtins.delattr(exception_source, 'error')
+            if _cribo.builtins.hasattr(exception_source, 'error'):
+                _cribo.builtins.delattr(exception_source, 'error')
     CLEANED_ERROR = exception_observer.error_was_cleaned()
     self.CLEANED_ERROR = CLEANED_ERROR
     self.__initialized__ = True
     self.__initializing__ = False
     return self
-exception_source.__init__ = _cribo_init___cribo_5145cf_exception_source
-exception_source = _cribo_init___cribo_5145cf_exception_source(exception_source)
+exception_source.__init__ = _cribo_init___cribo_b407bb_exception_source
+exception_source = _cribo_init___cribo_b407bb_exception_source(exception_source)
 print(exception_source.OBSERVED_ERROR)
 print(exception_source.CLEANED_ERROR)

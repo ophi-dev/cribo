@@ -367,17 +367,20 @@ impl Bundler<'_> {
 
     /// Create a synthetic call that removes a conditional binding from the module namespace.
     fn conditional_module_attr_delete(module_name: &str, name: &str) -> Stmt {
-        statements::expr(expressions::call(
-            expressions::dotted_name(&["_cribo", "builtins", "delattr"], ExprContext::Load),
-            vec![
-                expressions::name(
-                    &sanitize_module_name_for_identifier(module_name),
-                    ExprContext::Load,
-                ),
-                expressions::string_literal(name),
-            ],
+        let module_var = sanitize_module_name_for_identifier(module_name);
+        let module = || expressions::name(&module_var, ExprContext::Load);
+        let attribute = || expressions::string_literal(name);
+        let exists = expressions::call(
+            expressions::dotted_name(&["_cribo", "builtins", "hasattr"], ExprContext::Load),
+            vec![module(), attribute()],
             vec![],
-        ))
+        );
+        let delete = statements::expr(expressions::call(
+            expressions::dotted_name(&["_cribo", "builtins", "delattr"], ExprContext::Load),
+            vec![module(), attribute()],
+            vec![],
+        ));
+        statements::if_stmt(exists, vec![delete], vec![])
     }
 
     /// Process an exception handler and expose its target only for the handler's lifetime.
