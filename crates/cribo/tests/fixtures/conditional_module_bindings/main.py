@@ -1,7 +1,10 @@
 import first
 import second
+from first import _PRIVATE_CONDITIONAL_VALUE
 
 print(first.CONDITIONAL_VALUE)
+print(first._PRIVATE_CONDITIONAL_VALUE)
+print(_PRIVATE_CONDITIONAL_VALUE)
 print(second.CONDITIONAL_VALUE)
 print(first.conditional_function())
 print(second.conditional_function())

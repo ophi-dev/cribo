@@ -4,6 +4,6 @@ input_file: crates/cribo/tests/fixtures/wrapper_type_alias_export/main.py
 ---
 ExecutionResults {
     status: Success,
-    stdout: "PublicAlias\nTrue\n['initialized']",
+    stdout: "PublicAlias\nwrapped_alias\nTrue\n['initialized']",
     stderr: "",
 }

@@ -99,10 +99,8 @@ struct NamedExprSyncTransformer<'a> {
 impl NamedExprSyncTransformer<'_> {
     /// Return whether a named expression target should be visible on the generated module.
     fn should_sync(&self, name: &str) -> bool {
-        !name.starts_with('_')
-            && self
-                .module_scope_symbols
-                .is_none_or(|symbols| symbols.contains(name))
+        self.module_scope_symbols
+            .map_or_else(|| !name.starts_with('_'), |symbols| symbols.contains(name))
     }
 
     /// Build the synthetic `setattr(module, "name", name)` expression used after a binding.
@@ -290,7 +288,8 @@ impl Bundler<'_> {
         name: &str,
         module_scope_symbols: Option<&FxIndexSet<String>>,
     ) -> bool {
-        !name.starts_with('_') && module_scope_symbols.is_none_or(|symbols| symbols.contains(name))
+        module_scope_symbols
+            .map_or_else(|| !name.starts_with('_'), |symbols| symbols.contains(name))
     }
 
     /// Create module-attribute assignments for conditional names that are semantically in scope.
@@ -310,6 +309,58 @@ impl Bundler<'_> {
                 )
             })
             .collect()
+    }
+
+    /// Define a wrapper type alias with the source module name in its immutable metadata.
+    fn wrapper_type_alias_statements(
+        type_alias: &ruff_python_ast::StmtTypeAlias,
+        module_name: &str,
+        module_scope_symbols: Option<&FxIndexSet<String>>,
+    ) -> Vec<Stmt> {
+        let previous_name_base = format!(
+            "_cribo_previous_module_name_{}",
+            u32::from(type_alias.range.start())
+        );
+        let previous_name = module_scope_symbols.map_or_else(
+            || previous_name_base.clone(),
+            |symbols| generate_unique_name(&previous_name_base, symbols),
+        );
+        let module_name_slot = |ctx| {
+            expressions::subscript(
+                expressions::call(
+                    expressions::dotted_name(&["_cribo", "builtins", "globals"], ExprContext::Load),
+                    vec![],
+                    vec![],
+                ),
+                expressions::string_literal("__name__"),
+                ctx,
+            )
+        };
+        let mut result = vec![
+            statements::simple_assign(&previous_name, module_name_slot(ExprContext::Load)),
+            statements::assign(
+                vec![module_name_slot(ExprContext::Store)],
+                expressions::string_literal(module_name),
+            ),
+            statements::try_stmt(
+                vec![Stmt::TypeAlias(type_alias.clone())],
+                vec![],
+                vec![],
+                vec![statements::assign(
+                    vec![module_name_slot(ExprContext::Store)],
+                    expressions::name(&previous_name, ExprContext::Load),
+                )],
+            ),
+        ];
+        let names = crate::visitors::utils::collect_names_from_assignment_target(&type_alias.name)
+            .into_iter()
+            .map(str::to_owned);
+        result.extend(Self::conditional_module_attr_assignments(
+            module_name,
+            module_scope_symbols,
+            names,
+        ));
+        result
     }
 
     /// Synchronize match captures before truth-testing a guard.
@@ -876,15 +927,12 @@ impl Bundler<'_> {
                                      module '{module_name}' for export"
                                 );
 
-                                // For conditional imports, always add module attributes for
-                                // non-private symbols regardless of
-                                // __all__ restrictions, since they can be defined at runtime
-                                if local_name.starts_with('_') {
-                                    log::debug!(
-                                        "NOT exporting conditional ImportFrom symbol \
-                                         '{local_name}' in module '{module_name}' (private symbol)"
-                                    );
-                                } else {
+                                // Conditional imports must expose every retained module-scope
+                                // binding, including private names used by first-party modules.
+                                if Self::should_sync_conditional_module_attr(
+                                    local_name,
+                                    module_scope_symbols,
+                                ) {
                                     log::debug!(
                                         "Adding module.{local_name} = {local_name} after \
                                          conditional import (bypassing __all__ restrictions)"
@@ -896,6 +944,11 @@ impl Bundler<'_> {
                                             &module_var,
                                             local_name,
                                         ),
+                                    );
+                                } else {
+                                    log::debug!(
+                                        "NOT exporting conditional ImportFrom symbol \
+                                         '{local_name}' in module '{module_name}' (not retained)"
                                     );
                                 }
                             }
@@ -925,13 +978,12 @@ impl Bundler<'_> {
                                 ruff_python_ast::Identifier::as_str,
                             );
 
-                            // For conditional imports, always add module attributes for non-private
-                            // symbols regardless of __all__
-                            // restrictions, since they can be defined at runtime
                             // Only handle simple (non-dotted) names that can be valid attribute
                             // names
-                            if !local_name.starts_with('_')
-                                && !local_name.contains('.')
+                            if Self::should_sync_conditional_module_attr(
+                                local_name,
+                                module_scope_symbols,
+                            ) && !local_name.contains('.')
                                 && !local_name.is_empty()
                                 && !local_name.as_bytes()[0].is_ascii_digit()
                                 && local_name.chars().all(|c| c.is_alphanumeric() || c == '_')
@@ -1004,16 +1056,10 @@ impl Bundler<'_> {
                     }
                 }
                 Stmt::TypeAlias(type_alias) => {
-                    result.push(stmt.clone());
-                    let names = crate::visitors::utils::collect_names_from_assignment_target(
-                        &type_alias.name,
-                    )
-                    .into_iter()
-                    .map(str::to_owned);
-                    result.extend(Self::conditional_module_attr_assignments(
+                    result.extend(Self::wrapper_type_alias_statements(
+                        type_alias,
                         module_name,
                         module_scope_symbols,
-                        names,
                     ));
                 }
                 Stmt::FunctionDef(function) => {

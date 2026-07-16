@@ -35,7 +35,12 @@ def _cribo_init___cribo_4c61dd_wrapped_alias(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
-    type PublicAlias = list[int]
+    _cribo_previous_module_name_0 = _cribo.builtins.globals()['__name__']
+    _cribo.builtins.globals()['__name__'] = 'wrapped_alias'
+    try:
+        type PublicAlias = list[int]
+    finally:
+        _cribo.builtins.globals()['__name__'] = _cribo_previous_module_name_0
     wrapped_alias.PublicAlias = PublicAlias
     EVENTS = []
     self.EVENTS = EVENTS
@@ -46,5 +51,6 @@ def _cribo_init___cribo_4c61dd_wrapped_alias(self):
 wrapped_alias.__init__ = _cribo_init___cribo_4c61dd_wrapped_alias
 wrapped_alias = _cribo_init___cribo_4c61dd_wrapped_alias(wrapped_alias)
 print(wrapped_alias.PublicAlias.__name__)
+print(wrapped_alias.PublicAlias.__module__)
 print(wrapped_alias.PublicAlias.__value__ == list[int])
 print(wrapped_alias.EVENTS)
