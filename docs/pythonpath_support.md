@@ -178,11 +178,14 @@ project/
 
 ### Module Classification
 
-Modules found in PYTHONPATH directories are treated identically to modules in configured source directories:
+Modules found in PYTHONPATH directories use the same bundle policy as modules in configured source
+directories:
 
-- Classified as `ImportType::FirstParty`
-- Included in bundling process
-- Subject to unused import analysis
+- Pure-Python modules and namespace packages are included in the bundle.
+- Distribution metadata is retained, so installed packages keep a third-party origin and
+  requirement even when their Python source is bundled.
+- Native extension modules are detected and preserved as external imports.
+- Bundled modules remain subject to unused import analysis.
 
 ## Configuration Integration
 

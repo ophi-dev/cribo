@@ -20,7 +20,7 @@ use crate::{
     dependency_graph::DependencyGraph,
     import_rewriter::{ImportDeduplicationStrategy, ImportRewriter},
     module_facts::ModuleFacts,
-    resolver::{ImportType, ModuleId, ModuleResolver},
+    resolver::{ModuleId, ModuleResolver},
     symbol_conflict_resolver::SymbolConflictResolver,
     tree_shaking::TreeShaker,
     types::FxIndexMap,
@@ -960,7 +960,7 @@ impl BundleOrchestrator {
             } else if let Some(ref module_name) = import.module_name {
                 self.handle_absolute_import(module_name, import, &mut resolver, is_in_error_handler)
             } else if import.names.len() == 1 {
-                self.handle_single_name_import(import, &mut resolver, is_in_error_handler)
+                self.handle_single_name_import(import, is_in_error_handler)
             } else {
                 Vec::new()
             };
@@ -1033,11 +1033,10 @@ impl BundleOrchestrator {
     fn handle_single_name_import(
         &self,
         import: &DiscoveredImport,
-        resolver: &mut Option<&ModuleResolver>,
         is_in_error_handler: bool,
     ) -> ImportExtractionResult {
         let mut imports_set = IndexSet::new();
-        self.process_single_name_import_set(import, resolver, &mut imports_set);
+        self.process_single_name_import_set(import, &mut imports_set);
         Self::imports_with_basic_context(imports_set, is_in_error_handler)
     }
 
@@ -1133,11 +1132,8 @@ impl BundleOrchestrator {
             if let Some(resolver) = resolver {
                 for (name, _) in &import.names {
                     let potential_submodule = format!("{base_module}.{name}");
-                    // Only add if it's actually resolvable as a module
-                    if resolver
-                        .resolve_module_path(&potential_submodule)
-                        .is_ok_and(|path| path.is_some())
-                    {
+                    // Native extensions are resolved modules even though they have no bundle path.
+                    if resolver.classify_import(&potential_submodule).is_resolved() {
                         imports.insert(potential_submodule);
                         debug!("Added verified submodule from relative import: {name}");
                     }
@@ -1150,17 +1146,10 @@ impl BundleOrchestrator {
     fn process_single_name_import_set(
         &self,
         import: &DiscoveredImport,
-        resolver: &mut Option<&ModuleResolver>,
         imports: &mut IndexSet<String>,
     ) {
-        if let Some(resolver) = resolver {
-            let (name, _) = &import.names[0];
-            match resolver.classify_import(name) {
-                ImportType::StandardLibrary | ImportType::ThirdParty | ImportType::FirstParty => {
-                    imports.insert(name.clone());
-                }
-            }
-        }
+        let (name, _) = &import.names[0];
+        imports.insert(name.clone());
     }
 
     /// Check if any imported names are actually submodules (`IndexSet` version)
@@ -1176,10 +1165,7 @@ impl BundleOrchestrator {
         for (name, _) in &import.names {
             let full_module_name = format!("{module_name}.{name}");
             // Try to resolve the full module name to see if it's a module
-            if resolver
-                .resolve_module_path(&full_module_name)
-                .is_ok_and(|path| path.is_some())
-            {
+            if resolver.classify_import(&full_module_name).is_resolved() {
                 imports.insert(full_module_name);
                 debug!("Detected submodule import: {name} from {module_name}");
             }
@@ -1337,7 +1323,11 @@ impl BundleOrchestrator {
         import: &str,
         params: &mut DiscoveryParams<'_>,
     ) {
-        if params.resolver.classify_import(parent_module) == ImportType::FirstParty {
+        if params
+            .resolver
+            .classify_import(parent_module)
+            .should_bundle()
+        {
             if let Ok(Some(parent_path)) = params.resolver.resolve_module_path(parent_module) {
                 debug!(
                     "Adding parent package '{parent_module}' to discovery queue for import \
@@ -1376,59 +1366,57 @@ impl BundleOrchestrator {
                 self.add_to_discovery_queue_if_new(&resolved_name, import_path, params);
             } else {
                 // Try normal resolution in case it's a valid Python identifier
-                match params.resolver.classify_import(import) {
-                    ImportType::FirstParty => {
-                        if let Ok(Some(import_path)) = params.resolver.resolve_module_path(import) {
-                            debug!(
-                                "Resolved ImportlibStatic '{import}' to path: {}",
-                                import_path.display()
-                            );
-                            self.add_to_discovery_queue_if_new(import, import_path, params);
-                        } else if !is_in_error_handler {
-                            return Err(anyhow!(
-                                "Failed to resolve ImportlibStatic module '{import}'. \nThis \
-                                 import would fail at runtime with: ModuleNotFoundError: No \
-                                 module named '{import}'"
-                            ));
-                        }
+                let classification = params.resolver.classify_import(import);
+                if classification.should_bundle() {
+                    if let Ok(Some(import_path)) = params.resolver.resolve_module_path(import) {
+                        debug!(
+                            "Resolved ImportlibStatic '{import}' to path: {}",
+                            import_path.display()
+                        );
+                        self.add_to_discovery_queue_if_new(import, import_path, params);
+                    } else if !is_in_error_handler {
+                        return Err(anyhow!(
+                            "Failed to resolve ImportlibStatic module '{import}'. \nThis import \
+                             would fail at runtime with: ModuleNotFoundError: No module named \
+                             '{import}'"
+                        ));
                     }
-                    _ => {
-                        debug!("ImportlibStatic '{import}' classified as external (preserving)");
-                    }
+                } else {
+                    debug!("ImportlibStatic '{import}' classified as external (preserving)");
                 }
             }
         } else {
             // Normal import handling
-            match params.resolver.classify_import(import) {
-                ImportType::FirstParty => {
-                    debug!("'{import}' classified as FirstParty");
-                    if let Ok(Some(import_path)) = params.resolver.resolve_module_path(import) {
-                        debug!("Resolved '{import}' to path: {}", import_path.display());
-                        self.add_to_discovery_queue_if_new(import, import_path, params);
+            let classification = params.resolver.classify_import(import);
+            if classification.should_bundle() {
+                debug!(
+                    "'{import}' selected for bundling (origin: {:?}, source: {:?})",
+                    classification.origin, classification.source
+                );
+                if let Ok(Some(import_path)) = params.resolver.resolve_module_path(import) {
+                    debug!("Resolved '{import}' to path: {}", import_path.display());
+                    self.add_to_discovery_queue_if_new(import, import_path, params);
 
-                        // Also add parent packages for submodules to ensure __init__.py files are
-                        // included For example, if importing
-                        // "greetings.irrelevant", also add "greetings"
-                        self.add_parent_packages_to_discovery(import, params);
+                    // Also add parent packages for submodules to ensure __init__.py files are
+                    // included For example, if importing
+                    // "greetings.irrelevant", also add "greetings"
+                    self.add_parent_packages_to_discovery(import, params);
+                } else {
+                    // If the import is not in an error handler, this is a fatal error
+                    if is_in_error_handler {
+                        debug!(
+                            "Failed to resolve bundled module '{import}' but it's in an error \
+                             handler (try/except or with suppress)"
+                        );
                     } else {
-                        // If the import is not in an error handler, this is a fatal error
-                        if is_in_error_handler {
-                            debug!(
-                                "Failed to resolve first-party module '{import}' but it's in an \
-                                 error handler (try/except or with suppress)"
-                            );
-                        } else {
-                            return Err(anyhow!(
-                                "Failed to resolve first-party module '{import}'. \nThis import \
-                                 would fail at runtime with: ModuleNotFoundError: No module named \
-                                 '{import}'"
-                            ));
-                        }
+                        return Err(anyhow!(
+                            "Failed to resolve bundled module '{import}'. \nThis import would fail \
+                             at runtime with: ModuleNotFoundError: No module named '{import}'"
+                        ));
                     }
                 }
-                ImportType::ThirdParty | ImportType::StandardLibrary => {
-                    debug!("'{import}' classified as external (preserving)");
-                }
+            } else {
+                debug!("'{import}' classified as external (preserving)");
             }
         }
         Ok(())
@@ -1436,42 +1424,39 @@ impl BundleOrchestrator {
 
     /// Process an import during dependency graph creation phase
     fn process_import_for_dependency(&self, import: &str, context: &mut DependencyContext<'_>) {
-        match context.resolver.classify_import(import) {
-            ImportType::FirstParty => {
-                // Add dependency edge if the imported module exists
-                if let Some(to_module_id) = context.resolver.get_module_id_by_name(import) {
-                    debug!(
-                        "Adding dependency edge: module_id_{} -> {} (to: module_id_{})",
-                        context.current_module_id.as_u32(),
-                        import,
-                        to_module_id.as_u32()
-                    );
-                    // TODO: Properly track TYPE_CHECKING information from ImportDiscoveryVisitor
-                    // For now, we use the default (is_type_checking_only = false)
-                    // This should be updated to use the actual is_type_checking_only flag from
-                    // the DiscoveredImport when we refactor to preserve that information
-                    context
-                        .graph
-                        .add_module_dependency(context.current_module_id, to_module_id);
-                    debug!(
-                        "Successfully added dependency edge: module_id_{} -> {} (to: module_id_{})",
-                        context.current_module_id.as_u32(),
-                        import,
-                        to_module_id.as_u32()
-                    );
-                } else {
-                    debug!("Module {import} not found in graph, skipping dependency edge");
-                }
-
-                // Also add dependency edges for parent packages
-                // For example, if importing "greetings.irrelevant", also add dependency on
-                // "greetings"
-                self.add_parent_package_dependencies(import, context);
-            }
-            ImportType::ThirdParty | ImportType::StandardLibrary => {
-                // These will be preserved in the output, not inlined
-            }
+        if !context.resolver.classify_import(import).should_bundle() {
+            return;
         }
+
+        // Add dependency edge if the imported module exists
+        if let Some(to_module_id) = context.resolver.get_module_id_by_name(import) {
+            debug!(
+                "Adding dependency edge: module_id_{} -> {} (to: module_id_{})",
+                context.current_module_id.as_u32(),
+                import,
+                to_module_id.as_u32()
+            );
+            // TODO: Properly track TYPE_CHECKING information from ImportDiscoveryVisitor
+            // For now, we use the default (is_type_checking_only = false)
+            // This should be updated to use the actual is_type_checking_only flag from
+            // the DiscoveredImport when we refactor to preserve that information
+            context
+                .graph
+                .add_module_dependency(context.current_module_id, to_module_id);
+            debug!(
+                "Successfully added dependency edge: module_id_{} -> {} (to: module_id_{})",
+                context.current_module_id.as_u32(),
+                import,
+                to_module_id.as_u32()
+            );
+        } else {
+            debug!("Module {import} not found in graph, skipping dependency edge");
+        }
+
+        // Also add dependency edges for parent packages
+        // For example, if importing "greetings.irrelevant", also add dependency on
+        // "greetings"
+        self.add_parent_package_dependencies(import, context);
     }
 
     /// Add dependency edges for parent packages to ensure proper ordering
@@ -1487,7 +1472,10 @@ impl BundleOrchestrator {
 
     /// Try to add a dependency edge for a parent package
     fn try_add_parent_dependency(&self, parent_module: &str, context: &mut DependencyContext<'_>) {
-        if context.resolver.classify_import(parent_module) == ImportType::FirstParty
+        if context
+            .resolver
+            .classify_import(parent_module)
+            .should_bundle()
             && let Some(parent_module_id) = context.resolver.get_module_id_by_name(parent_module)
         {
             // Skip if parent_module is the same as current module to avoid self-dependencies
@@ -1717,10 +1705,7 @@ impl BundleOrchestrator {
                 let imports = self.extract_imports_from_module_items(&module.items);
                 for import in &imports {
                     debug!("Checking import '{import}' for requirements");
-                    if resolver.classify_import(import) == ImportType::ThirdParty {
-                        // Map the import name to the actual package name
-                        // This handles cases like "markdown_it" -> "markdown-it-py"
-                        let package_name = resolver.map_import_to_package_name(import);
+                    if let Some(package_name) = resolver.classify_import(import).requirement {
                         debug!("Adding '{package_name}' to requirements (from '{import}')");
                         third_party_imports.insert(package_name);
                     }

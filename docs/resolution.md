@@ -4,11 +4,16 @@ This document describes how Cribo resolves Python imports during the bundling pr
 
 ## Overview
 
-Cribo's resolver identifies and classifies Python modules as:
+Cribo records four independent facts for each import:
 
-- **First-party**: Modules that belong to your project (bundled)
-- **Standard library**: Python's built-in modules (not bundled)
-- **Third-party**: External dependencies (not bundled)
+- **Origin**: First-party, third-party distribution, standard library, or unknown
+- **Source kind**: Python source, namespace package, native extension, or unresolved
+- **Bundle disposition**: Included in the bundle or preserved as an external import
+- **Requirement**: The normalized distribution name to emit, when one is needed
+
+Keeping these facts separate allows a pure-Python module from an installed distribution to be
+bundled while retaining its requirement, and a native module from the same distribution to remain
+external.
 
 ## Resolution Process
 
@@ -58,11 +63,12 @@ Search path for imports in `main.py`:
 
 For each import (e.g., `import tada`), Cribo searches each directory in the search path:
 
-#### Step 1: Check for Package
+#### Step 1: Check for Package Initializer
 
 ```
-Look for: <search_dir>/tada/__init__.py
-If found: Load as package module
+Look for: <search_dir>/tada/__init__.py or __init__.<platform-extension>
+If Python source is found: Load as a package module
+If a native initializer is found: Preserve as an external import
 ```
 
 #### Step 2: Check for File Module
@@ -72,12 +78,20 @@ Look for: <search_dir>/tada.py
 If found: Load as file module
 ```
 
-#### Step 3: Check for Namespace Package (PEP 420)
+#### Step 3: Check for Native Extension
+
+```
+Look for: <search_dir>/tada.<platform-extension>
+Examples: tada.cpython-312-x86_64-linux-gnu.so, tada.pyd
+If found: Preserve as an external import
+```
+
+#### Step 4: Check for Namespace Package (PEP 420)
 
 ```
 Look for: <search_dir>/tada/ (directory)
 If found: Continue searching other paths
-Only use if no __init__.py version exists anywhere
+Only use if no Python or native package initializer exists anywhere
 ```
 
 **First match wins** - the search stops as soon as a module is found.
@@ -107,23 +121,35 @@ from ...data import tada
 - Looks for `/project/src/data/` (must be a package)
 - Then resolves `tada` within that package
 
-### 5. Module Classification
+### 5. Import Classification
 
-After finding a module, Cribo classifies it:
+After locating a module, Cribo derives each classification fact independently:
 
-1. **First-party** if found in:
-   - The entry file's directory (or subdirectories)
-   - Any PYTHONPATH directory
-   - Any configured source directory
+1. **Origin**
+   - Explicit `known_first_party` and `known_third_party` entries take precedence.
+   - Distribution metadata (`*.dist-info/RECORD` and `METADATA`) identifies installed packages.
+   - Source without distribution metadata in an entry, PYTHONPATH, or configured source directory
+     is first-party.
+   - Standard-library and unresolved imports retain their own origins.
 
-2. **Standard library** if:
-   - Not found in first-party paths
-   - Matches Python's standard library list for the target version
+2. **Source kind**
+   - `.py` files and package `__init__.py` files are Python source.
+   - PEP 420 directories are namespace packages.
+   - Platform extension files such as `.so` and `.pyd`, including native package initializers, are
+     native extensions.
 
-3. **Third-party** if:
-   - Not first-party
-   - Not standard library
-   - Would be found in site-packages at runtime
+3. **Bundle disposition**
+   - Python source and namespace packages found through bundle search paths are included unless
+     explicitly configured as third-party.
+   - Modules found only through a virtual environment remain external.
+   - Native extensions remain external.
+   - Unresolved imports remain external unless explicitly first-party, in which case bundling
+     reports the missing source.
+
+4. **Requirement**
+   - Third-party distribution metadata supplies the normalized package name.
+   - Unknown external imports use their top-level import name as a fallback.
+   - First-party and standard-library imports do not produce requirements.
 
 ## Configuration
 
@@ -227,5 +253,6 @@ Resolution:
 
 1. **No dynamic imports**: All imports must be statically analyzable
 2. **No sys.path modifications**: Search paths are fixed at bundle time
-3. **Third-party exclusion**: External dependencies are not bundled
+3. **Explicit bundle roots**: Python source is bundled only when selected by the configured search
+   policy; native extensions remain external
 4. **Entry-relative paths**: First search path is always the entry file's directory

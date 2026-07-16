@@ -1036,6 +1036,12 @@ impl<'a> RecursiveImportTransformer<'a> {
                 .unwrap_or_else(|| format!("module#{}", self.state.module_id))
         );
 
+        if let Some(ref resolved_base) = resolved_module
+            && let Some(stmts) = self.handle_external_native_from_import(import_from, resolved_base)
+        {
+            return stmts;
+        }
+
         // Check if this should be handled by the submodule handler
         if let Some(ref resolved_base) = resolved_module
             && let Some(stmts) =
@@ -1083,6 +1089,72 @@ impl<'a> RecursiveImportTransformer<'a> {
             function_body: self.state.current_function_body.as_deref(),
             current_function_used_symbols: self.state.current_function_used_symbols.as_ref(),
         })
+    }
+
+    fn handle_external_native_from_import(
+        &mut self,
+        import_from: &StmtImportFrom,
+        resolved_module: &str,
+    ) -> Option<Vec<Stmt>> {
+        if self
+            .state
+            .bundler
+            .resolver
+            .classify_import(resolved_module)
+            .is_external_native_module()
+        {
+            return Some(vec![statements::import_from(
+                Some(resolved_module),
+                import_from.names.clone(),
+                0,
+            )]);
+        }
+
+        let mut result = Vec::new();
+        let mut pending_names = Vec::new();
+        let mut handled_native_module = false;
+
+        for alias in &import_from.names {
+            let full_module_name = format!("{resolved_module}.{}", alias.name);
+            if self
+                .state
+                .bundler
+                .resolver
+                .classify_import(&full_module_name)
+                .is_external_native_module()
+            {
+                if !pending_names.is_empty() {
+                    let pending_import = StmtImportFrom {
+                        names: std::mem::take(&mut pending_names),
+                        ..import_from.clone()
+                    };
+                    result.extend(self.handle_import_from(&pending_import));
+                }
+
+                result.push(statements::import_from(
+                    Some(resolved_module),
+                    vec![alias.clone()],
+                    0,
+                ));
+                handled_native_module = true;
+            } else {
+                pending_names.push(alias.clone());
+            }
+        }
+
+        if !handled_native_module {
+            return None;
+        }
+
+        if !pending_names.is_empty() {
+            let pending_import = StmtImportFrom {
+                names: pending_names,
+                ..import_from.clone()
+            };
+            result.extend(self.handle_import_from(&pending_import));
+        }
+
+        Some(result)
     }
 
     /// Transform an expression, rewriting module attribute access to direct references
@@ -1245,18 +1317,18 @@ fn rewrite_import_with_renames(
     for alias in &import_stmt.names {
         let module_name = alias.name.as_str();
 
-        // Check if this module is classified as FirstParty but not bundled
-        // This indicates a module that can't exist due to shadowing
-        let import_type = bundler.resolver.classify_import(module_name);
-        if import_type == crate::resolver::ImportType::FirstParty {
+        // A module selected for bundling but absent from the bundle cannot exist at runtime.
+        let classification = bundler.resolver.classify_import(module_name);
+        if classification.should_bundle() {
             // Check if it's actually bundled
             if let Some(module_id) = bundler.get_module_id(module_name) {
                 if !bundler.bundled_modules.contains(&module_id) {
-                    // This is a FirstParty module that failed to resolve (e.g., due to shadowing)
+                    // This module was selected for bundling but failed to resolve (e.g., due to
+                    // shadowing)
                     // Transform it to raise ImportError
                     log::debug!(
-                        "Module '{module_name}' is FirstParty but not bundled - transforming to \
-                         raise ImportError"
+                        "Module '{module_name}' was selected for bundling but is not bundled - \
+                         transforming to raise ImportError"
                     );
                     // Create a statement that raises ImportError
                     let error_msg = format!(
@@ -1278,8 +1350,8 @@ fn rewrite_import_with_renames(
             } else {
                 // No module ID means it wasn't resolved at all
                 log::debug!(
-                    "Module '{module_name}' is FirstParty but has no module ID - transforming to \
-                     raise ImportError"
+                    "Module '{module_name}' was selected for bundling but has no module ID - \
+                     transforming to raise ImportError"
                 );
                 let parent = module_name.split('.').next().unwrap_or(module_name);
                 let error_msg =

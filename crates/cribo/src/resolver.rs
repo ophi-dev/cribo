@@ -281,11 +281,85 @@ pub(crate) fn is_stdlib_module(module_name: &str, python_version: u8) -> bool {
         .is_some_and(|top_level| sys::is_known_standard_library(python_version, top_level))
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ImportType {
+/// Where an imported module originates.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportOrigin {
     FirstParty,
     ThirdParty,
     StandardLibrary,
+    Unknown,
+}
+
+/// The artifact available for an imported module.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportSource {
+    Python,
+    NamespacePackage,
+    NativeExtension,
+    Unresolved,
+}
+
+/// Whether the current bundling policy includes the module's source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BundleDisposition {
+    Include,
+    External,
+}
+
+/// Independent import facts used by discovery, code generation, and requirements output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImportClassification {
+    pub origin: ImportOrigin,
+    pub source: ImportSource,
+    pub bundle: BundleDisposition,
+    pub requirement: Option<String>,
+}
+
+impl ImportClassification {
+    const fn new(
+        origin: ImportOrigin,
+        source: ImportSource,
+        bundle: BundleDisposition,
+        requirement: Option<String>,
+    ) -> Self {
+        Self {
+            origin,
+            source,
+            bundle,
+            requirement,
+        }
+    }
+
+    pub const fn should_bundle(&self) -> bool {
+        matches!(self.bundle, BundleDisposition::Include)
+    }
+
+    /// Whether module resolution found an importable source artifact.
+    pub const fn is_resolved(&self) -> bool {
+        !matches!(self.source, ImportSource::Unresolved)
+    }
+
+    /// Whether the module is a native extension that must remain an external import.
+    pub const fn is_external_native_module(&self) -> bool {
+        matches!(self.source, ImportSource::NativeExtension)
+            && matches!(self.bundle, BundleDisposition::External)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedModule {
+    path: PathBuf,
+    source: ImportSource,
+}
+
+impl ResolvedModule {
+    fn bundle_path(&self) -> Option<PathBuf> {
+        matches!(
+            self.source,
+            ImportSource::Python | ImportSource::NamespacePackage
+        )
+        .then(|| self.path.clone())
+    }
 }
 
 /// Module descriptor for import resolution
@@ -324,7 +398,7 @@ pub struct ModuleResolver {
     /// Cache of resolved module paths
     module_cache: RefCell<IndexMap<String, Option<PathBuf>>>,
     /// Cache of module classifications
-    classification_cache: RefCell<IndexMap<String, ImportType>>,
+    classification_cache: RefCell<IndexMap<String, ImportClassification>>,
     /// Cache of virtual environment packages to avoid repeated filesystem scans
     virtualenv_packages_cache: RefCell<Option<IndexSet<String>>>,
     /// Entry file's directory (first in search path)
@@ -559,9 +633,9 @@ impl ModuleResolver {
 
     /// Resolve a module to its file path using Python's resolution rules
     /// Per docs/resolution.md:
-    /// 1. Check for package (foo/__init__.py)
-    /// 2. Check for file module (foo.py)
-    /// 3. Check for namespace package (foo/ directory without __init__.py)
+    /// 1. Check for package initializer (foo/__init__.py or native equivalent)
+    /// 2. Check for file module (foo.py or native equivalent)
+    /// 3. Check for namespace package (foo/ directory without a package initializer)
     pub fn resolve_module_path(&self, module_name: &str) -> Result<Option<PathBuf>> {
         // For absolute imports, delegate to the context-aware version
         if !module_name.starts_with('.') {
@@ -603,11 +677,12 @@ impl ModuleResolver {
         // Try each search directory in order
         let search_dirs = self.get_search_directories();
         for search_dir in &search_dirs {
-            if let Some(resolved_path) = self.resolve_in_directory(search_dir, &descriptor) {
+            if let Some(resolved) = self.resolve_in_directory(search_dir, &descriptor) {
+                let bundle_path = resolved.bundle_path();
                 self.module_cache
                     .borrow_mut()
-                    .insert(module_name.to_owned(), Some(resolved_path.clone()));
-                return Ok(Some(resolved_path));
+                    .insert(module_name.to_owned(), bundle_path.clone());
+                return Ok(bundle_path);
             }
         }
 
@@ -651,9 +726,8 @@ impl ModuleResolver {
         // Use the existing resolution logic for absolute imports
         let search_dirs = self.get_search_directories();
         for search_dir in &search_dirs {
-            if let Some(resolved_path) = self.resolve_in_directory(search_dir, &absolute_descriptor)
-            {
-                return Ok(Some(resolved_path));
+            if let Some(resolved) = self.resolve_in_directory(search_dir, &absolute_descriptor) {
+                return Ok(resolved.bundle_path());
             }
         }
 
@@ -754,7 +828,7 @@ impl ModuleResolver {
         &self,
         root: &Path,
         descriptor: &ImportModuleDescriptor,
-    ) -> Option<PathBuf> {
+    ) -> Option<ResolvedModule> {
         if descriptor.name_parts.is_empty() {
             // Edge case: empty import (shouldn't happen in practice)
             return None;
@@ -765,22 +839,38 @@ impl ModuleResolver {
         // Process all parts except the last one
         for (i, part) in descriptor.name_parts.iter().enumerate() {
             let is_last = i == descriptor.name_parts.len() - 1;
+            let package_dir = current_path.join(part);
+            let package_init = package_dir.join(crate::python::constants::INIT_FILE);
 
             if is_last {
                 // For the last part, check in order:
                 // 1. Package (foo/__init__.py)
-                // 2. Module file (foo.py)
-                // 3. C extension (foo.so, foo.pyd, etc.)
-                // 4. Namespace package (foo/ directory)
+                // 2. Native extension package (foo/__init__.so, foo/__init__.pyd, etc.)
+                // 3. Module file (foo.py)
+                // 4. Native extension module (foo.so, foo.pyd, etc.)
+                // 5. Namespace package (foo/ directory)
 
                 // Check for package first
-                let package_init = current_path
-                    .join(part)
-                    .join(crate::python::constants::INIT_FILE);
                 if package_init.is_file() {
                     debug!("Found package at: {}", package_init.display());
                     let canonical = self.canonicalize_path(package_init);
-                    return Some(canonical);
+                    return Some(ResolvedModule {
+                        path: canonical,
+                        source: ImportSource::Python,
+                    });
+                }
+
+                if let Some(extension_path) = self
+                    .find_native_extension_module(&package_dir, crate::python::constants::INIT_STEM)
+                {
+                    debug!(
+                        "Found native extension package at: {}",
+                        extension_path.display()
+                    );
+                    return Some(ResolvedModule {
+                        path: extension_path,
+                        source: ImportSource::NativeExtension,
+                    });
                 }
 
                 // Check for module file
@@ -788,23 +878,45 @@ impl ModuleResolver {
                 if module_file.is_file() {
                     debug!("Found module file at: {}", module_file.display());
                     let canonical = self.canonicalize_path(module_file);
-                    return Some(canonical);
+                    return Some(ResolvedModule {
+                        path: canonical,
+                        source: ImportSource::Python,
+                    });
+                }
+
+                if let Some(extension_path) = self.find_native_extension_module(&current_path, part)
+                {
+                    debug!(
+                        "Found native extension module at: {}",
+                        extension_path.display()
+                    );
+                    return Some(ResolvedModule {
+                        path: extension_path,
+                        source: ImportSource::NativeExtension,
+                    });
                 }
 
                 // Check for namespace package (directory without __init__.py)
-                let namespace_dir = current_path.join(part);
-                if crate::python::module_path::is_namespace_package_dir(&namespace_dir) {
-                    debug!("Found namespace package at: {}", namespace_dir.display());
+                if crate::python::module_path::is_namespace_package_dir(&package_dir) {
+                    debug!("Found namespace package at: {}", package_dir.display());
                     // Return the directory path to indicate this is a namespace package
-                    let canonical = self.canonicalize_path(namespace_dir);
-                    return Some(canonical);
+                    let canonical = self.canonicalize_path(package_dir);
+                    return Some(ResolvedModule {
+                        path: canonical,
+                        source: ImportSource::NamespacePackage,
+                    });
                 }
             } else {
                 // For intermediate parts, they must be packages
-                let package_dir = current_path.join(part);
-                let package_init = package_dir.join(crate::python::constants::INIT_FILE);
-
                 if package_init.is_file() {
+                    current_path = package_dir;
+                } else if let Some(extension_path) = self
+                    .find_native_extension_module(&package_dir, crate::python::constants::INIT_STEM)
+                {
+                    debug!(
+                        "Found intermediate native extension package at: {}",
+                        extension_path.display()
+                    );
                     current_path = package_dir;
                 } else if crate::python::module_path::is_namespace_package_dir(&package_dir) {
                     // Namespace package - continue but don't add to resolved paths
@@ -819,160 +931,231 @@ impl ModuleResolver {
         None
     }
 
-    /// Classify an import as first-party, third-party, or standard library
-    pub fn classify_import(&self, module_name: &str) -> ImportType {
-        // Check cache first
-        if let Some(cached_type) = self.classification_cache.borrow().get(module_name) {
-            return cached_type.clone();
-        }
+    fn find_native_extension_module(&self, directory: &Path, module_name: &str) -> Option<PathBuf> {
+        let entries = std::fs::read_dir(directory).ok()?;
+        let module_prefix = format!("{module_name}.");
+        let mut candidates = Vec::new();
 
-        // Check if it's a relative import (starts with a dot)
-        if module_name.starts_with('.') {
-            let import_type = ImportType::FirstParty;
-            self.classification_cache
-                .borrow_mut()
-                .insert(module_name.to_owned(), import_type.clone());
-            return import_type;
-        }
-
-        // Check explicit classifications from config
-        if self.config.known_first_party.contains(module_name) {
-            let import_type = ImportType::FirstParty;
-            self.classification_cache
-                .borrow_mut()
-                .insert(module_name.to_owned(), import_type.clone());
-            return import_type;
-        }
-        if self.config.known_third_party.contains(module_name) {
-            let import_type = ImportType::ThirdParty;
-            self.classification_cache
-                .borrow_mut()
-                .insert(module_name.to_owned(), import_type.clone());
-            return import_type;
-        }
-
-        // Check if it's a standard library module
-        if is_stdlib_module(module_name, self.python_version) {
-            let import_type = ImportType::StandardLibrary;
-            self.classification_cache
-                .borrow_mut()
-                .insert(module_name.to_owned(), import_type.clone());
-            return import_type;
-        }
-
-        // Try to resolve the module to determine if it's first-party
-        let search_dirs = self.get_search_directories();
-        let descriptor = ImportModuleDescriptor::from_module_name(module_name);
-
-        for search_dir in &search_dirs {
-            if self.resolve_in_directory(search_dir, &descriptor).is_some() {
-                let import_type = ImportType::FirstParty;
-                self.classification_cache
-                    .borrow_mut()
-                    .insert(module_name.to_owned(), import_type.clone());
-                return import_type;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let Some(file_name) = path.file_name().and_then(OsStr::to_str) else {
+                continue;
+            };
+            let is_module_name = file_name.starts_with(&module_prefix);
+            let is_native_extension = path
+                .extension()
+                .and_then(OsStr::to_str)
+                .is_some_and(|extension| matches!(extension, "so" | "pyd"));
+            if is_module_name && is_native_extension {
+                candidates.push(path);
             }
         }
 
-        // If the full module wasn't found, check if it's a submodule of a first-party module
-        // For example, if "requests.auth" isn't found, check if "requests" is first-party
+        candidates
+            .into_iter()
+            .min()
+            .map(|path| self.canonicalize_path(path))
+    }
+
+    fn locate_in_directories(
+        &self,
+        module_name: &str,
+        directories: &[PathBuf],
+    ) -> Option<(PathBuf, ResolvedModule)> {
+        let descriptor = ImportModuleDescriptor::from_module_name(module_name);
+        directories.iter().find_map(|directory| {
+            self.resolve_in_directory(directory, &descriptor)
+                .map(|resolved| (directory.clone(), resolved))
+        })
+    }
+
+    fn classify_resolved_import(
+        &self,
+        module_name: &str,
+        search_root: &Path,
+        resolved: &ResolvedModule,
+        default_origin: ImportOrigin,
+        allow_bundle: bool,
+    ) -> ImportClassification {
+        let explicit_first_party = self.config.known_first_party.contains(module_name);
+        let explicit_third_party = self.config.known_third_party.contains(module_name);
+        let root_import = module_name.split('.').next().unwrap_or(module_name);
+        let distribution = self.find_package_name_in_site_packages(search_root, root_import);
+        let origin = if explicit_first_party {
+            ImportOrigin::FirstParty
+        } else if explicit_third_party || distribution.is_some() {
+            ImportOrigin::ThirdParty
+        } else {
+            default_origin
+        };
+        let source_can_bundle = matches!(
+            resolved.source,
+            ImportSource::Python | ImportSource::NamespacePackage
+        );
+        let bundle =
+            if source_can_bundle && !explicit_third_party && (allow_bundle || explicit_first_party)
+            {
+                BundleDisposition::Include
+            } else {
+                BundleDisposition::External
+            };
+        let requirement = (origin == ImportOrigin::ThirdParty)
+            .then(|| distribution.unwrap_or_else(|| self.map_import_to_package_name(module_name)));
+
+        ImportClassification::new(origin, resolved.source, bundle, requirement)
+    }
+
+    /// Classify an import without conflating its origin, source kind, bundle policy, and
+    /// distribution requirement.
+    pub fn classify_import(&self, module_name: &str) -> ImportClassification {
+        if let Some(cached_classification) = self.classification_cache.borrow().get(module_name) {
+            return cached_classification.clone();
+        }
+
+        let classification = self.classify_import_uncached(module_name);
+        self.classification_cache
+            .borrow_mut()
+            .insert(module_name.to_owned(), classification.clone());
+        classification
+    }
+
+    fn classify_import_uncached(&self, module_name: &str) -> ImportClassification {
+        if module_name.starts_with('.') {
+            return ImportClassification::new(
+                ImportOrigin::FirstParty,
+                ImportSource::Unresolved,
+                BundleDisposition::Include,
+                None,
+            );
+        }
+
+        let explicit_first_party = self.config.known_first_party.contains(module_name);
+        let explicit_third_party = self.config.known_third_party.contains(module_name);
+        if !explicit_first_party
+            && !explicit_third_party
+            && is_stdlib_module(module_name, self.python_version)
+        {
+            return ImportClassification::new(
+                ImportOrigin::StandardLibrary,
+                ImportSource::Unresolved,
+                BundleDisposition::External,
+                None,
+            );
+        }
+
+        let search_dirs = self.get_search_directories();
+        if let Some((search_root, resolved)) = self.locate_in_directories(module_name, &search_dirs)
+        {
+            return self.classify_resolved_import(
+                module_name,
+                &search_root,
+                &resolved,
+                ImportOrigin::FirstParty,
+                true,
+            );
+        }
+
         if module_name.contains('.') {
-            let parts: Vec<&str> = module_name.split('.').collect();
-            if !parts.is_empty() {
-                let parent_module = parts[0];
-                // Recursively classify the parent module
-                let parent_classification = self.classify_import(parent_module);
-                if parent_classification == ImportType::FirstParty {
-                    // Before assuming the submodule is first-party, try to resolve it
-                    // If we can't find it as a source file, treat it as third-party
-                    // This handles cases where submodules are C extensions or otherwise not
-                    // available as source files
-                    let descriptor = ImportModuleDescriptor::from_module_name(module_name);
-                    let mut found_as_source = false;
-                    for search_dir in &search_dirs {
-                        if self.resolve_in_directory(search_dir, &descriptor).is_some() {
-                            found_as_source = true;
-                            break;
-                        }
-                    }
-
-                    if found_as_source {
-                        // Found as source file, it's first-party
-                        let import_type = ImportType::FirstParty;
-                        self.classification_cache
-                            .borrow_mut()
-                            .insert(module_name.to_owned(), import_type.clone());
-                        return import_type;
-                    }
-                    // Check if the parent module is a package
-                    // If parent is NOT a package (just a .py file), then submodules can't exist
-                    // This preserves Python's shadowing behavior
-
-                    // First, try to resolve the parent module to get its path
-                    let parent_descriptor = ImportModuleDescriptor::from_module_name(parent_module);
-                    let mut parent_is_package = false;
-                    let mut parent_found = false;
-
-                    for search_dir in &search_dirs {
-                        if let Some(parent_path) =
-                            self.resolve_in_directory(search_dir, &parent_descriptor)
-                        {
-                            parent_found = true;
-                            // Check if it's a package (__init__.py) or a module (.py file)
-                            parent_is_package = parent_path
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .is_some_and(crate::python::module_path::is_init_file_name);
-                            break;
-                        }
-                    }
-
-                    if parent_found && !parent_is_package {
-                        // Parent is a module file, not a package - submodules can't exist
-                        // This mimics Python's behavior where a .py file shadows a package
-                        debug!(
-                            "Module '{module_name}' cannot exist - parent '{parent_module}' is a \
-                             module file, not a package (shadowing behavior)"
-                        );
-                        // Return FirstParty to trigger an error during bundling
-                        // (the module won't be found and will cause an appropriate error)
-                        let import_type = ImportType::FirstParty;
-                        self.classification_cache
-                            .borrow_mut()
-                            .insert(module_name.to_owned(), import_type.clone());
-                        return import_type;
-                    }
-
-                    // Can't find source file, treat as third-party
-                    // This could be a C extension or dynamically available module
+            let parent_module = module_name.split('.').next().unwrap_or(module_name);
+            let parent_classification = self.classify_import(parent_module);
+            if parent_classification.should_bundle()
+                && let Some((_, parent)) = self.locate_in_directories(parent_module, &search_dirs)
+            {
+                let parent_is_package = parent.source == ImportSource::NamespacePackage
+                    || parent
+                        .path
+                        .file_name()
+                        .and_then(OsStr::to_str)
+                        .is_some_and(crate::python::module_path::is_init_file_name);
+                if !parent_is_package {
                     debug!(
-                        "Module '{module_name}' has first-party parent '{parent_module}' but no \
-                         source file found - treating as third-party"
+                        "Module '{module_name}' cannot exist - parent '{parent_module}' is a \
+                         module file, not a package (shadowing behavior)"
                     );
-                    let import_type = ImportType::ThirdParty;
-                    self.classification_cache
-                        .borrow_mut()
-                        .insert(module_name.to_owned(), import_type.clone());
-                    return import_type;
+                    return ImportClassification::new(
+                        parent_classification.origin,
+                        ImportSource::Unresolved,
+                        BundleDisposition::Include,
+                        parent_classification.requirement,
+                    );
                 }
             }
         }
 
-        // Check if it's in the virtual environment (third-party)
-        if self.is_virtualenv_package(module_name) {
-            let import_type = ImportType::ThirdParty;
-            self.classification_cache
-                .borrow_mut()
-                .insert(module_name.to_owned(), import_type.clone());
-            return import_type;
+        let virtualenv_dirs = self.get_virtualenv_site_packages_search_directories(None);
+        if let Some((search_root, resolved)) =
+            self.locate_in_directories(module_name, &virtualenv_dirs)
+        {
+            return self.classify_resolved_import(
+                module_name,
+                &search_root,
+                &resolved,
+                ImportOrigin::ThirdParty,
+                false,
+            );
         }
 
-        // Default to third-party if we can't determine otherwise
-        let import_type = ImportType::ThirdParty;
-        self.classification_cache
-            .borrow_mut()
-            .insert(module_name.to_owned(), import_type.clone());
-        import_type
+        if explicit_first_party {
+            return ImportClassification::new(
+                ImportOrigin::FirstParty,
+                ImportSource::Unresolved,
+                BundleDisposition::Include,
+                None,
+            );
+        }
+
+        if explicit_third_party || self.is_virtualenv_package(module_name) {
+            return ImportClassification::new(
+                ImportOrigin::ThirdParty,
+                ImportSource::Unresolved,
+                BundleDisposition::External,
+                Some(self.map_import_to_package_name(module_name)),
+            );
+        }
+
+        ImportClassification::new(
+            ImportOrigin::Unknown,
+            ImportSource::Unresolved,
+            BundleDisposition::External,
+            Some(self.map_import_to_package_name(module_name)),
+        )
+    }
+
+    fn get_virtualenv_site_packages_search_directories(
+        &self,
+        virtualenv_override: Option<&str>,
+    ) -> Vec<PathBuf> {
+        let mut site_packages_dirs = IndexSet::new();
+        for virtualenv_path in self.resolve_virtualenv_paths(virtualenv_override) {
+            for directory in self.get_virtualenv_site_packages_directories(&virtualenv_path) {
+                site_packages_dirs.insert(self.canonicalize_path(directory));
+            }
+        }
+        site_packages_dirs.into_iter().collect()
+    }
+
+    fn resolve_virtualenv_paths(&self, virtualenv_override: Option<&str>) -> Vec<PathBuf> {
+        if let Some(path) = virtualenv_override {
+            return Self::explicit_virtualenv_paths(path);
+        }
+        if let Some(path) = self.virtualenv_override.as_deref() {
+            return Self::explicit_virtualenv_paths(path);
+        }
+        if let Ok(path) = std::env::var("VIRTUAL_ENV") {
+            return Self::explicit_virtualenv_paths(&path);
+        }
+        self.detect_fallback_virtualenv_paths()
+    }
+
+    fn explicit_virtualenv_paths(virtualenv_path: &str) -> Vec<PathBuf> {
+        if virtualenv_path.is_empty() {
+            Vec::new()
+        } else {
+            vec![PathBuf::from(virtualenv_path)]
+        }
     }
 
     /// Get the set of third-party packages installed in the virtual environment
@@ -995,21 +1178,10 @@ impl ModuleResolver {
     fn compute_virtualenv_packages(&self, virtualenv_override: Option<&str>) -> IndexSet<String> {
         let mut packages = IndexSet::new();
 
-        // Try to get explicit VIRTUAL_ENV
-        let explicit_virtualenv = virtualenv_override
-            .map(ToOwned::to_owned)
-            .or_else(|| std::env::var("VIRTUAL_ENV").ok());
-
-        let virtualenv_paths = explicit_virtualenv.map_or_else(
-            || self.detect_fallback_virtualenv_paths(),
-            |virtualenv_path| vec![PathBuf::from(virtualenv_path)],
-        );
-
-        // Scan all discovered virtual environment paths
-        for venv_path in virtualenv_paths {
-            for site_packages_dir in self.get_virtualenv_site_packages_directories(&venv_path) {
-                self.scan_site_packages_directory(&site_packages_dir, &mut packages);
-            }
+        for site_packages_dir in
+            self.get_virtualenv_site_packages_search_directories(virtualenv_override)
+        {
+            self.scan_site_packages_directory(&site_packages_dir, &mut packages);
         }
 
         // Cache the result if it matches our stored override
@@ -1135,29 +1307,20 @@ impl ModuleResolver {
 
         debug!("Attempting to map import '{import_name}' (root: '{root_import}') to package name");
 
-        // Check if we have a virtual environment
-        let explicit_virtualenv = self
-            .virtualenv_override
-            .as_deref()
-            .map(ToOwned::to_owned)
-            .or_else(|| std::env::var("VIRTUAL_ENV").ok());
+        let mut metadata_roots: IndexSet<PathBuf> =
+            self.get_search_directories().into_iter().collect();
+        metadata_roots.extend(self.get_virtualenv_site_packages_search_directories(None));
 
-        let virtualenv_paths = explicit_virtualenv.map_or_else(
-            || self.detect_fallback_virtualenv_paths(),
-            |virtualenv_path| vec![PathBuf::from(virtualenv_path)],
-        );
-
-        // Try to find the package name from dist-info
-        for venv_path in virtualenv_paths {
-            debug!("Checking venv path: {}", venv_path.display());
-            for site_packages_dir in self.get_virtualenv_site_packages_directories(&venv_path) {
-                debug!("Checking site-packages: {}", site_packages_dir.display());
-                if let Some(package_name) =
-                    self.find_package_name_in_site_packages(&site_packages_dir, root_import)
-                {
-                    debug!("Mapped import '{root_import}' to package '{package_name}'");
-                    return package_name;
-                }
+        for site_packages_dir in metadata_roots {
+            debug!(
+                "Checking package metadata root: {}",
+                site_packages_dir.display()
+            );
+            if let Some(package_name) =
+                self.find_package_name_in_site_packages(&site_packages_dir, root_import)
+            {
+                debug!("Mapped import '{root_import}' to package '{package_name}'");
+                return package_name;
             }
         }
 
@@ -1485,6 +1648,31 @@ mod tests {
         Ok(())
     }
 
+    fn create_mixed_distribution(site_packages: &Path) -> Result<()> {
+        create_test_file(
+            &site_packages.join(format!(
+                "mixed_package/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "",
+        )?;
+        create_test_file(&site_packages.join("mixed_package/core.py"), "")?;
+        create_test_file(
+            &site_packages.join("mixed_package/_native.cpython-312-test.so"),
+            "",
+        )?;
+        create_test_file(
+            &site_packages.join("mixed_package-1.0.dist-info/RECORD"),
+            "mixed_package/__init__.py,,\n\
+             mixed_package/core.py,,\n\
+             mixed_package/_native.cpython-312-test.so,,\n",
+        )?;
+        create_test_file(
+            &site_packages.join("mixed_package-1.0.dist-info/METADATA"),
+            "Name: Mixed-Package\nVersion: 1.0\n",
+        )
+    }
+
     #[test]
     fn test_registry_owns_alias_identity() -> Result<()> {
         let temp_dir = TempDir::new()?;
@@ -1659,22 +1847,128 @@ mod tests {
         let resolver = ModuleResolver::new(config);
 
         // Test classifications
-        assert_eq!(resolver.classify_import("os"), ImportType::StandardLibrary);
-        assert_eq!(resolver.classify_import("sys"), ImportType::StandardLibrary);
-        assert_eq!(resolver.classify_import("mymodule"), ImportType::FirstParty);
         assert_eq!(
-            resolver.classify_import("known_first"),
-            ImportType::FirstParty
-        );
-        assert_eq!(resolver.classify_import("requests"), ImportType::ThirdParty);
-        assert_eq!(
-            resolver.classify_import(".relative"),
-            ImportType::FirstParty
+            resolver.classify_import("os").origin,
+            ImportOrigin::StandardLibrary
         );
         assert_eq!(
-            resolver.classify_import("unknown_module"),
-            ImportType::ThirdParty
+            resolver.classify_import("sys").origin,
+            ImportOrigin::StandardLibrary
         );
+        assert_eq!(
+            resolver.classify_import("mymodule").origin,
+            ImportOrigin::FirstParty
+        );
+        assert_eq!(
+            resolver.classify_import("known_first").origin,
+            ImportOrigin::FirstParty
+        );
+        assert_eq!(
+            resolver.classify_import("requests").origin,
+            ImportOrigin::ThirdParty
+        );
+        assert_eq!(
+            resolver.classify_import(".relative").origin,
+            ImportOrigin::FirstParty
+        );
+        assert_eq!(
+            resolver.classify_import("unknown_module").origin,
+            ImportOrigin::Unknown
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_distribution_origin_is_independent_from_bundle_disposition() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let site_packages = temp_dir.path().join("site-packages");
+        create_mixed_distribution(&site_packages)?;
+
+        let pythonpath = site_packages.to_string_lossy();
+        let resolver =
+            ModuleResolver::new_with_overrides(Config::default(), Some(pythonpath.as_ref()), None);
+
+        let package = resolver.classify_import("mixed_package");
+        assert_eq!(package.origin, ImportOrigin::ThirdParty);
+        assert_eq!(package.source, ImportSource::Python);
+        assert_eq!(package.bundle, BundleDisposition::Include);
+        assert_eq!(package.requirement.as_deref(), Some("mixed-package"));
+
+        let source_submodule = resolver.classify_import("mixed_package.core");
+        assert_eq!(source_submodule.origin, ImportOrigin::ThirdParty);
+        assert_eq!(source_submodule.source, ImportSource::Python);
+        assert_eq!(source_submodule.bundle, BundleDisposition::Include);
+        assert_eq!(
+            source_submodule.requirement.as_deref(),
+            Some("mixed-package")
+        );
+
+        let native_submodule = resolver.classify_import("mixed_package._native");
+        assert_eq!(native_submodule.origin, ImportOrigin::ThirdParty);
+        assert_eq!(native_submodule.source, ImportSource::NativeExtension);
+        assert_eq!(native_submodule.bundle, BundleDisposition::External);
+        assert_eq!(
+            native_submodule.requirement.as_deref(),
+            Some("mixed-package")
+        );
+        assert!(
+            resolver
+                .resolve_module_path("mixed_package._native")?
+                .is_none(),
+            "native extensions must not be sent to the Python parser"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_native_package_initializers_remain_external() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let root = temp_dir.path();
+        create_test_file(&root.join("native_parent/__init__.cpython-312-test.so"), "")?;
+        create_test_file(
+            &root.join("native_parent/native_child/__init__.cp312-win_amd64.pyd"),
+            "",
+        )?;
+
+        let resolver = ModuleResolver::new(Config {
+            src: vec![root.to_path_buf()],
+            ..Default::default()
+        });
+
+        for module_name in ["native_parent", "native_parent.native_child"] {
+            let classification = resolver.classify_import(module_name);
+            assert_eq!(classification.source, ImportSource::NativeExtension);
+            assert_eq!(classification.bundle, BundleDisposition::External);
+            assert!(
+                resolver.resolve_module_path(module_name)?.is_none(),
+                "native package initializers must not be sent to the Python parser"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_virtualenv_python_distribution_remains_external() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_mixed_distribution(&site_packages)?;
+
+        let virtualenv_path = virtualenv.to_string_lossy();
+        let resolver = ModuleResolver::new_with_overrides(
+            Config::default(),
+            Some(""),
+            Some(virtualenv_path.as_ref()),
+        );
+
+        let classification = resolver.classify_import("mixed_package");
+        assert_eq!(classification.origin, ImportOrigin::ThirdParty);
+        assert_eq!(classification.source, ImportSource::Python);
+        assert_eq!(classification.bundle, BundleDisposition::External);
+        assert_eq!(classification.requirement.as_deref(), Some("mixed-package"));
 
         Ok(())
     }
@@ -1704,8 +1998,34 @@ mod tests {
 
         // Should be classified as first-party
         assert_eq!(
-            resolver.classify_import("namespace_pkg"),
-            ImportType::FirstParty
+            resolver.classify_import("namespace_pkg").origin,
+            ImportOrigin::FirstParty
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_non_python_shared_libraries_do_not_shadow_namespace_package() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let root = temp_dir.path();
+
+        create_test_file(&root.join("namespace_pkg/module.py"), "")?;
+        create_test_file(&root.join("namespace_pkg.dll"), "")?;
+        create_test_file(&root.join("namespace_pkg.dylib"), "")?;
+
+        let resolver = ModuleResolver::new(Config {
+            src: vec![root.to_path_buf()],
+            ..Default::default()
+        });
+
+        assert_eq!(
+            resolver.resolve_module_path("namespace_pkg")?,
+            Some(root.join("namespace_pkg").canonicalize()?)
+        );
+        assert_eq!(
+            resolver.classify_import("namespace_pkg").source,
+            ImportSource::NamespacePackage
         );
 
         Ok(())
@@ -1904,23 +2224,23 @@ mod tests {
 
         // Also verify classification
         assert_eq!(
-            resolver.classify_import("src_module"),
-            ImportType::FirstParty,
+            resolver.classify_import("src_module").origin,
+            ImportOrigin::FirstParty,
             "Should classify src_module as first-party"
         );
         assert_eq!(
-            resolver.classify_import("pythonpath_module"),
-            ImportType::FirstParty,
+            resolver.classify_import("pythonpath_module").origin,
+            ImportOrigin::FirstParty,
             "Should classify pythonpath_module as first-party"
         );
         assert_eq!(
-            resolver.classify_import("pythonpath_pkg"),
-            ImportType::FirstParty,
+            resolver.classify_import("pythonpath_pkg").origin,
+            ImportOrigin::FirstParty,
             "Should classify pythonpath_pkg as first-party"
         );
         assert_eq!(
-            resolver.classify_import("pythonpath_pkg.submodule"),
-            ImportType::FirstParty,
+            resolver.classify_import("pythonpath_pkg.submodule").origin,
+            ImportOrigin::FirstParty,
             "Should classify pythonpath_pkg.submodule as first-party"
         );
 
@@ -1954,16 +2274,16 @@ mod tests {
 
         // Test that PYTHONPATH modules are classified as first-party
         assert_eq!(
-            resolver.classify_import("pythonpath_module"),
-            ImportType::FirstParty,
+            resolver.classify_import("pythonpath_module").origin,
+            ImportOrigin::FirstParty,
             "PYTHONPATH modules should be classified as first-party"
         );
 
-        // Test that unknown modules are still classified as third-party
+        // Unknown modules still remain external and produce a fallback requirement.
         assert_eq!(
-            resolver.classify_import("unknown_module"),
-            ImportType::ThirdParty,
-            "Unknown modules should still be classified as third-party"
+            resolver.classify_import("unknown_module").origin,
+            ImportOrigin::Unknown,
+            "Unknown modules should preserve their unknown origin"
         );
 
         Ok(())
@@ -2018,13 +2338,13 @@ mod tests {
 
         // Also verify classification
         assert_eq!(
-            resolver.classify_import("module1"),
-            ImportType::FirstParty,
+            resolver.classify_import("module1").origin,
+            ImportOrigin::FirstParty,
             "Should classify module1 as first-party"
         );
         assert_eq!(
-            resolver.classify_import("module2"),
-            ImportType::FirstParty,
+            resolver.classify_import("module2").origin,
+            ImportOrigin::FirstParty,
             "Should classify module2 as first-party"
         );
 
@@ -2134,13 +2454,13 @@ mod tests {
 
         // Both should be classified as first-party
         assert_eq!(
-            resolver.classify_import("src_module"),
-            ImportType::FirstParty,
+            resolver.classify_import("src_module").origin,
+            ImportOrigin::FirstParty,
             "Should classify src_module as first-party"
         );
         assert_eq!(
-            resolver.classify_import("other_module"),
-            ImportType::FirstParty,
+            resolver.classify_import("other_module").origin,
+            ImportOrigin::FirstParty,
             "Should classify other_module as first-party"
         );
 
@@ -2181,8 +2501,8 @@ mod tests {
 
         // Should be classified as first-party
         assert_eq!(
-            resolver.classify_import("test_module"),
-            ImportType::FirstParty,
+            resolver.classify_import("test_module").origin,
+            ImportOrigin::FirstParty,
             "Should classify test_module as first-party"
         );
 
