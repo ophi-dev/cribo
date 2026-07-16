@@ -188,7 +188,7 @@ impl Bundler<'_> {
             .collect()
     }
 
-    /// Synchronize match captures before and after truth-testing a guard.
+    /// Synchronize match captures before truth-testing a guard.
     fn conditional_module_attr_guard(
         module_name: &str,
         module_scope_symbols: Option<&FxIndexSet<String>>,
@@ -231,7 +231,7 @@ impl Bundler<'_> {
             vec![],
         );
         expressions::subscript(
-            expressions::tuple(vec![sync_calls(), evaluated_guard, sync_calls()]),
+            expressions::tuple(vec![sync_calls(), evaluated_guard]),
             expressions::integer_literal(1),
             ExprContext::Load,
         )

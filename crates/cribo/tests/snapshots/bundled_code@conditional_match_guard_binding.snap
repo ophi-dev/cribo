@@ -73,14 +73,14 @@ def _cribo_init___cribo_962e76_guarded(self):
     GuardResult.__module__ = 'guarded'
     self.GuardResult = GuardResult
     match get_subject():
-        case GUARDED_VALUE if ((_cribo.builtins.setattr(guarded, 'GUARDED_VALUE', GUARDED_VALUE),), _cribo.builtins.bool(GUARDED_VALUE == "not-captured"), (_cribo.builtins.setattr(guarded, 'GUARDED_VALUE', GUARDED_VALUE),))[1]:
+        case GUARDED_VALUE if ((_cribo.builtins.setattr(guarded, 'GUARDED_VALUE', GUARDED_VALUE),), _cribo.builtins.bool(GUARDED_VALUE == "not-captured"))[1]:
             raise AssertionError
     match get_subject():
-        case REBOUND_GUARD_VALUE if ((_cribo.builtins.setattr(guarded, 'REBOUND_GUARD_VALUE', REBOUND_GUARD_VALUE),), _cribo.builtins.bool(((REBOUND_GUARD_VALUE := "rebound"), _cribo.builtins.setattr(guarded, 'REBOUND_GUARD_VALUE', REBOUND_GUARD_VALUE))[0]), (_cribo.builtins.setattr(guarded, 'REBOUND_GUARD_VALUE', REBOUND_GUARD_VALUE),))[1]:
+        case REBOUND_GUARD_VALUE if ((_cribo.builtins.setattr(guarded, 'REBOUND_GUARD_VALUE', REBOUND_GUARD_VALUE),), _cribo.builtins.bool(((REBOUND_GUARD_VALUE := "rebound"), _cribo.builtins.setattr(guarded, 'REBOUND_GUARD_VALUE', REBOUND_GUARD_VALUE))[0]))[1]:
             pass
     assert REBOUND_GUARD_VALUE == "rebound"
     match get_subject():
-        case BOOL_GUARD_VALUE if ((_cribo.builtins.setattr(guarded, 'BOOL_GUARD_VALUE', BOOL_GUARD_VALUE),), _cribo.builtins.bool(guard_observer.mutate_and_return(GuardResult())), (_cribo.builtins.setattr(guarded, 'BOOL_GUARD_VALUE', BOOL_GUARD_VALUE),))[1]:
+        case BOOL_GUARD_VALUE if ((_cribo.builtins.setattr(guarded, 'BOOL_GUARD_VALUE', BOOL_GUARD_VALUE),), _cribo.builtins.bool(guard_observer.mutate_and_return(GuardResult())))[1]:
             BOOL_GUARD_PASSED = True
             guarded.BOOL_GUARD_PASSED = BOOL_GUARD_PASSED
     assert BOOL_GUARD_PASSED
@@ -91,4 +91,5 @@ guarded.__init__ = _cribo_init___cribo_962e76_guarded
 guarded = _cribo_init___cribo_962e76_guarded(guarded)
 print(guarded.GUARDED_VALUE)
 print(guarded.REBOUND_GUARD_VALUE)
+print(guarded.BOOL_GUARD_VALUE)
 print(guarded.BOOL_GUARD_PASSED)
