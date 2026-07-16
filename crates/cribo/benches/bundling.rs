@@ -116,7 +116,8 @@ fn benchmark_module_resolution(c: &mut Criterion) {
         let mut config = Config::default();
         config.src.push(temp_dir.path().to_path_buf());
 
-        let resolver = ModuleResolver::new(config);
+        let resolver =
+            ModuleResolver::new(config).expect("benchmark configuration should be valid");
 
         b.iter(|| {
             // Benchmark module resolution
@@ -133,7 +134,8 @@ fn benchmark_dependency_graph(c: &mut Criterion) {
 
     use cribo::{config::Config, dependency_graph::DependencyGraph, resolver::ModuleResolver};
 
-    let resolver = ModuleResolver::new(Config::default());
+    let resolver =
+        ModuleResolver::new(Config::default()).expect("benchmark configuration should be valid");
     let main_id = resolver.register_module("main", Path::new("main.py"));
     let utils_id = resolver.register_module("utils.helpers", Path::new("utils/helpers.py"));
     let models_id = resolver.register_module("models.user", Path::new("models/user.py"));

@@ -928,7 +928,7 @@ mod tests {
             src: vec![PathBuf::from(".")],
             ..Default::default()
         };
-        let resolver = ModuleResolver::new(config);
+        let resolver = ModuleResolver::new(config).expect("test configuration should be valid");
         let mut modules = FxIndexMap::default();
         for (name, ast, path, hash) in entries {
             let id = resolver.register_module(name, &path);

@@ -1155,7 +1155,8 @@ mod tests {
     #[test]
     fn test_graph_module_id_accepts_resolver_alias() {
         let mut graph = DependencyGraph::new();
-        let resolver = ModuleResolver::new(crate::config::Config::default());
+        let resolver = ModuleResolver::new(crate::config::Config::default())
+            .expect("default configuration should be valid");
         resolver.register_module("__main__", std::path::Path::new("main.py"));
         let module_id = resolver.register_module("utils", std::path::Path::new("utils.py"));
         let alias_id = resolver.register_module("src.utils", std::path::Path::new("utils.py"));
@@ -1170,7 +1171,8 @@ mod tests {
     #[test]
     fn test_basic_tree_shaking() {
         let mut graph = DependencyGraph::new();
-        let resolver = ModuleResolver::new(crate::config::Config::default());
+        let resolver = ModuleResolver::new(crate::config::Config::default())
+            .expect("default configuration should be valid");
         let entry_id = resolver.register_module("__main__", std::path::Path::new("main.py"));
         let module_id = resolver.register_module("test_module", std::path::Path::new("test.py"));
 
@@ -1257,7 +1259,8 @@ mod tests {
     #[test]
     fn test_mark_all_symbols_from_module_all_as_used_falls_back_to_local_symbol() {
         let mut graph = DependencyGraph::new();
-        let resolver = ModuleResolver::new(crate::config::Config::default());
+        let resolver = ModuleResolver::new(crate::config::Config::default())
+            .expect("default configuration should be valid");
         resolver.register_module("__main__", std::path::Path::new("main.py"));
         let module_id =
             resolver.register_module("all_module", std::path::Path::new("all_module.py"));
@@ -1301,7 +1304,8 @@ mod tests {
     #[test]
     fn test_mark_scoped_imports_marks_local_import_bindings_used() {
         let mut graph = DependencyGraph::new();
-        let resolver = ModuleResolver::new(crate::config::Config::default());
+        let resolver = ModuleResolver::new(crate::config::Config::default())
+            .expect("default configuration should be valid");
         resolver.register_module("__main__", std::path::Path::new("main.py"));
         let module_id =
             resolver.register_module("scoped_imports", std::path::Path::new("scoped_imports.py"));
@@ -1328,7 +1332,8 @@ mod tests {
     #[test]
     fn test_find_attribute_in_namespace_resolves_alias_submodule() {
         let mut graph = DependencyGraph::new();
-        let resolver = ModuleResolver::new(crate::config::Config::default());
+        let resolver = ModuleResolver::new(crate::config::Config::default())
+            .expect("default configuration should be valid");
         resolver.register_module("__main__", std::path::Path::new("main.py"));
         let submodule_id = resolver.register_module(
             "real_pkg.feature",
