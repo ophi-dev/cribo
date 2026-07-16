@@ -299,6 +299,7 @@ impl<'a> SemanticModelBuilder<'a> {
                 for item in &with_stmt.items {
                     self.visit_expr(&item.context_expr);
                     if let Some(target) = &item.optional_vars {
+                        self.visit_expr(target);
                         self.bind_assignment_target(target, AssignmentBindingKind::WithItemVar);
                     }
                 }
@@ -878,6 +879,9 @@ finally:
 with (context_named := manager()) as (with_value, *with_rest):
     with_body_value = 1
 
+with manager() as with_slots[(with_target_named := 0)]:
+    pass
+
 for loop_value, *loop_rest in (iter_named := ()):
     loop_body_value = 1
 else:
@@ -928,6 +932,7 @@ lambda_value = lambda: (lambda_local := 1)
             "with_rest",
             "with_body_value",
             "context_named",
+            "with_target_named",
             "loop_value",
             "loop_rest",
             "loop_body_value",

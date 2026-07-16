@@ -29,7 +29,7 @@ class _Cribo():
         return _CriboModule(m, n)
 _cribo = _Cribo()
 named_source = _cribo.types.SimpleNamespace(__name__='named_source', __initializing__=False, __initialized__=False)
-def _cribo_init___cribo_4502a2_named_source(self):
+def _cribo_init___cribo_0a355e_named_source(self):
     if getattr(self, '__initialized__', False):
         return self
     if getattr(self, '__initializing__', False):
@@ -55,6 +55,10 @@ def _cribo_init___cribo_4502a2_named_source(self):
     with ((CONTEXT_MANAGER := nullcontext("context")), _cribo.builtins.setattr(named_source, 'CONTEXT_MANAGER', CONTEXT_MANAGER))[0] as CONTEXT_VALUE:
         named_source.CONTEXT_VALUE = CONTEXT_VALUE
         pass
+    WITH_TARGET_SLOTS = [None]
+    self.WITH_TARGET_SLOTS = WITH_TARGET_SLOTS
+    with _cribo.contextlib.nullcontext("with-target") as WITH_TARGET_SLOTS[((WITH_TARGET_VALUE := 0), _cribo.builtins.setattr(named_source, 'WITH_TARGET_VALUE', WITH_TARGET_VALUE))[0]]:
+        assert WITH_TARGET_SLOTS[WITH_TARGET_VALUE] == "with-target"
     match "subject":
         case _ if ((GUARD_VALUE := "guard"), _cribo.builtins.setattr(named_source, 'GUARD_VALUE', GUARD_VALUE))[0]:
             pass
@@ -71,13 +75,14 @@ def _cribo_init___cribo_4502a2_named_source(self):
     self.__initialized__ = True
     self.__initializing__ = False
     return self
-named_source.__init__ = _cribo_init___cribo_4502a2_named_source
-named_source = _cribo_init___cribo_4502a2_named_source(named_source)
+named_source.__init__ = _cribo_init___cribo_0a355e_named_source
+named_source = _cribo_init___cribo_0a355e_named_source(named_source)
 print(named_source.IF_VALUE)
 print(named_source.DEFAULT_VALUE, named_source.with_default())
 print(named_source.DECORATOR_VALUE is named_source.decorator)
 print(named_source.decorated())
 print(named_source.CONTEXT_VALUE)
+print(named_source.WITH_TARGET_VALUE, named_source.WITH_TARGET_SLOTS)
 print(named_source.GUARD_VALUE)
 print(named_source.FOR_TARGET_VALUE, named_source.TARGET_SLOTS)
 print(named_source.COMPREHENSION_VALUE, named_source.COMPREHENSION_RESULT)

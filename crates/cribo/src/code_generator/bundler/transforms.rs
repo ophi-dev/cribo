@@ -324,6 +324,9 @@ impl Bundler<'_> {
             Stmt::With(with_stmt) => {
                 for item in &mut with_stmt.items {
                     transformer.visit_expr(&mut item.context_expr);
+                    if let Some(target) = &mut item.optional_vars {
+                        transformer.visit_expr(target);
+                    }
                 }
             }
             Stmt::Match(match_stmt) => {

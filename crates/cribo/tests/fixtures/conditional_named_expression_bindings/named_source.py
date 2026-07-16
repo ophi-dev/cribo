@@ -21,6 +21,10 @@ def decorated():
 with (CONTEXT_MANAGER := nullcontext("context")) as CONTEXT_VALUE:
     pass
 
+WITH_TARGET_SLOTS = [None]
+with nullcontext("with-target") as WITH_TARGET_SLOTS[(WITH_TARGET_VALUE := 0)]:
+    assert WITH_TARGET_SLOTS[WITH_TARGET_VALUE] == "with-target"
+
 match "subject":
     case _ if (GUARD_VALUE := "guard"):
         pass
