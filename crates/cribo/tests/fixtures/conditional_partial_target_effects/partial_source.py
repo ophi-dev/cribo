@@ -5,13 +5,13 @@ if __name__ != "__main__":
     try:
         ASSIGNED = target.value = "assigned"
     except RuntimeError:
-        pass
+        assert target.assignment_visible
 
     DELETED = "deleted"
     try:
         del DELETED, target.value
     except RuntimeError:
-        pass
+        assert target.deletion_applied
 
     ASSIGNMENT_VISIBLE = target.assignment_visible
     DELETION_APPLIED = target.deletion_applied

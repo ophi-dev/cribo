@@ -37,7 +37,7 @@ def _cribo_init___cribo_fd60a5_partial_observer(self):
         return self
     self.__initializing__ = True
     global partial_source
-    partial_source = _cribo_init___cribo_833c2e_partial_source(partial_source)
+    partial_source = _cribo_init___cribo_57bcea_partial_source(partial_source)
     self.partial_source = partial_source
 
     class FailingTarget:
@@ -55,7 +55,7 @@ def _cribo_init___cribo_fd60a5_partial_observer(self):
     self.__initializing__ = False
     return self
 partial_observer.__init__ = _cribo_init___cribo_fd60a5_partial_observer
-def _cribo_init___cribo_833c2e_partial_source(self):
+def _cribo_init___cribo_57bcea_partial_source(self):
     if getattr(self, '__initialized__', False):
         return self
     if getattr(self, '__initializing__', False):
@@ -73,7 +73,7 @@ def _cribo_init___cribo_833c2e_partial_source(self):
             partial_source.ASSIGNED = ASSIGNED
             target.value = _cribo_assignment_value_119
         except RuntimeError:
-            pass
+            assert target.assignment_visible
         DELETED = "deleted"
         partial_source.DELETED = DELETED
         try:
@@ -82,7 +82,7 @@ def _cribo_init___cribo_833c2e_partial_source(self):
                 _cribo.builtins.delattr(partial_source, 'DELETED')
             del target.value
         except RuntimeError:
-            pass
+            assert target.deletion_applied
         ASSIGNMENT_VISIBLE = target.assignment_visible
         partial_source.ASSIGNMENT_VISIBLE = ASSIGNMENT_VISIBLE
         DELETION_APPLIED = target.deletion_applied
@@ -90,8 +90,8 @@ def _cribo_init___cribo_833c2e_partial_source(self):
     self.__initialized__ = True
     self.__initializing__ = False
     return self
-partial_source.__init__ = _cribo_init___cribo_833c2e_partial_source
-partial_source = _cribo_init___cribo_833c2e_partial_source(partial_source)
+partial_source.__init__ = _cribo_init___cribo_57bcea_partial_source
+partial_source = _cribo_init___cribo_57bcea_partial_source(partial_source)
 print(partial_source.ASSIGNED)
 print(partial_source.ASSIGNMENT_VISIBLE)
 print(hasattr(partial_source, "DELETED"))
