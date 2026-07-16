@@ -365,7 +365,7 @@ impl Bundler<'_> {
         }
     }
 
-    /// Create a synthetic call that removes an exception target from the module namespace.
+    /// Create a synthetic call that removes a conditional binding from the module namespace.
     fn conditional_module_attr_delete(module_name: &str, name: &str) -> Stmt {
         statements::expr(expressions::call(
             expressions::dotted_name(&["_cribo", "builtins", "delattr"], ExprContext::Load),
@@ -680,6 +680,21 @@ impl Bundler<'_> {
                                      module '{module_name}' (complex or invalid attribute name)"
                                 );
                             }
+                        }
+                    }
+                }
+                Stmt::Delete(delete) => {
+                    result.push(stmt.clone());
+                    let names: FxIndexSet<&str> = delete
+                        .targets
+                        .iter()
+                        .flat_map(|target| {
+                            crate::visitors::utils::collect_names_from_assignment_target(target)
+                        })
+                        .collect();
+                    for name in names {
+                        if Self::should_sync_conditional_module_attr(name, module_scope_symbols) {
+                            result.push(Self::conditional_module_attr_delete(module_name, name));
                         }
                     }
                 }
