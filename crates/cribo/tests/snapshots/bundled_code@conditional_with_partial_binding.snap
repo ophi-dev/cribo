@@ -29,7 +29,7 @@ class _Cribo():
         return _CriboModule(m, n)
 _cribo = _Cribo()
 with_source = _cribo.types.SimpleNamespace(__name__='with_source', __initializing__=False, __initialized__=False)
-def _cribo_init___cribo_932ce8_with_source(self):
+def _cribo_init___cribo_bfcd0d_with_source(self):
     if getattr(self, '__initialized__', False):
         return self
     if getattr(self, '__initializing__', False):
@@ -61,10 +61,10 @@ def _cribo_init___cribo_932ce8_with_source(self):
             with FailingContext():
                 pass
     except RuntimeError:
-        pass
+        assert EARLY_WITH_VALUE == "with"
     self.__initialized__ = True
     self.__initializing__ = False
     return self
-with_source.__init__ = _cribo_init___cribo_932ce8_with_source
-with_source = _cribo_init___cribo_932ce8_with_source(with_source)
+with_source.__init__ = _cribo_init___cribo_bfcd0d_with_source
+with_source = _cribo_init___cribo_bfcd0d_with_source(with_source)
 print(with_source.EARLY_WITH_VALUE)

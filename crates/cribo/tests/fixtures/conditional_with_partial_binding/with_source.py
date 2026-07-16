@@ -18,4 +18,4 @@ try:
     with SuccessfulContext() as EARLY_WITH_VALUE, FailingContext():
         pass
 except RuntimeError:
-    pass
+    assert EARLY_WITH_VALUE == "with"

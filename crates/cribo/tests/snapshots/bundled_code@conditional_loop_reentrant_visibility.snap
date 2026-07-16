@@ -37,7 +37,7 @@ def _cribo_init___cribo_c14888_loop_observer(self):
         return self
     self.__initializing__ = True
     global loop_source
-    loop_source = _cribo_init___cribo_651b7d_loop_source(loop_source)
+    loop_source = _cribo_init___cribo_b33aa7_loop_source(loop_source)
     self.loop_source = loop_source
 
     def observe_loop_value():
@@ -47,7 +47,7 @@ def _cribo_init___cribo_c14888_loop_observer(self):
     self.__initializing__ = False
     return self
 loop_observer.__init__ = _cribo_init___cribo_c14888_loop_observer
-def _cribo_init___cribo_651b7d_loop_source(self):
+def _cribo_init___cribo_b33aa7_loop_source(self):
     if getattr(self, '__initialized__', False):
         return self
     if getattr(self, '__initializing__', False):
@@ -60,9 +60,10 @@ def _cribo_init___cribo_651b7d_loop_source(self):
         loop_source.loop_observer = loop_observer
         OBSERVED_LOOP_VALUE = loop_observer.observe_loop_value()
         loop_source.OBSERVED_LOOP_VALUE = OBSERVED_LOOP_VALUE
+        assert OBSERVED_LOOP_VALUE == LOOP_VALUE
     self.__initialized__ = True
     self.__initializing__ = False
     return self
-loop_source.__init__ = _cribo_init___cribo_651b7d_loop_source
-loop_source = _cribo_init___cribo_651b7d_loop_source(loop_source)
+loop_source.__init__ = _cribo_init___cribo_b33aa7_loop_source
+loop_source = _cribo_init___cribo_b33aa7_loop_source(loop_source)
 print(loop_source.OBSERVED_LOOP_VALUE)
