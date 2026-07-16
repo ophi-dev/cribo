@@ -59,16 +59,10 @@ def _cribo_init___cribo_8618fb_first(self):
             VALUE = CONDITIONAL_VALUE
         first.ConditionalClass = ConditionalClass
     for LOOP_VALUE in ("loop",):
-        pass
-    try:
         first.LOOP_VALUE = LOOP_VALUE
-    except _cribo.builtins.NameError:
         pass
     for EMPTY_LOOP_VALUE in ():
-        pass
-    try:
         first.EMPTY_LOOP_VALUE = EMPTY_LOOP_VALUE
-    except _cribo.builtins.NameError:
         pass
     try:
         EMPTY_LOOP_VALUE

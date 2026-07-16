@@ -84,29 +84,6 @@ fn module_attr_sync_name<'a>(stmt: &'a Stmt, module_var: &str) -> Option<&'a str
         .then(|| value.id.as_str())
 }
 
-fn guard_unbound_module_attr_assignments(assignments: Vec<Stmt>) -> Option<Stmt> {
-    if assignments.is_empty() {
-        return None;
-    }
-
-    let handler = ExceptHandler::ExceptHandler(ruff_python_ast::ExceptHandlerExceptHandler {
-        node_index: ruff_python_ast::AtomicNodeIndex::NONE,
-        type_: Some(Box::new(expressions::dotted_name(
-            &["_cribo", "builtins", "NameError"],
-            ExprContext::Load,
-        ))),
-        name: None,
-        body: vec![statements::pass()].into(),
-        range: TextRange::default(),
-    });
-    Some(statements::try_stmt(
-        assignments,
-        vec![handler],
-        vec![],
-        vec![],
-    ))
-}
-
 impl Bundler<'_> {
     /// Process module body recursively to handle conditional imports
     pub(crate) fn process_body_recursive(
@@ -528,12 +505,13 @@ impl Bundler<'_> {
                         module_scope_symbols,
                         names,
                     );
-                    let processed_body = self.process_body_recursive_impl(
+                    let mut processed_body = module_attr_assignments;
+                    processed_body.extend(self.process_body_recursive_impl(
                         for_stmt.body.to_vec(),
                         module_name,
                         module_scope_symbols,
                         true,
-                    );
+                    ));
                     let processed_orelse = self.process_body_recursive_impl(
                         for_stmt.orelse.to_vec(),
                         module_name,
@@ -549,11 +527,6 @@ impl Bundler<'_> {
                         is_async: for_stmt.is_async,
                         range: for_stmt.range,
                     }));
-                    if let Some(sync) =
-                        guard_unbound_module_attr_assignments(module_attr_assignments)
-                    {
-                        result.push(sync);
-                    }
                 }
                 Stmt::While(while_stmt) => {
                     let processed_body = self.process_body_recursive_impl(
@@ -577,30 +550,39 @@ impl Bundler<'_> {
                     }));
                 }
                 Stmt::With(with_stmt) => {
-                    let names = with_stmt
-                        .items
-                        .iter()
-                        .filter_map(|item| item.optional_vars.as_deref())
-                        .flat_map(crate::visitors::utils::collect_names_from_assignment_target)
-                        .map(str::to_owned);
-                    let mut processed_body = Self::conditional_module_attr_assignments(
-                        module_name,
-                        module_scope_symbols,
-                        names,
-                    );
-                    processed_body.extend(self.process_body_recursive_impl(
+                    let mut nested_body = self.process_body_recursive_impl(
                         with_stmt.body.to_vec(),
                         module_name,
                         module_scope_symbols,
                         true,
-                    ));
-                    result.push(Stmt::With(ruff_python_ast::StmtWith {
-                        node_index: with_stmt.node_index.clone(),
-                        items: with_stmt.items.clone(),
-                        body: processed_body.into(),
-                        is_async: with_stmt.is_async,
-                        range: with_stmt.range,
-                    }));
+                    );
+
+                    for (index, item) in with_stmt.items.iter().enumerate().rev() {
+                        let names = item
+                            .optional_vars
+                            .as_deref()
+                            .into_iter()
+                            .flat_map(crate::visitors::utils::collect_names_from_assignment_target)
+                            .map(str::to_owned);
+                        let mut item_body = Self::conditional_module_attr_assignments(
+                            module_name,
+                            module_scope_symbols,
+                            names,
+                        );
+                        item_body.extend(nested_body);
+                        nested_body = vec![Stmt::With(ruff_python_ast::StmtWith {
+                            node_index: if index == 0 {
+                                with_stmt.node_index.clone()
+                            } else {
+                                ruff_python_ast::AtomicNodeIndex::NONE
+                            },
+                            items: vec![item.clone()],
+                            body: item_body.into(),
+                            is_async: with_stmt.is_async,
+                            range: with_stmt.range,
+                        })];
+                    }
+                    result.extend(nested_body);
                 }
                 Stmt::Match(match_stmt) => {
                     let processed_cases = match_stmt
