@@ -1,7 +1,7 @@
 //! AST statement/expression transformation and global variable lifting.
 
 use ruff_python_ast::{
-    ExceptHandler, Expr, ExprContext, ModModule, Pattern, Stmt, StmtFunctionDef,
+    BoolOp, ExceptHandler, Expr, ExprContext, ModModule, Pattern, Stmt, StmtFunctionDef,
 };
 use ruff_text_size::TextRange;
 
@@ -95,6 +95,13 @@ impl Bundler<'_> {
         self.process_body_recursive_impl(body, module_name, module_scope_symbols, false)
     }
 
+    fn should_sync_conditional_module_attr(
+        name: &str,
+        module_scope_symbols: Option<&FxIndexSet<String>>,
+    ) -> bool {
+        !name.starts_with('_') && module_scope_symbols.is_none_or(|symbols| symbols.contains(name))
+    }
+
     fn conditional_module_attr_assignments(
         module_name: &str,
         module_scope_symbols: Option<&FxIndexSet<String>>,
@@ -103,10 +110,7 @@ impl Bundler<'_> {
         let module_var = sanitize_module_name_for_identifier(module_name);
         names
             .into_iter()
-            .filter(|name| {
-                !name.starts_with('_')
-                    && module_scope_symbols.is_none_or(|symbols| symbols.contains(name))
-            })
+            .filter(|name| Self::should_sync_conditional_module_attr(name, module_scope_symbols))
             .map(|name| {
                 crate::code_generator::module_registry::create_module_attr_assignment(
                     &module_var,
@@ -114,6 +118,35 @@ impl Bundler<'_> {
                 )
             })
             .collect()
+    }
+
+    fn conditional_module_attr_guard(
+        module_name: &str,
+        module_scope_symbols: Option<&FxIndexSet<String>>,
+        names: impl IntoIterator<Item = String>,
+        guard: Expr,
+    ) -> Expr {
+        let module_var = sanitize_module_name_for_identifier(module_name);
+        let mut values: Vec<Expr> = names
+            .into_iter()
+            .filter(|name| Self::should_sync_conditional_module_attr(name, module_scope_symbols))
+            .map(|name| {
+                expressions::call(
+                    expressions::dotted_name(&["_cribo", "builtins", "setattr"], ExprContext::Load),
+                    vec![
+                        expressions::name(&module_var, ExprContext::Load),
+                        expressions::string_literal(&name),
+                        expressions::name(&name, ExprContext::Load),
+                    ],
+                    vec![],
+                )
+            })
+            .collect();
+        if values.is_empty() {
+            return guard;
+        }
+        values.push(guard);
+        expressions::bool_op(BoolOp::Or, values)
     }
 
     /// Implementation of `process_body_recursive` with conditional context tracking
@@ -591,21 +624,36 @@ impl Bundler<'_> {
                         .map(|case| {
                             let mut names = FxIndexSet::default();
                             collect_pattern_binding_names(&case.pattern, &mut names);
-                            let mut processed_body = Self::conditional_module_attr_assignments(
-                                module_name,
-                                module_scope_symbols,
-                                names,
-                            );
-                            processed_body.extend(self.process_body_recursive_impl(
+                            let processed_body = self.process_body_recursive_impl(
                                 case.body.to_vec(),
                                 module_name,
                                 module_scope_symbols,
                                 true,
-                            ));
+                            );
+                            let (guard, processed_body) = if let Some(original_guard) = &case.guard
+                            {
+                                (
+                                    Some(Box::new(Self::conditional_module_attr_guard(
+                                        module_name,
+                                        module_scope_symbols,
+                                        names,
+                                        original_guard.as_ref().clone(),
+                                    ))),
+                                    processed_body,
+                                )
+                            } else {
+                                let mut body = Self::conditional_module_attr_assignments(
+                                    module_name,
+                                    module_scope_symbols,
+                                    names,
+                                );
+                                body.extend(processed_body);
+                                (None, body)
+                            };
                             ruff_python_ast::MatchCase {
                                 node_index: case.node_index.clone(),
                                 pattern: case.pattern.clone(),
-                                guard: case.guard.clone(),
+                                guard,
                                 body: processed_body.into(),
                                 range: case.range,
                             }
