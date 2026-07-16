@@ -7,7 +7,7 @@ use std::{
     sync::Mutex,
 };
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use cow_utils::CowUtils;
 use indexmap::{IndexMap, IndexSet};
 use log::{debug, info, warn};
@@ -424,7 +424,7 @@ impl ModuleResolver {
         }
     }
 
-    pub fn new(config: Config) -> Self {
+    pub fn new(config: Config) -> Result<Self> {
         Self::new_with_overrides(config, None, None)
     }
 
@@ -434,12 +434,12 @@ impl ModuleResolver {
         config: Config,
         pythonpath_override: Option<&str>,
         virtualenv_override: Option<&str>,
-    ) -> Self {
+    ) -> Result<Self> {
         let python_version = config
             .python_version()
-            .expect("ModuleResolver requires a validated target Python version");
+            .context("ModuleResolver requires a validated target Python version")?;
 
-        Self {
+        Ok(Self {
             config,
             registry: Mutex::new(ModuleRegistry::new()),
             module_cache: RefCell::new(IndexMap::new()),
@@ -449,7 +449,7 @@ impl ModuleResolver {
             python_version,
             pythonpath_override: pythonpath_override.map(str::to_owned),
             virtualenv_override: virtualenv_override.map(str::to_owned),
-        }
+        })
     }
 
     /// Set the entry file for the resolver
@@ -1682,7 +1682,7 @@ mod tests {
         let temp_dir = TempDir::new()?;
         let module_path = temp_dir.path().join("utils.py");
         create_test_file(&module_path, "")?;
-        let resolver = ModuleResolver::new(Config::default());
+        let resolver = ModuleResolver::new(Config::default())?;
 
         let primary_id = resolver.register_module("utils", &module_path);
         let alias_id = resolver.register_module("src.utils", &module_path);
@@ -1717,7 +1717,7 @@ mod tests {
             src: vec![root.to_path_buf()],
             ..Default::default()
         };
-        let resolver = ModuleResolver::new(config);
+        let resolver = ModuleResolver::new(config)?;
 
         // Resolve foo - should prefer foo/__init__.py
         let result = resolver.resolve_module_path("foo")?;
@@ -1753,7 +1753,7 @@ mod tests {
             src: vec![other_src],
             ..Default::default()
         };
-        let mut resolver = ModuleResolver::new(config);
+        let mut resolver = ModuleResolver::new(config)?;
         resolver.set_entry_file(&entry_file, &entry_file);
 
         // Resolve helper - should find the one in entry dir, not lib
@@ -1798,7 +1798,7 @@ mod tests {
             src: vec![root.to_path_buf()],
             ..Default::default()
         };
-        let resolver = ModuleResolver::new(config);
+        let resolver = ModuleResolver::new(config)?;
 
         // Test various imports
         assert_eq!(
@@ -1848,7 +1848,7 @@ mod tests {
             known_third_party: IndexSet::from(["requests".to_owned()]),
             ..Default::default()
         };
-        let resolver = ModuleResolver::new(config);
+        let resolver = ModuleResolver::new(config)?;
 
         // Test classifications
         assert_eq!(
@@ -1887,19 +1887,41 @@ mod tests {
     fn test_classification_respects_target_python_version() -> Result<()> {
         let mut py38_config = Config::default();
         py38_config.set_target_version("py38".to_owned())?;
-        let py38_resolver = ModuleResolver::new(py38_config);
+        let py38_resolver = ModuleResolver::new(py38_config)?;
         let py38_classification = py38_resolver.classify_import("zoneinfo");
 
         assert_ne!(py38_classification.origin, ImportOrigin::StandardLibrary);
         assert_eq!(py38_classification.requirement.as_deref(), Some("zoneinfo"));
 
-        let py310_resolver = ModuleResolver::new(Config::default());
+        let py310_resolver = ModuleResolver::new(Config::default())?;
         let py310_classification = py310_resolver.classify_import("zoneinfo");
 
         assert_eq!(py310_classification.origin, ImportOrigin::StandardLibrary);
         assert_eq!(py310_classification.requirement, None);
 
         Ok(())
+    }
+
+    #[test]
+    fn test_invalid_target_python_version_is_rejected() {
+        let config = Config {
+            target_version: "invalid".to_owned(),
+            ..Default::default()
+        };
+
+        let error =
+            ModuleResolver::new(config).expect_err("invalid target version should be rejected");
+
+        assert_eq!(
+            error.to_string(),
+            "ModuleResolver requires a validated target Python version"
+        );
+        assert!(
+            error
+                .root_cause()
+                .to_string()
+                .contains("Invalid target version 'invalid'")
+        );
     }
 
     #[test]
@@ -1910,7 +1932,7 @@ mod tests {
 
         let pythonpath = site_packages.to_string_lossy();
         let resolver =
-            ModuleResolver::new_with_overrides(Config::default(), Some(pythonpath.as_ref()), None);
+            ModuleResolver::new_with_overrides(Config::default(), Some(pythonpath.as_ref()), None)?;
 
         let package = resolver.classify_import("mixed_package");
         assert_eq!(package.origin, ImportOrigin::ThirdParty);
@@ -1958,7 +1980,7 @@ mod tests {
         let resolver = ModuleResolver::new(Config {
             src: vec![root.to_path_buf()],
             ..Default::default()
-        });
+        })?;
 
         for module_name in ["native_parent", "native_parent.native_child"] {
             let classification = resolver.classify_import(module_name);
@@ -1985,7 +2007,7 @@ mod tests {
             Config::default(),
             Some(""),
             Some(virtualenv_path.as_ref()),
-        );
+        )?;
 
         let classification = resolver.classify_import("mixed_package");
         assert_eq!(classification.origin, ImportOrigin::ThirdParty);
@@ -2009,7 +2031,7 @@ mod tests {
             src: vec![root.to_path_buf()],
             ..Default::default()
         };
-        let resolver = ModuleResolver::new(config);
+        let resolver = ModuleResolver::new(config)?;
 
         // Namespace packages should be resolved to the directory
         let result = resolver.resolve_module_path("namespace_pkg")?;
@@ -2040,7 +2062,7 @@ mod tests {
         let resolver = ModuleResolver::new(Config {
             src: vec![root.to_path_buf()],
             ..Default::default()
-        });
+        })?;
 
         assert_eq!(
             resolver.resolve_module_path("namespace_pkg")?,
@@ -2100,7 +2122,7 @@ mod tests {
             src: vec![root.to_path_buf()],
             ..Default::default()
         };
-        let resolver = ModuleResolver::new(config);
+        let resolver = ModuleResolver::new(config)?;
 
         // Test relative import from module3.py
         let module3_path = root.join("mypackage/subpackage/deeper/module3.py");
@@ -2223,7 +2245,7 @@ mod tests {
 
         // Create resolver with PYTHONPATH override
         let pythonpath_str = pythonpath_dir.to_string_lossy();
-        let resolver = ModuleResolver::new_with_overrides(config, Some(&pythonpath_str), None);
+        let resolver = ModuleResolver::new_with_overrides(config, Some(&pythonpath_str), None)?;
 
         // Test that modules can be resolved from both src and PYTHONPATH
         assert!(
@@ -2293,7 +2315,7 @@ mod tests {
 
         // Create resolver with PYTHONPATH override
         let pythonpath_str = pythonpath_dir.to_string_lossy();
-        let resolver = ModuleResolver::new_with_overrides(config, Some(&pythonpath_str), None);
+        let resolver = ModuleResolver::new_with_overrides(config, Some(&pythonpath_str), None)?;
 
         // Test that PYTHONPATH modules are classified as first-party
         assert_eq!(
@@ -2347,7 +2369,7 @@ mod tests {
             separator,
             pythonpath_dir2.to_string_lossy()
         );
-        let resolver = ModuleResolver::new_with_overrides(config, Some(&pythonpath_str), None);
+        let resolver = ModuleResolver::new_with_overrides(config, Some(&pythonpath_str), None)?;
 
         // Test that modules from both PYTHONPATH directories can be resolved
         assert!(
@@ -2391,7 +2413,7 @@ mod tests {
         };
 
         // Test with empty PYTHONPATH
-        let resolver1 = ModuleResolver::new_with_overrides(config.clone(), Some(""), None);
+        let resolver1 = ModuleResolver::new_with_overrides(config.clone(), Some(""), None)?;
 
         // Should be able to resolve module from src directory
         assert!(
@@ -2400,7 +2422,7 @@ mod tests {
         );
 
         // Test with no PYTHONPATH
-        let resolver2 = ModuleResolver::new_with_overrides(config.clone(), None, None);
+        let resolver2 = ModuleResolver::new_with_overrides(config.clone(), None, None)?;
 
         // Should be able to resolve module from src directory
         assert!(
@@ -2412,7 +2434,7 @@ mod tests {
         let separator = if cfg!(windows) { ';' } else { ':' };
         let nonexistent_pythonpath = format!("/nonexistent1{separator}/nonexistent2");
         let resolver3 =
-            ModuleResolver::new_with_overrides(config, Some(&nonexistent_pythonpath), None);
+            ModuleResolver::new_with_overrides(config, Some(&nonexistent_pythonpath), None)?;
 
         // Should still be able to resolve module from src directory
         assert!(
@@ -2463,7 +2485,7 @@ mod tests {
             separator,
             other_dir.to_string_lossy()
         );
-        let resolver = ModuleResolver::new_with_overrides(config, Some(&pythonpath_str), None);
+        let resolver = ModuleResolver::new_with_overrides(config, Some(&pythonpath_str), None)?;
 
         // Test that deduplication works - both modules should be resolvable
         assert!(
@@ -2514,7 +2536,7 @@ mod tests {
             .expect("test source directory should have a parent");
         let relative_path = parent_dir.join("src/../src"); // This resolves to the same directory
         let pythonpath_str = relative_path.to_string_lossy();
-        let resolver = ModuleResolver::new_with_overrides(config, Some(&pythonpath_str), None);
+        let resolver = ModuleResolver::new_with_overrides(config, Some(&pythonpath_str), None)?;
 
         // Test that the module can be resolved despite path canonicalization differences
         assert!(

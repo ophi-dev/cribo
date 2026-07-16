@@ -316,7 +316,7 @@ impl BundleOrchestrator {
         }
 
         // Initialize resolver with the updated config
-        let mut resolver = ModuleResolver::new(self.config.clone());
+        let mut resolver = ModuleResolver::new(self.config.clone())?;
 
         // Set the entry file to establish the primary search path
         resolver.set_entry_file(entry_path, &original_entry_path);

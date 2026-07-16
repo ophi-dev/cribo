@@ -1036,7 +1036,8 @@ mod tests {
 
     #[test]
     fn test_type_checking_import_collector_treats_not_type_checking_continuations_as_type_only() {
-        let resolver = ModuleResolver::new(Config::default());
+        let resolver =
+            ModuleResolver::new(Config::default()).expect("default configuration should be valid");
         let imported_id = resolver.register_module("types_mod", Path::new("types_mod.py"));
 
         let statements = ruff_python_parser::parse_module(
@@ -1066,7 +1067,8 @@ else:
 
     #[test]
     fn test_reorder_statements_for_circular_module_preserves_entry_order() {
-        let resolver = ModuleResolver::new(Config::default());
+        let resolver =
+            ModuleResolver::new(Config::default()).expect("default configuration should be valid");
         let mut bundler = Bundler::new(&resolver);
         bundler.entry_module_name = "entry_module".to_owned();
 
@@ -1080,7 +1082,8 @@ else:
 
     #[test]
     fn test_reorder_statements_for_circular_module_preserves_non_entry_order() {
-        let resolver = ModuleResolver::new(Config::default());
+        let resolver =
+            ModuleResolver::new(Config::default()).expect("default configuration should be valid");
         let mut bundler = Bundler::new(&resolver);
         bundler.entry_module_name = "entry_module".to_owned();
 

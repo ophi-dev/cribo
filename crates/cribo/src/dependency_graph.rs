@@ -679,7 +679,8 @@ mod tests {
     };
 
     fn register_modules(names: &[&str]) -> (ModuleResolver, Vec<ModuleId>) {
-        let resolver = ModuleResolver::new(Config::default());
+        let resolver =
+            ModuleResolver::new(Config::default()).expect("default configuration should be valid");
         let ids = names
             .iter()
             .map(|name| resolver.register_module(name, std::path::Path::new(name)))
