@@ -1,6 +1,5 @@
 ---
 source: crates/cribo/tests/test_bundling_snapshots.rs
-assertion_line: 538
 input_file: crates/cribo/tests/fixtures/try_except_function_export/main.py
 ---
 #!/usr/bin/env python3
@@ -46,12 +45,14 @@ def _cribo_init___cribo_e6f4c0_test_module(self):
 
         def get_function():
             return "fallback function"
+        test_module.get_function = get_function
         HAS_MODULE = False
         test_module.HAS_MODULE = HAS_MODULE
     else:
 
         def get_function():
             return "real function with module"
+        test_module.get_function = get_function
     self.get_function = get_function
     self.__initialized__ = True
     self.__initializing__ = False

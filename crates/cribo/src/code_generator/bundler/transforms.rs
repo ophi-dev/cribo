@@ -1,12 +1,18 @@
 //! AST statement/expression transformation and global variable lifting.
 
-use ruff_python_ast::{ExceptHandler, Expr, ExprContext, ModModule, Stmt, StmtFunctionDef};
+use ruff_python_ast::{
+    ExceptHandler, Expr, ExprContext, ModModule, Pattern, Stmt, StmtFunctionDef,
+    visitor::transformer::{self, Transformer},
+};
 use ruff_text_size::TextRange;
 
 use super::Bundler;
 use crate::{
     ast_builder::{expressions, other, statements},
-    code_generator::{expression_handlers, module_registry::sanitize_module_name_for_identifier},
+    code_generator::{
+        expression_handlers,
+        module_registry::{generate_unique_name, sanitize_module_name_for_identifier},
+    },
     types::{FxIndexMap, FxIndexSet},
     visitors::LocalVarCollector,
 };
@@ -19,33 +25,866 @@ struct TransformFunctionParams<'a> {
     module_name: Option<&'a str>,
 }
 
+/// Collect every name bound by a structural pattern, including nested and starred captures.
+fn collect_pattern_binding_names(pattern: &Pattern, names: &mut FxIndexSet<String>) {
+    match pattern {
+        Pattern::MatchSequence(sequence) => {
+            for pattern in &sequence.patterns {
+                collect_pattern_binding_names(pattern, names);
+            }
+        }
+        Pattern::MatchMapping(mapping) => {
+            for pattern in &mapping.patterns {
+                collect_pattern_binding_names(pattern, names);
+            }
+            if let Some(name) = &mapping.rest {
+                names.insert(name.to_string());
+            }
+        }
+        Pattern::MatchClass(class) => {
+            for pattern in &class.arguments.patterns {
+                collect_pattern_binding_names(pattern, names);
+            }
+            for keyword in &class.arguments.keywords {
+                collect_pattern_binding_names(&keyword.pattern, names);
+            }
+        }
+        Pattern::MatchStar(star) => {
+            if let Some(name) = &star.name {
+                names.insert(name.to_string());
+            }
+        }
+        Pattern::MatchAs(as_pattern) => {
+            if let Some(pattern) = &as_pattern.pattern {
+                collect_pattern_binding_names(pattern, names);
+            }
+            if let Some(name) = &as_pattern.name {
+                names.insert(name.to_string());
+            }
+        }
+        Pattern::MatchOr(or_pattern) => {
+            for pattern in &or_pattern.patterns {
+                collect_pattern_binding_names(pattern, names);
+            }
+        }
+        Pattern::MatchValue(_) | Pattern::MatchSingleton(_) => {}
+    }
+}
+
+/// Return the name synchronized by a simple generated `module.name = name` assignment.
+fn module_attr_sync_name<'a>(stmt: &'a Stmt, module_var: &str) -> Option<&'a str> {
+    let Stmt::Assign(assign) = stmt else {
+        return None;
+    };
+    let [Expr::Attribute(target)] = assign.targets.as_slice() else {
+        return None;
+    };
+    let Expr::Name(module) = target.value.as_ref() else {
+        return None;
+    };
+    let Expr::Name(value) = assign.value.as_ref() else {
+        return None;
+    };
+
+    (module.id.as_str() == module_var && target.attr.as_str() == value.id.as_str())
+        .then(|| value.id.as_str())
+}
+
+/// Rewrites module-scope assignment expressions to synchronize their values with a module object.
+struct NamedExprSyncTransformer<'a> {
+    module_var: String,
+    module_scope_symbols: Option<&'a FxIndexSet<String>>,
+}
+
+impl NamedExprSyncTransformer<'_> {
+    /// Return whether a named expression target should be visible on the generated module.
+    fn should_sync(&self, name: &str) -> bool {
+        self.module_scope_symbols
+            .map_or_else(|| !name.starts_with('_'), |symbols| symbols.contains(name))
+    }
+
+    /// Build the synthetic `setattr(module, "name", name)` expression used after a binding.
+    fn sync_call(&self, name: &str) -> Expr {
+        expressions::call(
+            expressions::dotted_name(&["_cribo", "builtins", "setattr"], ExprContext::Load),
+            vec![
+                expressions::name(&self.module_var, ExprContext::Load),
+                expressions::string_literal(name),
+                expressions::name(name, ExprContext::Load),
+            ],
+            vec![],
+        )
+    }
+}
+
+impl Transformer for NamedExprSyncTransformer<'_> {
+    fn visit_expr(&self, expr: &mut Expr) {
+        if let Expr::Lambda(lambda) = expr {
+            if let Some(parameters) = &mut lambda.parameters {
+                self.visit_parameters(parameters);
+            }
+            return;
+        }
+
+        transformer::walk_expr(self, expr);
+
+        let Expr::Named(named) = expr else {
+            return;
+        };
+        let Expr::Name(target) = named.target.as_ref() else {
+            return;
+        };
+        let name = target.id.to_string();
+        if target.ctx != ExprContext::Store || !self.should_sync(&name) {
+            return;
+        }
+
+        let named_expr = std::mem::replace(expr, expressions::none_literal());
+        *expr = expressions::subscript(
+            expressions::tuple(vec![named_expr, self.sync_call(&name)]),
+            expressions::integer_literal(0),
+            ExprContext::Load,
+        );
+    }
+}
+
+/// Lowers conditional assignment targets so each successful name store is synchronized
+/// immediately, while preserving Python's unpacking and target evaluation order.
+struct ConditionalAssignmentLowerer<'a> {
+    module_name: &'a str,
+    module_scope_symbols: Option<&'a FxIndexSet<String>>,
+    reserved_names: FxIndexSet<String>,
+    temporary_name_prefix: String,
+    temporary_name_index: usize,
+    statements: Vec<Stmt>,
+}
+
+impl<'a> ConditionalAssignmentLowerer<'a> {
+    /// Create a lowerer with all existing module-scope names reserved.
+    fn new(
+        module_name: &'a str,
+        module_scope_symbols: Option<&'a FxIndexSet<String>>,
+        range: TextRange,
+    ) -> Self {
+        Self {
+            module_name,
+            module_scope_symbols,
+            reserved_names: module_scope_symbols.cloned().unwrap_or_default(),
+            temporary_name_prefix: format!("_cribo_assignment_target_{}", u32::from(range.start())),
+            temporary_name_index: 0,
+            statements: Vec::new(),
+        }
+    }
+
+    /// Return the lowered statements after all targets have been processed.
+    fn finish(self) -> Vec<Stmt> {
+        self.statements
+    }
+
+    /// Allocate a private temporary name that cannot shadow a module-scope binding.
+    fn next_temporary_name(&mut self) -> String {
+        let base_name = format!(
+            "{}_{}",
+            self.temporary_name_prefix, self.temporary_name_index
+        );
+        self.temporary_name_index += 1;
+        self.reserve_temporary_name(&base_name)
+    }
+
+    /// Reserve a specific temporary base name, adding a suffix when necessary.
+    fn reserve_temporary_name(&mut self, base_name: &str) -> String {
+        let name = generate_unique_name(base_name, &self.reserved_names);
+        self.reserved_names.insert(name.clone());
+        name
+    }
+
+    /// Store a value into one target, recursively lowering nested unpacking targets.
+    fn lower_store(&mut self, target: &Expr, value: Expr) {
+        match target {
+            Expr::Tuple(_) | Expr::List(_) => self.lower_unpack(target, value),
+            Expr::Starred(starred) => self.lower_store(&starred.value, value),
+            _ => {
+                self.statements
+                    .push(statements::assign(vec![target.clone()], value));
+                let names = crate::visitors::utils::collect_names_from_assignment_target(target)
+                    .into_iter()
+                    .map(str::to_owned);
+                self.statements
+                    .extend(Bundler::conditional_module_attr_assignments(
+                        self.module_name,
+                        self.module_scope_symbols,
+                        names,
+                    ));
+            }
+        }
+    }
+
+    /// Unpack into private temporaries before applying real target stores left to right.
+    fn lower_unpack(&mut self, target: &Expr, value: Expr) {
+        let elements = match target {
+            Expr::Tuple(tuple) => tuple.elts.clone(),
+            Expr::List(list) => list.elts.clone(),
+            _ => return,
+        };
+        let temporary_names: Vec<String> = elements
+            .iter()
+            .map(|_| self.next_temporary_name())
+            .collect();
+        let temporary_elements = elements
+            .iter()
+            .zip(&temporary_names)
+            .map(|(element, name)| match element {
+                Expr::Starred(starred) => {
+                    let mut temporary = starred.clone();
+                    temporary.value = Box::new(expressions::name(name, ExprContext::Store));
+                    Expr::Starred(temporary)
+                }
+                _ => expressions::name(name, ExprContext::Store),
+            })
+            .collect();
+        let temporary_target = match target {
+            Expr::Tuple(tuple) => {
+                let mut temporary = tuple.clone();
+                temporary.elts = temporary_elements;
+                Expr::Tuple(temporary)
+            }
+            Expr::List(list) => {
+                let mut temporary = list.clone();
+                temporary.elts = temporary_elements;
+                Expr::List(temporary)
+            }
+            _ => return,
+        };
+        self.statements
+            .push(statements::assign(vec![temporary_target], value));
+
+        for (element, temporary_name) in elements.iter().zip(&temporary_names) {
+            let store_target = if let Expr::Starred(starred) = element {
+                starred.value.as_ref()
+            } else {
+                element
+            };
+            self.lower_store(
+                store_target,
+                expressions::name(temporary_name, ExprContext::Load),
+            );
+        }
+    }
+}
+
 impl Bundler<'_> {
     /// Process module body recursively to handle conditional imports
     pub(crate) fn process_body_recursive(
         &self,
-        body: Vec<Stmt>,
+        body: &[Stmt],
         module_name: &str,
         module_scope_symbols: Option<&FxIndexSet<String>>,
     ) -> Vec<Stmt> {
         self.process_body_recursive_impl(body, module_name, module_scope_symbols, false)
     }
 
+    /// Return whether a conditional binding should be exposed on the generated module.
+    fn should_sync_conditional_module_attr(
+        name: &str,
+        module_scope_symbols: Option<&FxIndexSet<String>>,
+    ) -> bool {
+        module_scope_symbols
+            .map_or_else(|| !name.starts_with('_'), |symbols| symbols.contains(name))
+    }
+
+    /// Create module-attribute assignments for conditional names that are semantically in scope.
+    fn conditional_module_attr_assignments(
+        module_name: &str,
+        module_scope_symbols: Option<&FxIndexSet<String>>,
+        names: impl IntoIterator<Item = String>,
+    ) -> Vec<Stmt> {
+        let module_var = sanitize_module_name_for_identifier(module_name);
+        names
+            .into_iter()
+            .filter(|name| Self::should_sync_conditional_module_attr(name, module_scope_symbols))
+            .map(|name| {
+                crate::code_generator::module_registry::create_module_attr_assignment(
+                    &module_var,
+                    &name,
+                )
+            })
+            .collect()
+    }
+
+    /// Define a wrapper type alias with the source module name in its immutable metadata.
+    fn wrapper_type_alias_statements(
+        type_alias: &ruff_python_ast::StmtTypeAlias,
+        module_name: &str,
+        module_scope_symbols: Option<&FxIndexSet<String>>,
+    ) -> Vec<Stmt> {
+        let previous_name_base = format!(
+            "_cribo_previous_module_name_{}",
+            u32::from(type_alias.range.start())
+        );
+        let previous_name = module_scope_symbols.map_or_else(
+            || previous_name_base.clone(),
+            |symbols| generate_unique_name(&previous_name_base, symbols),
+        );
+        let module_name_slot = |ctx| {
+            expressions::subscript(
+                expressions::call(
+                    expressions::dotted_name(&["_cribo", "builtins", "globals"], ExprContext::Load),
+                    vec![],
+                    vec![],
+                ),
+                expressions::string_literal("__name__"),
+                ctx,
+            )
+        };
+        let mut result = vec![
+            statements::simple_assign(&previous_name, module_name_slot(ExprContext::Load)),
+            statements::assign(
+                vec![module_name_slot(ExprContext::Store)],
+                expressions::string_literal(module_name),
+            ),
+            statements::try_stmt(
+                vec![Stmt::TypeAlias(type_alias.clone())],
+                vec![],
+                vec![],
+                vec![statements::assign(
+                    vec![module_name_slot(ExprContext::Store)],
+                    expressions::name(&previous_name, ExprContext::Load),
+                )],
+            ),
+        ];
+        let names = crate::visitors::utils::collect_names_from_assignment_target(&type_alias.name)
+            .into_iter()
+            .map(str::to_owned);
+        result.extend(Self::conditional_module_attr_assignments(
+            module_name,
+            module_scope_symbols,
+            names,
+        ));
+        result
+    }
+
+    /// Synchronize match captures before truth-testing a guard.
+    fn conditional_module_attr_guard(
+        module_name: &str,
+        module_scope_symbols: Option<&FxIndexSet<String>>,
+        names: impl IntoIterator<Item = String>,
+        guard: Expr,
+    ) -> Expr {
+        let module_var = sanitize_module_name_for_identifier(module_name);
+        let names: Vec<String> = names
+            .into_iter()
+            .filter(|name| Self::should_sync_conditional_module_attr(name, module_scope_symbols))
+            .collect();
+        if names.is_empty() {
+            return guard;
+        }
+
+        let sync_calls = || {
+            expressions::tuple(
+                names
+                    .iter()
+                    .map(|name| {
+                        expressions::call(
+                            expressions::dotted_name(
+                                &["_cribo", "builtins", "setattr"],
+                                ExprContext::Load,
+                            ),
+                            vec![
+                                expressions::name(&module_var, ExprContext::Load),
+                                expressions::string_literal(name),
+                                expressions::name(name, ExprContext::Load),
+                            ],
+                            vec![],
+                        )
+                    })
+                    .collect(),
+            )
+        };
+        let evaluated_guard = expressions::call(
+            expressions::dotted_name(&["_cribo", "builtins", "bool"], ExprContext::Load),
+            vec![guard],
+            vec![],
+        );
+        expressions::subscript(
+            expressions::tuple(vec![sync_calls(), evaluated_guard]),
+            expressions::integer_literal(1),
+            ExprContext::Load,
+        )
+    }
+
+    /// Synchronize assignment expressions in the immediately evaluated portions of a statement.
+    ///
+    /// Compound-statement bodies are processed recursively, while function and lambda bodies are
+    /// deferred and intentionally excluded.
+    fn sync_named_expressions_in_statement(
+        stmt: &mut Stmt,
+        module_name: &str,
+        module_scope_symbols: Option<&FxIndexSet<String>>,
+    ) {
+        let transformer = NamedExprSyncTransformer {
+            module_var: sanitize_module_name_for_identifier(module_name),
+            module_scope_symbols,
+        };
+
+        match stmt {
+            Stmt::FunctionDef(function) => {
+                for decorator in &mut function.decorator_list {
+                    transformer.visit_decorator(decorator);
+                }
+                if let Some(type_params) = &mut function.type_params {
+                    transformer.visit_type_params(type_params);
+                }
+                transformer.visit_parameters(&mut function.parameters);
+                if let Some(returns) = &mut function.returns {
+                    transformer.visit_annotation(returns);
+                }
+            }
+            Stmt::ClassDef(class) => {
+                for decorator in &mut class.decorator_list {
+                    transformer.visit_decorator(decorator);
+                }
+                if let Some(type_params) = &mut class.type_params {
+                    transformer.visit_type_params(type_params);
+                }
+                if let Some(arguments) = &mut class.arguments {
+                    transformer.visit_arguments(arguments);
+                }
+            }
+            Stmt::Return(return_stmt) => {
+                if let Some(value) = &mut return_stmt.value {
+                    transformer.visit_expr(value);
+                }
+            }
+            Stmt::Delete(delete) => {
+                for target in &mut delete.targets {
+                    transformer.visit_expr(target);
+                }
+            }
+            Stmt::TypeAlias(type_alias) => {
+                if let Some(type_params) = &mut type_alias.type_params {
+                    transformer.visit_type_params(type_params);
+                }
+                transformer.visit_expr(&mut type_alias.value);
+            }
+            Stmt::Assign(assign) => {
+                transformer.visit_expr(&mut assign.value);
+                for target in &mut assign.targets {
+                    transformer.visit_expr(target);
+                }
+            }
+            Stmt::AugAssign(assign) => {
+                transformer.visit_expr(&mut assign.value);
+                transformer.visit_expr(&mut assign.target);
+            }
+            Stmt::AnnAssign(assign) => {
+                if let Some(value) = &mut assign.value {
+                    transformer.visit_expr(value);
+                }
+                transformer.visit_annotation(&mut assign.annotation);
+                transformer.visit_expr(&mut assign.target);
+            }
+            Stmt::For(for_stmt) => {
+                transformer.visit_expr(&mut for_stmt.iter);
+                transformer.visit_expr(&mut for_stmt.target);
+            }
+            Stmt::While(while_stmt) => transformer.visit_expr(&mut while_stmt.test),
+            Stmt::If(if_stmt) => {
+                transformer.visit_expr(&mut if_stmt.test);
+                for clause in &mut if_stmt.elif_else_clauses {
+                    if let Some(condition) = &mut clause.test {
+                        transformer.visit_expr(condition);
+                    }
+                }
+            }
+            Stmt::With(with_stmt) => {
+                for item in &mut with_stmt.items {
+                    transformer.visit_expr(&mut item.context_expr);
+                    if let Some(target) = &mut item.optional_vars {
+                        transformer.visit_expr(target);
+                    }
+                }
+            }
+            Stmt::Match(match_stmt) => {
+                transformer.visit_expr(&mut match_stmt.subject);
+                for case in &mut match_stmt.cases {
+                    if let Some(guard) = &mut case.guard {
+                        transformer.visit_expr(guard);
+                    }
+                }
+            }
+            Stmt::Raise(raise_stmt) => {
+                if let Some(exc) = &mut raise_stmt.exc {
+                    transformer.visit_expr(exc);
+                }
+                if let Some(cause) = &mut raise_stmt.cause {
+                    transformer.visit_expr(cause);
+                }
+            }
+            Stmt::Try(try_stmt) => {
+                for handler in &mut try_stmt.handlers {
+                    let ExceptHandler::ExceptHandler(handler) = handler;
+                    if let Some(type_) = &mut handler.type_ {
+                        transformer.visit_expr(type_);
+                    }
+                }
+            }
+            Stmt::Assert(assert_stmt) => {
+                transformer.visit_expr(&mut assert_stmt.test);
+                if let Some(message) = &mut assert_stmt.msg {
+                    transformer.visit_expr(message);
+                }
+            }
+            Stmt::Expr(expr_stmt) => transformer.visit_expr(&mut expr_stmt.value),
+            Stmt::Import(_)
+            | Stmt::ImportFrom(_)
+            | Stmt::Global(_)
+            | Stmt::Nonlocal(_)
+            | Stmt::Pass(_)
+            | Stmt::Break(_)
+            | Stmt::Continue(_)
+            | Stmt::IpyEscapeCommand(_) => {}
+        }
+    }
+
+    /// Create a synthetic call that removes a conditional binding from the module namespace.
+    fn conditional_module_attr_delete(module_name: &str, name: &str) -> Stmt {
+        let module_var = sanitize_module_name_for_identifier(module_name);
+        let module = || expressions::name(&module_var, ExprContext::Load);
+        let attribute = || expressions::string_literal(name);
+        let exists = expressions::call(
+            expressions::dotted_name(&["_cribo", "builtins", "hasattr"], ExprContext::Load),
+            vec![module(), attribute()],
+            vec![],
+        );
+        let delete = statements::expr(expressions::call(
+            expressions::dotted_name(&["_cribo", "builtins", "delattr"], ExprContext::Load),
+            vec![module(), attribute()],
+            vec![],
+        ));
+        statements::if_stmt(exists, vec![delete], vec![])
+    }
+
+    /// Preserve target-by-target effects for chained assignments before synchronizing each name.
+    fn conditional_chained_assignment(
+        assign: &ruff_python_ast::StmtAssign,
+        module_name: &str,
+        module_scope_symbols: Option<&FxIndexSet<String>>,
+    ) -> Vec<Stmt> {
+        let mut lowerer =
+            ConditionalAssignmentLowerer::new(module_name, module_scope_symbols, assign.range);
+        let value_name = lowerer.reserve_temporary_name(&format!(
+            "_cribo_assignment_value_{}",
+            u32::from(assign.range.start())
+        ));
+        lowerer.statements.push(statements::simple_assign(
+            &value_name,
+            assign.value.as_ref().clone(),
+        ));
+
+        for target in &assign.targets {
+            lowerer.lower_store(target, expressions::name(&value_name, ExprContext::Load));
+        }
+
+        lowerer.finish()
+    }
+
+    /// Preserve partial effects while lowering a single destructuring assignment target.
+    fn conditional_destructuring_assignment(
+        assign: &ruff_python_ast::StmtAssign,
+        module_name: &str,
+        module_scope_symbols: Option<&FxIndexSet<String>>,
+    ) -> Vec<Stmt> {
+        let mut lowerer =
+            ConditionalAssignmentLowerer::new(module_name, module_scope_symbols, assign.range);
+        if let Some(target) = assign.targets.first() {
+            lowerer.lower_store(target, assign.value.as_ref().clone());
+        }
+        lowerer.finish()
+    }
+
+    /// Replace a compound target with a generated name and lower its stores into body statements.
+    fn lower_conditional_compound_target(
+        target: &Expr,
+        module_name: &str,
+        module_scope_symbols: Option<&FxIndexSet<String>>,
+        range: TextRange,
+        value_name_base: &str,
+    ) -> (Expr, Vec<Stmt>) {
+        let mut lowerer =
+            ConditionalAssignmentLowerer::new(module_name, module_scope_symbols, range);
+        let value_name = lowerer.reserve_temporary_name(value_name_base);
+        lowerer.lower_store(target, expressions::name(&value_name, ExprContext::Load));
+        (
+            expressions::name(&value_name, ExprContext::Store),
+            lowerer.finish(),
+        )
+    }
+
+    /// Remove generated target syncs from the leading synchronization run of a loop body.
+    fn remove_leading_target_syncs(
+        body: &[Stmt],
+        module_var: &str,
+        target_names: &FxIndexSet<String>,
+    ) -> Vec<Stmt> {
+        let mut in_leading_syncs = true;
+        let mut result = Vec::with_capacity(body.len());
+        for stmt in body {
+            if in_leading_syncs {
+                if let Some(name) = module_attr_sync_name(stmt, module_var).or_else(|| {
+                    module_attr_sync_name(
+                        stmt,
+                        crate::code_generator::module_transformer::SELF_PARAM,
+                    )
+                }) {
+                    if target_names.contains(name) {
+                        continue;
+                    }
+                } else {
+                    in_leading_syncs = false;
+                }
+            }
+            result.push(stmt.clone());
+        }
+        result
+    }
+
+    /// Process one assignment, lowering conditional targets when partial stores are observable.
+    fn process_assignment_statement(
+        assign: &ruff_python_ast::StmtAssign,
+        body: &[Stmt],
+        index: usize,
+        module_name: &str,
+        module_scope_symbols: Option<&FxIndexSet<String>>,
+        in_conditional_context: bool,
+    ) -> Vec<Stmt> {
+        if in_conditional_context && assign.targets.len() > 1 {
+            return Self::conditional_chained_assignment(assign, module_name, module_scope_symbols);
+        }
+        if in_conditional_context
+            && assign
+                .targets
+                .first()
+                .is_some_and(|target| matches!(target, Expr::Tuple(_) | Expr::List(_)))
+        {
+            return Self::conditional_destructuring_assignment(
+                assign,
+                module_name,
+                module_scope_symbols,
+            );
+        }
+
+        let mut result = vec![Stmt::Assign(assign.clone())];
+        if !in_conditional_context {
+            return result;
+        }
+
+        let module_var = sanitize_module_name_for_identifier(module_name);
+        let immediately_following_syncs: FxIndexSet<&str> = body[index + 1..]
+            .iter()
+            .map_while(|stmt| {
+                module_attr_sync_name(stmt, &module_var).or_else(|| {
+                    module_attr_sync_name(
+                        stmt,
+                        crate::code_generator::module_transformer::SELF_PARAM,
+                    )
+                })
+            })
+            .collect();
+        let names = assign
+            .targets
+            .iter()
+            .flat_map(|target| {
+                crate::visitors::utils::collect_names_from_assignment_target(target)
+                    .into_iter()
+                    .map(str::to_owned)
+            })
+            .filter(|name| !immediately_following_syncs.contains(name.as_str()));
+        result.extend(Self::conditional_module_attr_assignments(
+            module_name,
+            module_scope_symbols,
+            names,
+        ));
+        result
+    }
+
+    /// Flatten grouped delete targets in their left-to-right execution order.
+    fn flatten_delete_targets(target: &Expr, targets: &mut Vec<Expr>) {
+        match target {
+            Expr::Tuple(tuple) => {
+                for element in &tuple.elts {
+                    Self::flatten_delete_targets(element, targets);
+                }
+            }
+            Expr::List(list) => {
+                for element in &list.elts {
+                    Self::flatten_delete_targets(element, targets);
+                }
+            }
+            Expr::Starred(starred) => Self::flatten_delete_targets(&starred.value, targets),
+            _ => targets.push(target.clone()),
+        }
+    }
+
+    /// Delete grouped targets one at a time and immediately remove synchronized names.
+    fn conditional_delete_statements(
+        delete: &ruff_python_ast::StmtDelete,
+        module_name: &str,
+        module_scope_symbols: Option<&FxIndexSet<String>>,
+    ) -> Vec<Stmt> {
+        let mut targets = Vec::new();
+        for target in &delete.targets {
+            Self::flatten_delete_targets(target, &mut targets);
+        }
+
+        let mut result = Vec::new();
+        for target in targets {
+            let mut delete = delete.clone();
+            delete.targets = vec![target.clone()];
+            result.push(Stmt::Delete(delete));
+            for name in crate::visitors::utils::collect_names_from_assignment_target(&target) {
+                if Self::should_sync_conditional_module_attr(name, module_scope_symbols) {
+                    result.push(Self::conditional_module_attr_delete(module_name, name));
+                }
+            }
+        }
+        result
+    }
+
+    /// Process an exception handler and expose its target only for the handler's lifetime.
+    fn process_except_handler(
+        &self,
+        handler: &ExceptHandler,
+        module_name: &str,
+        module_scope_symbols: Option<&FxIndexSet<String>>,
+    ) -> ExceptHandler {
+        let ExceptHandler::ExceptHandler(handler) = handler;
+        let mut processed_body = self.process_body_recursive_impl(
+            &handler.body,
+            module_name,
+            module_scope_symbols,
+            true,
+        );
+        if let Some(name) = &handler.name
+            && Self::should_sync_conditional_module_attr(name, module_scope_symbols)
+        {
+            let synchronized_body = std::mem::take(&mut processed_body);
+            processed_body = Self::conditional_module_attr_assignments(
+                module_name,
+                module_scope_symbols,
+                [name.to_string()],
+            );
+            processed_body.push(statements::try_stmt(
+                synchronized_body,
+                vec![],
+                vec![],
+                vec![Self::conditional_module_attr_delete(module_name, name)],
+            ));
+        }
+        ExceptHandler::ExceptHandler(ruff_python_ast::ExceptHandlerExceptHandler {
+            node_index: handler.node_index.clone(),
+            type_: handler.type_.clone(),
+            name: handler.name.clone(),
+            body: processed_body.into(),
+            range: handler.range,
+        })
+    }
+
+    /// Process a loop target and recursively transform its body and `else` suite.
+    fn process_for_statement(
+        &self,
+        for_stmt: &ruff_python_ast::StmtFor,
+        module_name: &str,
+        module_scope_symbols: Option<&FxIndexSet<String>>,
+    ) -> Stmt {
+        let module_var = sanitize_module_name_for_identifier(module_name);
+        let leading_syncs: FxIndexSet<&str> = for_stmt
+            .body
+            .iter()
+            .map_while(|stmt| {
+                module_attr_sync_name(stmt, &module_var).or_else(|| {
+                    module_attr_sync_name(
+                        stmt,
+                        crate::code_generator::module_transformer::SELF_PARAM,
+                    )
+                })
+            })
+            .collect();
+        let target_names: FxIndexSet<String> =
+            crate::visitors::utils::collect_names_from_assignment_target(&for_stmt.target)
+                .into_iter()
+                .map(str::to_owned)
+                .collect();
+        let (target, mut processed_body, body) =
+            if matches!(&*for_stmt.target, Expr::Tuple(_) | Expr::List(_)) {
+                let value_name = format!("_cribo_for_target_{}", u32::from(for_stmt.range.start()));
+                let (target, lowered_stores) = Self::lower_conditional_compound_target(
+                    &for_stmt.target,
+                    module_name,
+                    module_scope_symbols,
+                    for_stmt.range,
+                    &value_name,
+                );
+                (
+                    target,
+                    lowered_stores,
+                    Self::remove_leading_target_syncs(&for_stmt.body, &module_var, &target_names),
+                )
+            } else {
+                let names = target_names
+                    .iter()
+                    .filter(|name| !leading_syncs.contains(name.as_str()))
+                    .cloned();
+                (
+                    for_stmt.target.as_ref().clone(),
+                    Self::conditional_module_attr_assignments(
+                        module_name,
+                        module_scope_symbols,
+                        names,
+                    ),
+                    for_stmt.body.to_vec(),
+                )
+            };
+        processed_body.extend(self.process_body_recursive_impl(
+            &body,
+            module_name,
+            module_scope_symbols,
+            true,
+        ));
+        let processed_orelse = self.process_body_recursive_impl(
+            &for_stmt.orelse,
+            module_name,
+            module_scope_symbols,
+            true,
+        );
+        Stmt::For(ruff_python_ast::StmtFor {
+            node_index: for_stmt.node_index.clone(),
+            target: Box::new(target),
+            iter: for_stmt.iter.clone(),
+            body: processed_body.into(),
+            orelse: processed_orelse.into(),
+            is_async: for_stmt.is_async,
+            range: for_stmt.range,
+        })
+    }
+
     /// Implementation of `process_body_recursive` with conditional context tracking
     fn process_body_recursive_impl(
         &self,
-        body: Vec<Stmt>,
+        body: &[Stmt],
         module_name: &str,
         module_scope_symbols: Option<&FxIndexSet<String>>,
         in_conditional_context: bool,
     ) -> Vec<Stmt> {
         let mut result = Vec::new();
 
-        for stmt in body {
+        for index in 0..body.len() {
+            let mut stmt = body[index].clone();
+            Self::sync_named_expressions_in_statement(&mut stmt, module_name, module_scope_symbols);
             match &stmt {
                 Stmt::If(if_stmt) => {
                     // Process if body recursively (inside conditional context)
                     let mut processed_body = self.process_body_recursive_impl(
-                        if_stmt.body.to_vec(),
+                        &if_stmt.body,
                         module_name,
                         module_scope_symbols,
                         true,
@@ -65,7 +904,7 @@ impl Bundler<'_> {
                         .iter()
                         .map(|clause| {
                             let mut processed_clause_body = self.process_body_recursive_impl(
-                                clause.body.to_vec(),
+                                &clause.body,
                                 module_name,
                                 module_scope_symbols,
                                 true,
@@ -100,7 +939,7 @@ impl Bundler<'_> {
                 Stmt::Try(try_stmt) => {
                     // Process try body recursively (inside conditional context)
                     let processed_body = self.process_body_recursive_impl(
-                        try_stmt.body.to_vec(),
+                        &try_stmt.body,
                         module_name,
                         module_scope_symbols,
                         true,
@@ -111,28 +950,13 @@ impl Bundler<'_> {
                         .handlers
                         .iter()
                         .map(|handler| {
-                            let ExceptHandler::ExceptHandler(handler) = handler;
-                            let processed_handler_body = self.process_body_recursive_impl(
-                                handler.body.to_vec(),
-                                module_name,
-                                module_scope_symbols,
-                                true,
-                            );
-                            ExceptHandler::ExceptHandler(
-                                ruff_python_ast::ExceptHandlerExceptHandler {
-                                    node_index: handler.node_index.clone(),
-                                    type_: handler.type_.clone(),
-                                    name: handler.name.clone(),
-                                    body: processed_handler_body.into(),
-                                    range: handler.range,
-                                },
-                            )
+                            self.process_except_handler(handler, module_name, module_scope_symbols)
                         })
                         .collect();
 
                     // Process orelse (inside conditional context)
                     let processed_orelse = self.process_body_recursive_impl(
-                        try_stmt.orelse.to_vec(),
+                        &try_stmt.orelse,
                         module_name,
                         module_scope_symbols,
                         true,
@@ -140,7 +964,7 @@ impl Bundler<'_> {
 
                     // Process finalbody (inside conditional context)
                     let processed_finalbody = self.process_body_recursive_impl(
-                        try_stmt.finalbody.to_vec(),
+                        &try_stmt.finalbody,
                         module_name,
                         module_scope_symbols,
                         true,
@@ -226,15 +1050,12 @@ impl Bundler<'_> {
                                      module '{module_name}' for export"
                                 );
 
-                                // For conditional imports, always add module attributes for
-                                // non-private symbols regardless of
-                                // __all__ restrictions, since they can be defined at runtime
-                                if local_name.starts_with('_') {
-                                    log::debug!(
-                                        "NOT exporting conditional ImportFrom symbol \
-                                         '{local_name}' in module '{module_name}' (private symbol)"
-                                    );
-                                } else {
+                                // Conditional imports must expose every retained module-scope
+                                // binding, including private names used by first-party modules.
+                                if Self::should_sync_conditional_module_attr(
+                                    local_name,
+                                    module_scope_symbols,
+                                ) {
                                     log::debug!(
                                         "Adding module.{local_name} = {local_name} after \
                                          conditional import (bypassing __all__ restrictions)"
@@ -246,6 +1067,11 @@ impl Bundler<'_> {
                                             &module_var,
                                             local_name,
                                         ),
+                                    );
+                                } else {
+                                    log::debug!(
+                                        "NOT exporting conditional ImportFrom symbol \
+                                         '{local_name}' in module '{module_name}' (not retained)"
                                     );
                                 }
                             }
@@ -275,13 +1101,12 @@ impl Bundler<'_> {
                                 ruff_python_ast::Identifier::as_str,
                             );
 
-                            // For conditional imports, always add module attributes for non-private
-                            // symbols regardless of __all__
-                            // restrictions, since they can be defined at runtime
                             // Only handle simple (non-dotted) names that can be valid attribute
                             // names
-                            if !local_name.starts_with('_')
-                                && !local_name.contains('.')
+                            if Self::should_sync_conditional_module_attr(
+                                local_name,
+                                module_scope_symbols,
+                            ) && !local_name.contains('.')
                                 && !local_name.is_empty()
                                 && !local_name.as_bytes()[0].is_ascii_digit()
                                 && local_name.chars().all(|c| c.is_alphanumeric() || c == '_')
@@ -306,66 +1131,101 @@ impl Bundler<'_> {
                         }
                     }
                 }
+                Stmt::Delete(delete) => {
+                    result.extend(Self::conditional_delete_statements(
+                        delete,
+                        module_name,
+                        module_scope_symbols,
+                    ));
+                }
                 Stmt::Assign(assign) => {
-                    // Add the assignment itself
+                    result.extend(Self::process_assignment_statement(
+                        assign,
+                        body,
+                        index,
+                        module_name,
+                        module_scope_symbols,
+                        in_conditional_context,
+                    ));
+                }
+                Stmt::AnnAssign(assign) => {
                     result.push(stmt.clone());
-
-                    // Check if this assignment should create a module attribute when in conditional
-                    // context
-                    if in_conditional_context
-                        && let Some(name) =
-                            expression_handlers::extract_simple_assign_target(assign)
-                    {
-                        // For conditional assignments, always add module attributes for non-private
-                        // symbols regardless of __all__ restrictions, since
-                        // they can be defined at runtime
-                        if !name.starts_with('_') {
-                            log::debug!(
-                                "Adding module.{name} = {name} after conditional assignment \
-                                 (bypassing __all__ restrictions)"
-                            );
-                            let module_var = sanitize_module_name_for_identifier(module_name);
-                            result.push(
-                                crate::code_generator::module_registry::create_module_attr_assignment(
-                                    &module_var,
-                                    &name
-                                ),
-                            );
-                        }
+                    if in_conditional_context && assign.value.is_some() {
+                        let names = crate::visitors::utils::collect_names_from_assignment_target(
+                            &assign.target,
+                        )
+                        .into_iter()
+                        .map(str::to_owned);
+                        result.extend(Self::conditional_module_attr_assignments(
+                            module_name,
+                            module_scope_symbols,
+                            names,
+                        ));
+                    }
+                }
+                Stmt::AugAssign(assign) => {
+                    result.push(stmt.clone());
+                    if in_conditional_context {
+                        let names = crate::visitors::utils::collect_names_from_assignment_target(
+                            &assign.target,
+                        )
+                        .into_iter()
+                        .map(str::to_owned);
+                        result.extend(Self::conditional_module_attr_assignments(
+                            module_name,
+                            module_scope_symbols,
+                            names,
+                        ));
+                    }
+                }
+                Stmt::TypeAlias(type_alias) => {
+                    result.extend(Self::wrapper_type_alias_statements(
+                        type_alias,
+                        module_name,
+                        module_scope_symbols,
+                    ));
+                }
+                Stmt::FunctionDef(function) => {
+                    result.push(stmt.clone());
+                    if in_conditional_context {
+                        result.extend(Self::conditional_module_attr_assignments(
+                            module_name,
+                            module_scope_symbols,
+                            [function.name.to_string()],
+                        ));
+                    }
+                }
+                Stmt::ClassDef(class) => {
+                    result.push(stmt.clone());
+                    if in_conditional_context {
+                        result.extend(Self::conditional_module_attr_assignments(
+                            module_name,
+                            module_scope_symbols,
+                            [class.name.to_string()],
+                        ));
+                        result.push(statements::assign_attribute(
+                            class.name.as_str(),
+                            "__module__",
+                            expressions::string_literal(module_name),
+                        ));
                     }
                 }
                 Stmt::For(for_stmt) => {
-                    let processed_body = self.process_body_recursive_impl(
-                        for_stmt.body.to_vec(),
+                    result.push(self.process_for_statement(
+                        for_stmt,
                         module_name,
                         module_scope_symbols,
-                        true,
-                    );
-                    let processed_orelse = self.process_body_recursive_impl(
-                        for_stmt.orelse.to_vec(),
-                        module_name,
-                        module_scope_symbols,
-                        true,
-                    );
-                    result.push(Stmt::For(ruff_python_ast::StmtFor {
-                        node_index: for_stmt.node_index.clone(),
-                        target: for_stmt.target.clone(),
-                        iter: for_stmt.iter.clone(),
-                        body: processed_body.into(),
-                        orelse: processed_orelse.into(),
-                        is_async: for_stmt.is_async,
-                        range: for_stmt.range,
-                    }));
+                    ));
                 }
                 Stmt::While(while_stmt) => {
                     let processed_body = self.process_body_recursive_impl(
-                        while_stmt.body.to_vec(),
+                        &while_stmt.body,
                         module_name,
                         module_scope_symbols,
                         true,
                     );
                     let processed_orelse = self.process_body_recursive_impl(
-                        while_stmt.orelse.to_vec(),
+                        &while_stmt.orelse,
                         module_name,
                         module_scope_symbols,
                         true,
@@ -379,35 +1239,99 @@ impl Bundler<'_> {
                     }));
                 }
                 Stmt::With(with_stmt) => {
-                    let processed_body = self.process_body_recursive_impl(
-                        with_stmt.body.to_vec(),
+                    let mut nested_body = self.process_body_recursive_impl(
+                        &with_stmt.body,
                         module_name,
                         module_scope_symbols,
                         true,
                     );
-                    result.push(Stmt::With(ruff_python_ast::StmtWith {
-                        node_index: with_stmt.node_index.clone(),
-                        items: with_stmt.items.clone(),
-                        body: processed_body.into(),
-                        is_async: with_stmt.is_async,
-                        range: with_stmt.range,
-                    }));
+
+                    for (index, item) in with_stmt.items.iter().enumerate().rev() {
+                        let mut item = item.clone();
+                        let mut item_body = if let Some(target) = item.optional_vars.as_deref()
+                            && matches!(target, Expr::Tuple(_) | Expr::List(_))
+                        {
+                            let value_name = format!(
+                                "_cribo_with_target_{}_{}",
+                                u32::from(with_stmt.range.start()),
+                                index
+                            );
+                            let (target, lowered_stores) = Self::lower_conditional_compound_target(
+                                target,
+                                module_name,
+                                module_scope_symbols,
+                                with_stmt.range,
+                                &value_name,
+                            );
+                            item.optional_vars = Some(Box::new(target));
+                            lowered_stores
+                        } else {
+                            let names = item
+                                .optional_vars
+                                .as_deref()
+                                .into_iter()
+                                .flat_map(
+                                    crate::visitors::utils::collect_names_from_assignment_target,
+                                )
+                                .map(str::to_owned);
+                            Self::conditional_module_attr_assignments(
+                                module_name,
+                                module_scope_symbols,
+                                names,
+                            )
+                        };
+                        item_body.extend(nested_body);
+                        nested_body = vec![Stmt::With(ruff_python_ast::StmtWith {
+                            node_index: if index == 0 {
+                                with_stmt.node_index.clone()
+                            } else {
+                                ruff_python_ast::AtomicNodeIndex::NONE
+                            },
+                            items: vec![item],
+                            body: item_body.into(),
+                            is_async: with_stmt.is_async,
+                            range: with_stmt.range,
+                        })];
+                    }
+                    result.extend(nested_body);
                 }
                 Stmt::Match(match_stmt) => {
                     let processed_cases = match_stmt
                         .cases
                         .iter()
                         .map(|case| {
+                            let mut names = FxIndexSet::default();
+                            collect_pattern_binding_names(&case.pattern, &mut names);
                             let processed_body = self.process_body_recursive_impl(
-                                case.body.to_vec(),
+                                &case.body,
                                 module_name,
                                 module_scope_symbols,
                                 true,
                             );
+                            let (guard, processed_body) = if let Some(original_guard) = &case.guard
+                            {
+                                (
+                                    Some(Box::new(Self::conditional_module_attr_guard(
+                                        module_name,
+                                        module_scope_symbols,
+                                        names,
+                                        original_guard.as_ref().clone(),
+                                    ))),
+                                    processed_body,
+                                )
+                            } else {
+                                let mut body = Self::conditional_module_attr_assignments(
+                                    module_name,
+                                    module_scope_symbols,
+                                    names,
+                                );
+                                body.extend(processed_body);
+                                (None, body)
+                            };
                             ruff_python_ast::MatchCase {
                                 node_index: case.node_index.clone(),
                                 pattern: case.pattern.clone(),
-                                guard: case.guard.clone(),
+                                guard,
                                 body: processed_body.into(),
                                 range: case.range,
                             }
@@ -421,9 +1345,8 @@ impl Bundler<'_> {
                     }));
                 }
                 _ => {
-                    // For other statements (FunctionDef, ClassDef, Pass, Break, etc.),
-                    // add as-is — they don't contain nested imports/assignments that
-                    // need module export syncing
+                    // Other statements don't contain nested module bindings that need export
+                    // synchronization.
                     result.push(stmt.clone());
                 }
             }

@@ -96,6 +96,7 @@ def _cribo_init___cribo_1fb248_pkg(self):
     __locals = vars(self)
     self.__locals = __locals
     for __name in __all__:
+        pkg.__name = __name
         if not __name.startswith("__"):
             setattr(__locals[__name], "__module__", "pkg")
     self._models = pkg__models

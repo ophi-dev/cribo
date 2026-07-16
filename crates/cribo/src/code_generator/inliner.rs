@@ -6,7 +6,9 @@
 use std::path::Path;
 
 use log::debug;
-use ruff_python_ast::{Expr, Identifier, ModModule, Stmt, StmtAssign, StmtClassDef};
+use ruff_python_ast::{
+    Expr, Identifier, ModModule, Stmt, StmtAssign, StmtClassDef, StmtTypeAlias, TypeParam,
+};
 use ruff_text_size::TextRange;
 
 use super::{
@@ -265,10 +267,14 @@ impl Bundler<'_> {
                         ctx,
                     );
                 }
-                // TypeAlias statements are safe metadata definitions
-                Stmt::TypeAlias(_) => {
-                    // Type aliases don't need renaming in Python, they're just metadata
-                    ctx.inlined_stmts.push(stmt.clone());
+                Stmt::TypeAlias(type_alias) => {
+                    self.inline_type_alias(
+                        type_alias,
+                        module_name,
+                        module_id,
+                        &mut module_renames,
+                        ctx,
+                    );
                 }
                 // Pass statements are no-ops and safe
                 Stmt::Pass(_) => {
@@ -324,6 +330,119 @@ impl Bundler<'_> {
         }
 
         // Statements are accumulated in ctx.inlined_stmts
+    }
+
+    /// Return aliases visible in a type-alias body after its type parameters shadow outer names.
+    fn type_alias_visible_aliases(
+        type_alias: &StmtTypeAlias,
+        aliases: &FxIndexMap<String, String>,
+    ) -> FxIndexMap<String, String> {
+        let mut visible_aliases = aliases.clone();
+        if let Some(type_params) = &type_alias.type_params {
+            for type_param in type_params.as_ref() {
+                visible_aliases.shift_remove(type_param.name().as_str());
+            }
+        }
+        visible_aliases
+    }
+
+    /// Apply the type-alias rename pipeline to one lazily evaluated expression.
+    fn rewrite_type_alias_expr(
+        expr: &mut Expr,
+        import_aliases: &FxIndexMap<String, String>,
+        local_renames: &FxIndexMap<String, String>,
+        semantic_renames: Option<&FxIndexMap<String, String>>,
+    ) {
+        expression_handlers::resolve_import_aliases_in_expr(expr, import_aliases);
+        expression_handlers::rewrite_aliases_in_expr(expr, local_renames);
+        if let Some(semantic_renames) = semantic_renames {
+            expression_handlers::rewrite_aliases_in_expr(expr, semantic_renames);
+        }
+    }
+
+    /// Inline a type alias definition, applying semantic conflict renames to its binding.
+    fn inline_type_alias(
+        &self,
+        type_alias: &StmtTypeAlias,
+        module_name: &str,
+        module_id: crate::resolver::ModuleId,
+        module_renames: &mut FxIndexMap<String, String>,
+        ctx: &mut InlineContext<'_>,
+    ) {
+        let Expr::Name(name) = type_alias.name.as_ref() else {
+            ctx.inlined_stmts.push(Stmt::TypeAlias(type_alias.clone()));
+            return;
+        };
+
+        let alias_name = name.id.to_string();
+        if !self.should_inline_symbol(&alias_name, module_id, ctx.module_exports_map) {
+            return;
+        }
+        let renamed_name = self.resolve_renamed_name(&alias_name, module_name, ctx);
+        module_renames.insert(alias_name, renamed_name.clone());
+        ctx.global_symbols.insert(renamed_name.clone());
+
+        let mut type_alias_clone = type_alias.clone();
+        if let Expr::Name(name) = type_alias_clone.name.as_mut() {
+            name.id = renamed_name.into();
+        }
+        let import_aliases =
+            Self::type_alias_visible_aliases(&type_alias_clone, &ctx.import_aliases);
+        let local_renames = Self::type_alias_visible_aliases(&type_alias_clone, module_renames);
+        let semantic_renames = ctx
+            .module_renames
+            .get(&module_id)
+            .map(|renames| Self::type_alias_visible_aliases(&type_alias_clone, renames));
+
+        Self::rewrite_type_alias_expr(
+            &mut type_alias_clone.value,
+            &import_aliases,
+            &local_renames,
+            semantic_renames.as_ref(),
+        );
+        if let Some(type_params) = &mut type_alias_clone.type_params {
+            for type_param in &mut type_params.type_params {
+                match type_param {
+                    TypeParam::TypeVar(type_var) => {
+                        for expr in [
+                            type_var.bound.as_deref_mut(),
+                            type_var.default.as_deref_mut(),
+                        ]
+                        .into_iter()
+                        .flatten()
+                        {
+                            Self::rewrite_type_alias_expr(
+                                expr,
+                                &import_aliases,
+                                &local_renames,
+                                semantic_renames.as_ref(),
+                            );
+                        }
+                    }
+                    TypeParam::TypeVarTuple(type_var_tuple) => {
+                        if let Some(default) = type_var_tuple.default.as_deref_mut() {
+                            Self::rewrite_type_alias_expr(
+                                default,
+                                &import_aliases,
+                                &local_renames,
+                                semantic_renames.as_ref(),
+                            );
+                        }
+                    }
+                    TypeParam::ParamSpec(param_spec) => {
+                        if let Some(default) = param_spec.default.as_deref_mut() {
+                            Self::rewrite_type_alias_expr(
+                                default,
+                                &import_aliases,
+                                &local_renames,
+                                semantic_renames.as_ref(),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        ctx.inlined_stmts.push(Stmt::TypeAlias(type_alias_clone));
     }
 
     /// Rewrite a class argument expression (base class or keyword value)

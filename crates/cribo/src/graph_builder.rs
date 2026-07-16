@@ -381,6 +381,10 @@ impl<'a> GraphBuilder<'a> {
                 self.process_ann_assign(ann_assign);
                 Ok(())
             }
+            Stmt::TypeAlias(type_alias) => {
+                self.process_type_alias(type_alias);
+                Ok(())
+            }
             Stmt::Expr(expr_stmt) => {
                 self.process_expr_stmt(&expr_stmt.value);
                 Ok(())
@@ -939,6 +943,82 @@ impl<'a> GraphBuilder<'a> {
         };
 
         self.graph.add_item(item_data);
+    }
+
+    /// Process a lazily evaluated type alias definition.
+    fn process_type_alias(&mut self, type_alias: &ast::StmtTypeAlias) {
+        let Some(targets) = self.extract_assignment_targets(&type_alias.name) else {
+            return;
+        };
+        let var_decls: FxIndexSet<String> = targets.iter().cloned().collect();
+        let mut eventual_read_vars = FxIndexSet::default();
+        let mut attribute_accesses = FxIndexMap::default();
+        self.collect_vars_in_expr_with_attrs(
+            &type_alias.value,
+            &mut eventual_read_vars,
+            &mut attribute_accesses,
+        );
+
+        if let Some(type_params) = &type_alias.type_params {
+            let mut type_param_names = FxIndexSet::default();
+            for type_param in type_params.iter() {
+                match type_param {
+                    ast::TypeParam::TypeVar(type_var) => {
+                        type_param_names.insert(type_var.name.to_string());
+                        for dependency in [type_var.bound.as_deref(), type_var.default.as_deref()]
+                            .into_iter()
+                            .flatten()
+                        {
+                            self.collect_vars_in_expr_with_attrs(
+                                dependency,
+                                &mut eventual_read_vars,
+                                &mut attribute_accesses,
+                            );
+                        }
+                    }
+                    ast::TypeParam::TypeVarTuple(type_var_tuple) => {
+                        type_param_names.insert(type_var_tuple.name.to_string());
+                        if let Some(default) = &type_var_tuple.default {
+                            self.collect_vars_in_expr_with_attrs(
+                                default,
+                                &mut eventual_read_vars,
+                                &mut attribute_accesses,
+                            );
+                        }
+                    }
+                    ast::TypeParam::ParamSpec(param_spec) => {
+                        type_param_names.insert(param_spec.name.to_string());
+                        if let Some(default) = &param_spec.default {
+                            self.collect_vars_in_expr_with_attrs(
+                                default,
+                                &mut eventual_read_vars,
+                                &mut attribute_accesses,
+                            );
+                        }
+                    }
+                }
+            }
+            for name in type_param_names {
+                eventual_read_vars.shift_remove(&name);
+                attribute_accesses.shift_remove(&name);
+            }
+        }
+
+        self.graph.add_item(ItemData {
+            item_type: ItemType::Assignment { targets },
+            var_decls: var_decls.clone(),
+            read_vars: FxIndexSet::default(),
+            eventual_read_vars,
+            write_vars: FxIndexSet::default(),
+            eventual_write_vars: FxIndexSet::default(),
+            has_side_effects: false,
+            imported_names: FxIndexSet::default(),
+            reexported_names: FxIndexSet::default(),
+            defined_symbols: var_decls,
+            symbol_dependencies: FxIndexMap::default(),
+            attribute_accesses,
+            containing_scope: self.scope_name.clone(),
+        });
     }
 
     /// Process an expression statement
@@ -1511,5 +1591,32 @@ impl<'a> GraphBuilder<'a> {
         {
             self.collect_vars_in_expr(annotation, vars);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use ruff_python_parser::parse_module;
+
+    use super::*;
+    use crate::resolver::ModuleId;
+
+    #[test]
+    fn type_parameter_attributes_do_not_create_module_dependencies() {
+        let ast = parse_module("type Alias[T] = T.member")
+            .expect("Type alias should parse")
+            .into_syntax();
+        let mut graph = ModuleDepGraph::new(ModuleId::ENTRY, "module".to_owned());
+        GraphBuilder::new(&mut graph, 13)
+            .build_from_ast(&ast)
+            .expect("Dependency graph should build");
+
+        let alias = graph
+            .items
+            .values()
+            .find(|item| item.var_decls.contains("Alias"))
+            .expect("Type alias item should exist");
+        assert!(!alias.eventual_read_vars.contains("T"));
+        assert!(!alias.attribute_accesses.contains_key("T"));
     }
 }

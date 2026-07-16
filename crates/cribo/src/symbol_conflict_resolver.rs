@@ -7,7 +7,10 @@
 
 use std::path::Path;
 
-use ruff_python_ast::{ModModule, PySourceType, PythonVersion, Stmt};
+use ruff_python_ast::{
+    ExceptHandler, Expr, ModModule, Pattern, PySourceType, PythonVersion, Stmt,
+    visitor::{self, Visitor},
+};
 use ruff_python_semantic::{
     BindingFlags, BindingId, BindingKind, Module, ModuleKind, ModuleSource, SemanticModel,
 };
@@ -45,6 +48,14 @@ struct SemanticModelBuilder<'a> {
     semantic: SemanticModel<'a>,
     /// Tracks enhanced from-import information found during traversal
     from_imports: Vec<EnhancedFromImport>,
+}
+
+#[derive(Clone, Copy)]
+enum AssignmentBindingKind {
+    Assignment,
+    Annotation,
+    LoopVar,
+    WithItemVar,
 }
 
 impl<'a> SemanticModelBuilder<'a> {
@@ -116,6 +127,15 @@ impl<'a> SemanticModelBuilder<'a> {
     fn visit_stmt(&mut self, stmt: &'a Stmt) {
         match stmt {
             Stmt::ClassDef(class_def) => {
+                for decorator in &class_def.decorator_list {
+                    self.visit_decorator(decorator);
+                }
+                if let Some(type_params) = &class_def.type_params {
+                    self.visit_type_params(type_params);
+                }
+                if let Some(arguments) = &class_def.arguments {
+                    self.visit_arguments(arguments);
+                }
                 log::trace!("Processing class definition: {}", class_def.name.id);
                 self.add_binding(
                     class_def.name.id.as_str(),
@@ -125,6 +145,16 @@ impl<'a> SemanticModelBuilder<'a> {
                 );
             }
             Stmt::FunctionDef(func_def) => {
+                for decorator in &func_def.decorator_list {
+                    self.visit_decorator(decorator);
+                }
+                if let Some(type_params) = &func_def.type_params {
+                    self.visit_type_params(type_params);
+                }
+                self.visit_parameters(&func_def.parameters);
+                if let Some(returns) = &func_def.returns {
+                    self.visit_annotation(returns);
+                }
                 log::trace!("Processing function definition: {}", func_def.name.id);
                 self.add_binding(
                     func_def.name.id.as_str(),
@@ -134,18 +164,36 @@ impl<'a> SemanticModelBuilder<'a> {
                 );
             }
             Stmt::Assign(assign) => {
-                // Handle assignments to create variable bindings
+                self.visit_expr(&assign.value);
                 for target in &assign.targets {
-                    if let ruff_python_ast::Expr::Name(name_expr) = target {
-                        log::trace!("Processing assignment: {}", name_expr.id);
-                        self.add_binding(
-                            name_expr.id.as_str(),
-                            name_expr.range(),
-                            BindingKind::Assignment,
-                            BindingFlags::empty(),
-                        );
-                    }
+                    self.visit_expr(target);
+                    self.bind_assignment_target(target, AssignmentBindingKind::Assignment);
                 }
+            }
+            Stmt::AnnAssign(assign) => {
+                if let Some(value) = &assign.value {
+                    self.visit_expr(value);
+                }
+                self.visit_annotation(&assign.annotation);
+                self.visit_expr(&assign.target);
+                let kind = if assign.value.is_some() {
+                    AssignmentBindingKind::Assignment
+                } else {
+                    AssignmentBindingKind::Annotation
+                };
+                self.bind_assignment_target(&assign.target, kind);
+            }
+            Stmt::AugAssign(assign) => {
+                self.visit_expr(&assign.value);
+                self.visit_expr(&assign.target);
+                self.bind_assignment_target(&assign.target, AssignmentBindingKind::Assignment);
+            }
+            Stmt::TypeAlias(type_alias) => {
+                if let Some(type_params) = &type_alias.type_params {
+                    self.visit_type_params(type_params);
+                }
+                self.visit_expr(&type_alias.value);
+                self.bind_assignment_target(&type_alias.name, AssignmentBindingKind::Assignment);
             }
             // Handle imports to enable qualified name resolution
             Stmt::Import(import) => {
@@ -161,7 +209,7 @@ impl<'a> SemanticModelBuilder<'a> {
                     let name = alias
                         .asname
                         .as_ref()
-                        .map_or(alias.name.as_str(), ruff_python_ast::Identifier::as_str);
+                        .map_or(module, ruff_python_ast::Identifier::as_str);
                     self.add_binding(
                         name,
                         alias.range,
@@ -217,9 +265,195 @@ impl<'a> SemanticModelBuilder<'a> {
                     }
                 }
             }
-            _ => {
-                // Skip other statement types for now
+            Stmt::If(if_stmt) => {
+                self.visit_expr(&if_stmt.test);
+                self.traverse_and_bind(&if_stmt.body);
+                for clause in &if_stmt.elif_else_clauses {
+                    if let Some(condition) = &clause.test {
+                        self.visit_expr(condition);
+                    }
+                    self.traverse_and_bind(&clause.body);
+                }
             }
+            Stmt::Try(try_stmt) => {
+                self.traverse_and_bind(&try_stmt.body);
+                for handler in &try_stmt.handlers {
+                    let ExceptHandler::ExceptHandler(handler) = handler;
+                    if let Some(type_) = &handler.type_ {
+                        self.visit_expr(type_);
+                    }
+                    if let Some(name) = &handler.name {
+                        self.add_binding(
+                            name.as_str(),
+                            name.range,
+                            BindingKind::BoundException,
+                            BindingFlags::empty(),
+                        );
+                    }
+                    self.traverse_and_bind(&handler.body);
+                }
+                self.traverse_and_bind(&try_stmt.orelse);
+                self.traverse_and_bind(&try_stmt.finalbody);
+            }
+            Stmt::With(with_stmt) => {
+                for item in &with_stmt.items {
+                    self.visit_expr(&item.context_expr);
+                    if let Some(target) = &item.optional_vars {
+                        self.visit_expr(target);
+                        self.bind_assignment_target(target, AssignmentBindingKind::WithItemVar);
+                    }
+                }
+                self.traverse_and_bind(&with_stmt.body);
+            }
+            Stmt::For(for_stmt) => {
+                self.visit_expr(&for_stmt.iter);
+                self.visit_expr(&for_stmt.target);
+                self.bind_assignment_target(&for_stmt.target, AssignmentBindingKind::LoopVar);
+                self.traverse_and_bind(&for_stmt.body);
+                self.traverse_and_bind(&for_stmt.orelse);
+            }
+            Stmt::While(while_stmt) => {
+                self.visit_expr(&while_stmt.test);
+                self.traverse_and_bind(&while_stmt.body);
+                self.traverse_and_bind(&while_stmt.orelse);
+            }
+            Stmt::Match(match_stmt) => {
+                self.visit_expr(&match_stmt.subject);
+                for case in &match_stmt.cases {
+                    self.bind_pattern(&case.pattern);
+                    if let Some(guard) = &case.guard {
+                        self.visit_expr(guard);
+                    }
+                    self.traverse_and_bind(&case.body);
+                }
+            }
+            Stmt::Return(return_stmt) => {
+                if let Some(value) = &return_stmt.value {
+                    self.visit_expr(value);
+                }
+            }
+            Stmt::Delete(delete) => {
+                for target in &delete.targets {
+                    self.visit_expr(target);
+                }
+            }
+            Stmt::Raise(raise_stmt) => {
+                if let Some(exc) = &raise_stmt.exc {
+                    self.visit_expr(exc);
+                }
+                if let Some(cause) = &raise_stmt.cause {
+                    self.visit_expr(cause);
+                }
+            }
+            Stmt::Assert(assert_stmt) => {
+                self.visit_expr(&assert_stmt.test);
+                if let Some(message) = &assert_stmt.msg {
+                    self.visit_expr(message);
+                }
+            }
+            Stmt::Expr(expr_stmt) => self.visit_expr(&expr_stmt.value),
+            Stmt::Global(_)
+            | Stmt::Nonlocal(_)
+            | Stmt::Pass(_)
+            | Stmt::Break(_)
+            | Stmt::Continue(_)
+            | Stmt::IpyEscapeCommand(_) => {}
+        }
+    }
+
+    /// Bind every name introduced by an assignment target without descending into attributes or
+    /// subscripts, which mutate existing objects rather than defining module symbols.
+    fn bind_assignment_target(&mut self, target: &'a Expr, kind: AssignmentBindingKind) {
+        match target {
+            Expr::Name(name) => {
+                let binding_kind = match kind {
+                    AssignmentBindingKind::Assignment => BindingKind::Assignment,
+                    AssignmentBindingKind::Annotation => BindingKind::Annotation,
+                    AssignmentBindingKind::LoopVar => BindingKind::LoopVar,
+                    AssignmentBindingKind::WithItemVar => BindingKind::WithItemVar,
+                };
+                self.add_binding(
+                    name.id.as_str(),
+                    name.range(),
+                    binding_kind,
+                    BindingFlags::empty(),
+                );
+            }
+            Expr::Tuple(tuple) => {
+                for element in &tuple.elts {
+                    self.bind_assignment_target(element, kind);
+                }
+            }
+            Expr::List(list) => {
+                for element in &list.elts {
+                    self.bind_assignment_target(element, kind);
+                }
+            }
+            Expr::Starred(starred) => {
+                self.bind_assignment_target(&starred.value, kind);
+            }
+            _ => {}
+        }
+    }
+
+    /// Bind names captured by a structural pattern at module scope.
+    fn bind_pattern(&mut self, pattern: &'a Pattern) {
+        match pattern {
+            Pattern::MatchSequence(sequence) => {
+                for pattern in &sequence.patterns {
+                    self.bind_pattern(pattern);
+                }
+            }
+            Pattern::MatchMapping(mapping) => {
+                for pattern in &mapping.patterns {
+                    self.bind_pattern(pattern);
+                }
+                if let Some(name) = &mapping.rest {
+                    self.add_binding(
+                        name.as_str(),
+                        name.range,
+                        BindingKind::Assignment,
+                        BindingFlags::empty(),
+                    );
+                }
+            }
+            Pattern::MatchClass(class) => {
+                for pattern in &class.arguments.patterns {
+                    self.bind_pattern(pattern);
+                }
+                for keyword in &class.arguments.keywords {
+                    self.bind_pattern(&keyword.pattern);
+                }
+            }
+            Pattern::MatchStar(star) => {
+                if let Some(name) = &star.name {
+                    self.add_binding(
+                        name.as_str(),
+                        name.range,
+                        BindingKind::Assignment,
+                        BindingFlags::empty(),
+                    );
+                }
+            }
+            Pattern::MatchAs(as_pattern) => {
+                if let Some(pattern) = &as_pattern.pattern {
+                    self.bind_pattern(pattern);
+                }
+                if let Some(name) = &as_pattern.name {
+                    self.add_binding(
+                        name.as_str(),
+                        name.range,
+                        BindingKind::Assignment,
+                        BindingFlags::empty(),
+                    );
+                }
+            }
+            Pattern::MatchOr(or_pattern) => {
+                for pattern in &or_pattern.patterns {
+                    self.bind_pattern(pattern);
+                }
+            }
+            Pattern::MatchValue(_) | Pattern::MatchSingleton(_) => {}
         }
     }
 
@@ -278,7 +512,7 @@ impl<'a> SemanticModelBuilder<'a> {
                         symbols.insert(name.to_owned());
                     }
                 }
-                BindingKind::Assignment => {
+                BindingKind::Assignment | BindingKind::LoopVar | BindingKind::WithItemVar => {
                     // Include module-level assignments (variables)
                     if !name.starts_with('_') {
                         log::trace!("Adding assignment symbol: {name}");
@@ -344,6 +578,23 @@ impl<'a> SemanticModelBuilder<'a> {
 
         log::trace!("All module-scope symbols: {symbols:?}");
         symbols
+    }
+}
+
+impl<'a> Visitor<'a> for SemanticModelBuilder<'a> {
+    fn visit_expr(&mut self, expr: &'a Expr) {
+        match expr {
+            Expr::Named(named) => {
+                self.visit_expr(&named.value);
+                self.bind_assignment_target(&named.target, AssignmentBindingKind::Assignment);
+            }
+            Expr::Lambda(lambda) => {
+                if let Some(parameters) = &lambda.parameters {
+                    self.visit_parameters(parameters);
+                }
+            }
+            _ => visitor::walk_expr(self, expr),
+        }
     }
 }
 
@@ -588,5 +839,180 @@ impl SymbolConflictResolver {
     /// Get symbol registry
     pub(crate) const fn symbol_registry(&self) -> &SymbolRegistry {
         &self.global_symbols
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use ruff_python_parser::parse_module;
+
+    use super::{SemanticModelBuilder, SymbolConflictResolver};
+    use crate::resolver::ModuleId;
+
+    /// Verifies that all supported module-level binding forms enter the semantic model.
+    #[test]
+    fn semantic_model_collects_all_module_scope_bindings() {
+        let parsed = parse_module(
+            r#"
+import package.submodule
+
+if (if_named := True):
+    conditional_value = 1
+
+    def conditional_function():
+        function_local = 1
+
+    class ConditionalClass:
+        class_local = 1
+
+try:
+    try_value = 1
+except Exception as error:
+    except_value = 1
+else:
+    else_value = 1
+finally:
+    finally_value = 1
+
+with (context_named := manager()) as (with_value, *with_rest):
+    with_body_value = 1
+
+with manager() as with_slots[(with_target_named := 0)]:
+    pass
+
+for loop_value, *loop_rest in (iter_named := ()):
+    loop_body_value = 1
+else:
+    loop_else_value = 1
+
+for loop_slots[(for_target_named := 0)] in (1,):
+    pass
+
+while (while_named := False):
+    while_value = 1
+else:
+    while_else_value = 1
+
+annotated: int = 1
+annotation_only: int
+augmented += 1
+unpacked_left, *unpacked_middle, unpacked_right = ()
+type TypeAlias = int
+
+match (subject_named := {"value": 1}):
+    case {"value": captured, **captured_rest} if (guard_named := True):
+        match_body_value = 1
+
+@(decorator_named := decorator)
+def header_bindings(default=(default_named := 1)):
+    return default
+
+comprehension = [item for item in (1,) if (comprehension_named := item)]
+lambda_value = lambda: (lambda_local := 1)
+"#,
+        )
+        .expect("test source should parse");
+        let module = parsed.into_syntax();
+        let (semantic, _) =
+            SemanticModelBuilder::build_semantic_model(Path::new("module.py"), &module);
+
+        let exported = SemanticModelBuilder::extract_symbols_from_semantic_model(&semantic);
+        for expected in [
+            "conditional_value",
+            "if_named",
+            "conditional_function",
+            "ConditionalClass",
+            "try_value",
+            "except_value",
+            "else_value",
+            "finally_value",
+            "with_value",
+            "with_rest",
+            "with_body_value",
+            "context_named",
+            "with_target_named",
+            "loop_value",
+            "loop_rest",
+            "loop_body_value",
+            "loop_else_value",
+            "iter_named",
+            "for_target_named",
+            "while_value",
+            "while_else_value",
+            "while_named",
+            "annotated",
+            "augmented",
+            "unpacked_left",
+            "unpacked_middle",
+            "unpacked_right",
+            "TypeAlias",
+            "captured",
+            "captured_rest",
+            "match_body_value",
+            "subject_named",
+            "guard_named",
+            "header_bindings",
+            "decorator_named",
+            "default_named",
+            "comprehension",
+            "comprehension_named",
+            "lambda_value",
+        ] {
+            assert!(exported.contains(expected), "missing export {expected}");
+        }
+        assert!(!exported.contains("annotation_only"));
+        assert!(!exported.contains("function_local"));
+        assert!(!exported.contains("class_local"));
+        assert!(!exported.contains("lambda_local"));
+        assert!(!exported.contains("package"));
+
+        let module_scope = SemanticModelBuilder::extract_all_module_scope_symbols(&semantic);
+        assert!(module_scope.contains("annotation_only"));
+        assert!(module_scope.contains("error"));
+        assert!(module_scope.contains("package"));
+        assert!(!module_scope.contains("function_local"));
+        assert!(!module_scope.contains("class_local"));
+    }
+
+    /// Verifies that conditional bindings are included in cross-module conflict resolution.
+    #[test]
+    fn conditional_definitions_participate_in_conflict_detection() {
+        let first = parse_module(
+            r#"
+if True:
+    shared_value = "first"
+
+    def shared_function():
+        return shared_value
+"#,
+        )
+        .expect("first module should parse")
+        .into_syntax();
+        let second = parse_module(
+            r#"
+if True:
+    shared_value = "second"
+
+    def shared_function():
+        return shared_value
+"#,
+        )
+        .expect("second module should parse")
+        .into_syntax();
+
+        let mut resolver = SymbolConflictResolver::new();
+        resolver.analyze_module(ModuleId::new(1), &first, Path::new("first.py"));
+        resolver.analyze_module(ModuleId::new(2), &second, Path::new("second.py"));
+
+        let conflicts = resolver.detect_and_resolve_conflicts();
+        for expected in ["shared_value", "shared_function"] {
+            let conflict = conflicts
+                .iter()
+                .find(|conflict| conflict.symbol == expected)
+                .unwrap_or_else(|| panic!("missing conflict for {expected}"));
+            assert_eq!(conflict.modules, [ModuleId::new(1), ModuleId::new(2)]);
+        }
     }
 }

@@ -30,12 +30,12 @@ class _Cribo():
 _cribo = _Cribo()
 defaults = _cribo.types.SimpleNamespace(__name__='defaults', __doc__='Default constants used via wildcard import.')
 """Default constants used via wildcard import."""
-MAX_RETRIES = 3
-DEFAULT_TIMEOUT = 30
-API_VERSION = "v2"
-defaults.API_VERSION = API_VERSION
-defaults.DEFAULT_TIMEOUT = DEFAULT_TIMEOUT
-defaults.MAX_RETRIES = MAX_RETRIES
+MAX_RETRIES_2 = 3
+DEFAULT_TIMEOUT_2 = 30
+API_VERSION_2 = "v2"
+defaults.API_VERSION = API_VERSION_2
+defaults.DEFAULT_TIMEOUT = DEFAULT_TIMEOUT_2
+defaults.MAX_RETRIES = MAX_RETRIES_2
 config = _cribo.types.SimpleNamespace(__name__='config', __initializing__=False, __initialized__=False)
 def _cribo_init___cribo_33ed77_config(self):
     if getattr(self, '__initialized__', False):
@@ -46,11 +46,11 @@ def _cribo_init___cribo_33ed77_config(self):
     """Config module with side effects (triggers wrapper) and conditional wildcard import."""
     print("config module loaded")
     try:
-        API_VERSION = defaults.API_VERSION
+        API_VERSION = API_VERSION_2
         config.API_VERSION = API_VERSION
-        DEFAULT_TIMEOUT = defaults.DEFAULT_TIMEOUT
+        DEFAULT_TIMEOUT = DEFAULT_TIMEOUT_2
         config.DEFAULT_TIMEOUT = DEFAULT_TIMEOUT
-        MAX_RETRIES = defaults.MAX_RETRIES
+        MAX_RETRIES = MAX_RETRIES_2
         config.MAX_RETRIES = MAX_RETRIES
     except ImportError:
         MAX_RETRIES = 1
