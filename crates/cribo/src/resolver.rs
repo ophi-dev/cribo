@@ -333,6 +333,17 @@ impl ImportClassification {
     pub const fn should_bundle(&self) -> bool {
         matches!(self.bundle, BundleDisposition::Include)
     }
+
+    /// Whether module resolution found an importable source artifact.
+    pub const fn is_resolved(&self) -> bool {
+        !matches!(self.source, ImportSource::Unresolved)
+    }
+
+    /// Whether the module is a native extension that must remain an external import.
+    pub const fn is_external_native_module(&self) -> bool {
+        matches!(self.source, ImportSource::NativeExtension)
+            && matches!(self.bundle, BundleDisposition::External)
+    }
 }
 
 #[derive(Debug, Clone)]

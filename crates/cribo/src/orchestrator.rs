@@ -1132,11 +1132,8 @@ impl BundleOrchestrator {
             if let Some(resolver) = resolver {
                 for (name, _) in &import.names {
                     let potential_submodule = format!("{base_module}.{name}");
-                    // Only add if it's actually resolvable as a module
-                    if resolver
-                        .resolve_module_path(&potential_submodule)
-                        .is_ok_and(|path| path.is_some())
-                    {
+                    // Native extensions are resolved modules even though they have no bundle path.
+                    if resolver.classify_import(&potential_submodule).is_resolved() {
                         imports.insert(potential_submodule);
                         debug!("Added verified submodule from relative import: {name}");
                     }
@@ -1168,10 +1165,7 @@ impl BundleOrchestrator {
         for (name, _) in &import.names {
             let full_module_name = format!("{module_name}.{name}");
             // Try to resolve the full module name to see if it's a module
-            if resolver
-                .resolve_module_path(&full_module_name)
-                .is_ok_and(|path| path.is_some())
-            {
+            if resolver.classify_import(&full_module_name).is_resolved() {
                 imports.insert(full_module_name);
                 debug!("Detected submodule import: {name} from {module_name}");
             }

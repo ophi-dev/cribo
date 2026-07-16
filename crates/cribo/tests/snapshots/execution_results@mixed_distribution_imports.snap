@@ -4,6 +4,6 @@ input_file: crates/cribo/tests/fixtures/mixed_distribution_imports/main.py
 ---
 ExecutionResults {
     status: Success,
-    stdout: "mixed distribution True",
+    stdout: "mixed distribution True True True True",
     stderr: "",
 }
