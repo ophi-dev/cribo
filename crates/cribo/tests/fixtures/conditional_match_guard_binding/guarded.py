@@ -23,3 +23,5 @@ assert REBOUND_GUARD_VALUE == "rebound"
 match get_subject():
     case BOOL_GUARD_VALUE if guard_observer.mutate_and_return(GuardResult()):
         BOOL_GUARD_PASSED = True
+
+assert BOOL_GUARD_PASSED

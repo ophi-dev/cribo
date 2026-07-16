@@ -37,7 +37,7 @@ def _cribo_init___cribo_592ce1_guard_observer(self):
         return self
     self.__initializing__ = True
     global guarded
-    guarded = _cribo_init___cribo_6238e8_guarded(guarded)
+    guarded = _cribo_init___cribo_962e76_guarded(guarded)
     self.guarded = guarded
 
     def mutate_and_return(result):
@@ -52,7 +52,7 @@ def _cribo_init___cribo_592ce1_guard_observer(self):
     self.__initializing__ = False
     return self
 guard_observer.__init__ = _cribo_init___cribo_592ce1_guard_observer
-def _cribo_init___cribo_6238e8_guarded(self):
+def _cribo_init___cribo_962e76_guarded(self):
     if getattr(self, '__initialized__', False):
         return self
     if getattr(self, '__initializing__', False):
@@ -83,11 +83,12 @@ def _cribo_init___cribo_6238e8_guarded(self):
         case BOOL_GUARD_VALUE if ((_cribo.builtins.setattr(guarded, 'BOOL_GUARD_VALUE', BOOL_GUARD_VALUE),), _cribo.builtins.bool(guard_observer.mutate_and_return(GuardResult())), (_cribo.builtins.setattr(guarded, 'BOOL_GUARD_VALUE', BOOL_GUARD_VALUE),))[1]:
             BOOL_GUARD_PASSED = True
             guarded.BOOL_GUARD_PASSED = BOOL_GUARD_PASSED
+    assert BOOL_GUARD_PASSED
     self.__initialized__ = True
     self.__initializing__ = False
     return self
-guarded.__init__ = _cribo_init___cribo_6238e8_guarded
-guarded = _cribo_init___cribo_6238e8_guarded(guarded)
+guarded.__init__ = _cribo_init___cribo_962e76_guarded
+guarded = _cribo_init___cribo_962e76_guarded(guarded)
 print(guarded.GUARDED_VALUE)
 print(guarded.REBOUND_GUARD_VALUE)
 print(guarded.BOOL_GUARD_PASSED)

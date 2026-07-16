@@ -37,7 +37,7 @@ def _cribo_init___cribo_d338f1_conditional_observer(self):
         return self
     self.__initializing__ = True
     global conditional_source
-    conditional_source = _cribo_init___cribo_1e59a2_conditional_source(conditional_source)
+    conditional_source = _cribo_init___cribo_c4de75_conditional_source(conditional_source)
     self.conditional_source = conditional_source
 
     def observe_value():
@@ -47,7 +47,7 @@ def _cribo_init___cribo_d338f1_conditional_observer(self):
     self.__initializing__ = False
     return self
 conditional_observer.__init__ = _cribo_init___cribo_d338f1_conditional_observer
-def _cribo_init___cribo_1e59a2_conditional_source(self):
+def _cribo_init___cribo_c4de75_conditional_source(self):
     if getattr(self, '__initialized__', False):
         return self
     if getattr(self, '__initializing__', False):
@@ -61,12 +61,13 @@ def _cribo_init___cribo_1e59a2_conditional_source(self):
         conditional_source.conditional_observer = conditional_observer
         OBSERVED_VALUE = conditional_observer.observe_value()
         conditional_source.OBSERVED_VALUE = OBSERVED_VALUE
+        assert VALUE == OBSERVED_VALUE
         VALUE = _cribo.math.pi
         conditional_source.VALUE = VALUE
         assert OBSERVED_VALUE == "early"
     self.__initialized__ = True
     self.__initializing__ = False
     return self
-conditional_source.__init__ = _cribo_init___cribo_1e59a2_conditional_source
-conditional_source = _cribo_init___cribo_1e59a2_conditional_source(conditional_source)
+conditional_source.__init__ = _cribo_init___cribo_c4de75_conditional_source
+conditional_source = _cribo_init___cribo_c4de75_conditional_source(conditional_source)
 print(conditional_source.OBSERVED_VALUE, conditional_source.VALUE)

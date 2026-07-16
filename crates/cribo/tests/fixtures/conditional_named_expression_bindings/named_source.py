@@ -25,6 +25,8 @@ match "subject":
     case _ if (GUARD_VALUE := "guard"):
         pass
 
+assert GUARD_VALUE == "guard"
+
 COMPREHENSION_RESULT = [
     item for item in ("comprehension",) if (COMPREHENSION_VALUE := item)
 ]

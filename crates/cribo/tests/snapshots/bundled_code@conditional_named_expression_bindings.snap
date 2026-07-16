@@ -29,7 +29,7 @@ class _Cribo():
         return _CriboModule(m, n)
 _cribo = _Cribo()
 named_source = _cribo.types.SimpleNamespace(__name__='named_source', __initializing__=False, __initialized__=False)
-def _cribo_init___cribo_6b64e1_named_source(self):
+def _cribo_init___cribo_3689cd_named_source(self):
     if getattr(self, '__initialized__', False):
         return self
     if getattr(self, '__initializing__', False):
@@ -58,6 +58,7 @@ def _cribo_init___cribo_6b64e1_named_source(self):
     match "subject":
         case _ if ((GUARD_VALUE := "guard"), _cribo.builtins.setattr(named_source, 'GUARD_VALUE', GUARD_VALUE))[0]:
             pass
+    assert GUARD_VALUE == "guard"
     COMPREHENSION_RESULT = [item for item in ("comprehension",) if ((COMPREHENSION_VALUE := item), _cribo.builtins.setattr(named_source, 'COMPREHENSION_VALUE', COMPREHENSION_VALUE))[0]]
     self.COMPREHENSION_RESULT = COMPREHENSION_RESULT
     LAMBDA = lambda: (LAMBDA_LOCAL := "lambda")
@@ -66,8 +67,8 @@ def _cribo_init___cribo_6b64e1_named_source(self):
     self.__initialized__ = True
     self.__initializing__ = False
     return self
-named_source.__init__ = _cribo_init___cribo_6b64e1_named_source
-named_source = _cribo_init___cribo_6b64e1_named_source(named_source)
+named_source.__init__ = _cribo_init___cribo_3689cd_named_source
+named_source = _cribo_init___cribo_3689cd_named_source(named_source)
 print(named_source.IF_VALUE)
 print(named_source.DEFAULT_VALUE, named_source.with_default())
 print(named_source.DECORATOR_VALUE is named_source.decorator)
