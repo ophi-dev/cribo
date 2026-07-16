@@ -19,6 +19,11 @@ for LOOP_VALUE in ("loop",):
 for EMPTY_LOOP_VALUE in ():
     pass
 
+try:
+    EMPTY_LOOP_VALUE
+except NameError:
+    pass
+
 with nullcontext(("with", "rest")) as (WITH_VALUE, *WITH_REST):
     pass
 

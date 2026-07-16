@@ -29,7 +29,7 @@ class _Cribo():
         return _CriboModule(m, n)
 _cribo = _Cribo()
 first = _cribo.types.SimpleNamespace(__name__='first', __initializing__=False, __initialized__=False)
-def _cribo_init___cribo_2da697_first(self):
+def _cribo_init___cribo_8618fb_first(self):
     if getattr(self, '__initialized__', False):
         return self
     if getattr(self, '__initializing__', False):
@@ -70,6 +70,10 @@ def _cribo_init___cribo_2da697_first(self):
         first.EMPTY_LOOP_VALUE = EMPTY_LOOP_VALUE
     except _cribo.builtins.NameError:
         pass
+    try:
+        EMPTY_LOOP_VALUE
+    except NameError:
+        pass
     with _cribo.contextlib.nullcontext(("with", "rest")) as (WITH_VALUE, *WITH_REST):
         first.WITH_REST = WITH_REST
         first.WITH_VALUE = WITH_VALUE
@@ -83,7 +87,7 @@ def _cribo_init___cribo_2da697_first(self):
     self.__initialized__ = True
     self.__initializing__ = False
     return self
-first.__init__ = _cribo_init___cribo_2da697_first
+first.__init__ = _cribo_init___cribo_8618fb_first
 second = _cribo.types.SimpleNamespace(__name__='second', __initializing__=False, __initialized__=False)
 def _cribo_init___cribo_4717e4_second(self):
     if getattr(self, '__initialized__', False):
@@ -102,7 +106,7 @@ def _cribo_init___cribo_4717e4_second(self):
     self.__initializing__ = False
     return self
 second.__init__ = _cribo_init___cribo_4717e4_second
-first = _cribo_init___cribo_2da697_first(first)
+first = _cribo_init___cribo_8618fb_first(first)
 second = _cribo_init___cribo_4717e4_second(second)
 print(first.CONDITIONAL_VALUE)
 print(second.CONDITIONAL_VALUE)
