@@ -161,9 +161,10 @@ def _cribo_init___cribo_563ea2_models(self):
         TypeAlias = _cribo.typing.TypeAlias
         models.TypeAlias = TypeAlias
         ModelID: _cribo.typing.TypeAlias = str
+        models.ModelID = ModelID
     else:
         ModelID = str
-        models.ModelID = self.ModelID
+        models.ModelID = ModelID
     _base_model = None
     _cribo_models__base_model = _base_model
     self._base_model = _cribo_models__base_model

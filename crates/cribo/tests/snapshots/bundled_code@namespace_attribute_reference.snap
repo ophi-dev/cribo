@@ -47,6 +47,7 @@ def _cribo_init___cribo_19d82f_mypkg_compat(self):
                 self.msg = msg
                 self.doc = doc
                 self.pos = pos
+        mypkg_compat.JSONDecodeError = JSONDecodeError
     self.JSONDecodeError = JSONDecodeError
     bytes = __import__('builtins').bytes
     self.bytes = bytes

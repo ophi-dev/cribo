@@ -75,9 +75,7 @@ def _cribo_init___cribo_924318_module_b(self):
     self.TYPE_CHECKING = TYPE_CHECKING
     if _cribo.typing.TYPE_CHECKING:
         module_a = _cribo_init___cribo_851b00_module_a(module_a)
-        module_b.module_a = module_a
         FunctionA = module_a.FunctionA
-        module_b.FunctionA = FunctionA
         self.FunctionA = FunctionA
 
     class HelperB:

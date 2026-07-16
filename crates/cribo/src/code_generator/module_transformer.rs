@@ -1027,6 +1027,23 @@ pub(crate) fn transform_expr_for_module_vars(
     }
 }
 
+fn is_generated_module_attr_sync_assignment(assign: &StmtAssign) -> bool {
+    if !assign.range.is_empty() {
+        return false;
+    }
+    let [Expr::Attribute(target)] = assign.targets.as_slice() else {
+        return false;
+    };
+    let Expr::Name(_) = target.value.as_ref() else {
+        return false;
+    };
+    let Expr::Name(value) = assign.value.as_ref() else {
+        return false;
+    };
+
+    target.attr.as_str() == value.id.as_str()
+}
+
 /// Transform a statement to use module attributes for module-level variables
 fn transform_stmt_for_module_vars(
     stmt: &mut Stmt,
@@ -1045,6 +1062,10 @@ fn transform_stmt_for_module_vars(
             );
         }
         Stmt::Assign(assign) => {
+            if is_generated_module_attr_sync_assignment(assign) {
+                return;
+            }
+
             // Transform assignment targets and values
             for target in &mut assign.targets {
                 transform_expr_for_module_vars(

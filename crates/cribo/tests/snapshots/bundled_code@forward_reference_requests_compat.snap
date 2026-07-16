@@ -41,7 +41,6 @@ def _cribo_init___cribo_5ad29b_myrequests_compat(self):
         myrequests_compat.json = json
     except ImportError:
         json = _cribo.json
-        myrequests_compat.json = json
         self.json = json
     if hasattr(json, "JSONDecodeError"):
         JSONDecodeError = json.JSONDecodeError
