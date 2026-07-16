@@ -17,7 +17,7 @@ struct DependencyCollector<'a> {
     read_vars: &'a mut FxIndexSet<String>,
     write_vars: Option<&'a mut FxIndexSet<String>>,
     attribute_accesses: &'a mut FxIndexMap<String, FxIndexSet<String>>,
-    annotations_are_runtime: bool,
+    variable_annotations_are_runtime: bool,
 }
 
 impl<'a> DependencyCollector<'a> {
@@ -29,7 +29,7 @@ impl<'a> DependencyCollector<'a> {
             read_vars,
             write_vars: None,
             attribute_accesses,
-            annotations_are_runtime: true,
+            variable_annotations_are_runtime: true,
         }
     }
 
@@ -42,7 +42,7 @@ impl<'a> DependencyCollector<'a> {
             read_vars,
             write_vars: Some(write_vars),
             attribute_accesses,
-            annotations_are_runtime: false,
+            variable_annotations_are_runtime: false,
         }
     }
 
@@ -167,11 +167,39 @@ impl<'a> DependencyCollector<'a> {
         }
     }
 
-    fn visit_nested_scope(&mut self, stmt: &Stmt, annotations_are_runtime: bool) {
-        let enclosing_scope = self.annotations_are_runtime;
-        self.annotations_are_runtime = annotations_are_runtime;
-        visitor::walk_stmt(self, stmt);
-        self.annotations_are_runtime = enclosing_scope;
+    fn visit_function_def(&mut self, function_def: &ast::StmtFunctionDef) {
+        for decorator in &function_def.decorator_list {
+            self.visit_decorator(decorator);
+        }
+        if let Some(type_params) = &function_def.type_params {
+            self.visit_type_params(type_params);
+        }
+        self.visit_parameters(&function_def.parameters);
+        if let Some(returns) = &function_def.returns {
+            self.visit_annotation(returns);
+        }
+
+        let enclosing_scope = self.variable_annotations_are_runtime;
+        self.variable_annotations_are_runtime = false;
+        self.visit_body(&function_def.body);
+        self.variable_annotations_are_runtime = enclosing_scope;
+    }
+
+    fn visit_class_def(&mut self, class_def: &ast::StmtClassDef) {
+        for decorator in &class_def.decorator_list {
+            self.visit_decorator(decorator);
+        }
+        if let Some(type_params) = &class_def.type_params {
+            self.visit_type_params(type_params);
+        }
+        if let Some(arguments) = &class_def.arguments {
+            self.visit_arguments(arguments);
+        }
+
+        let enclosing_scope = self.variable_annotations_are_runtime;
+        self.variable_annotations_are_runtime = true;
+        self.visit_body(&class_def.body);
+        self.variable_annotations_are_runtime = enclosing_scope;
     }
 }
 
@@ -197,13 +225,13 @@ impl<'ast> Visitor<'ast> for DependencyCollector<'_> {
                 if let Some(value) = &ann_assign.value {
                     self.visit_expr(value);
                 }
-                if self.annotations_are_runtime {
+                if self.variable_annotations_are_runtime {
                     self.visit_annotation(&ann_assign.annotation);
                 }
                 self.visit_assignment_target(&ann_assign.target);
             }
-            Stmt::ClassDef(_) => self.visit_nested_scope(stmt, true),
-            Stmt::FunctionDef(_) => self.visit_nested_scope(stmt, false),
+            Stmt::ClassDef(class_def) => self.visit_class_def(class_def),
+            Stmt::FunctionDef(function_def) => self.visit_function_def(function_def),
             Stmt::For(for_stmt) => {
                 self.visit_expr(&for_stmt.iter);
                 self.visit_assignment_target(&for_stmt.target);

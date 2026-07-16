@@ -54,17 +54,28 @@ def class_annotation_value() -> str:
     return "class-annotation"
 
 
+def nested_function_annotation():
+    return str
+
+
+def nested_method_annotation():
+    return str
+
+
 def annotation_scope_value() -> str:
     local: function_local_annotation
+
+    def nested(value: nested_function_annotation()) -> str:
+        return value
 
     class Annotated:
         retained: class_annotation_value
 
-        def read(self) -> str:
+        def read(self, value: nested_method_annotation()) -> str:
             local: method_local_annotation
-            return self.__annotations__["retained"]()
+            return f"{self.__annotations__['retained']()}-{value}"
 
-    return Annotated().read()
+    return Annotated().read(nested("nested-annotations"))
 
 
 def augmented_value() -> str:
