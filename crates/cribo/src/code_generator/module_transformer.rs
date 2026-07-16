@@ -8,7 +8,7 @@ pub(crate) const SELF_PARAM: &str = "self";
 
 use log::debug;
 use ruff_python_ast::{
-    ExceptHandler, Expr, ExprContext, ModModule, Stmt, StmtAssign, StmtFunctionDef,
+    ExceptHandler, Expr, ExprCall, ExprContext, ModModule, Stmt, StmtAssign, StmtFunctionDef,
 };
 
 use crate::{
@@ -665,6 +665,9 @@ pub(crate) fn transform_expr_for_module_vars(
         }
         // Recursively handle other expressions
         Expr::Call(call) => {
+            if is_generated_module_attr_sync_call(call) {
+                return;
+            }
             transform_expr_for_module_vars(
                 &mut call.func,
                 module_level_vars,
@@ -1027,6 +1030,31 @@ pub(crate) fn transform_expr_for_module_vars(
     }
 }
 
+/// Return whether a synthetic call synchronizes a local binding to a module attribute.
+fn is_generated_module_attr_sync_call(call: &ExprCall) -> bool {
+    if !call.range.is_empty() || !call.arguments.keywords.is_empty() {
+        return false;
+    }
+    let Expr::Attribute(setattr) = call.func.as_ref() else {
+        return false;
+    };
+    let Expr::Attribute(builtins) = setattr.value.as_ref() else {
+        return false;
+    };
+    let Expr::Name(cribo) = builtins.value.as_ref() else {
+        return false;
+    };
+    let [_, Expr::StringLiteral(attribute), Expr::Name(value)] = &*call.arguments.args else {
+        return false;
+    };
+
+    setattr.attr.as_str() == "setattr"
+        && builtins.attr.as_str() == "builtins"
+        && cribo.id.as_str() == "_cribo"
+        && attribute.value.to_str() == value.id.as_str()
+}
+
+/// Return whether a synthetic assignment synchronizes a local binding to a module attribute.
 fn is_generated_module_attr_sync_assignment(assign: &StmtAssign) -> bool {
     if !assign.range.is_empty() {
         return false;

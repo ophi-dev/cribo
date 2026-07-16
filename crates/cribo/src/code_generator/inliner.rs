@@ -6,7 +6,7 @@
 use std::path::Path;
 
 use log::debug;
-use ruff_python_ast::{Expr, Identifier, ModModule, Stmt, StmtAssign, StmtClassDef};
+use ruff_python_ast::{Expr, Identifier, ModModule, Stmt, StmtAssign, StmtClassDef, StmtTypeAlias};
 use ruff_text_size::TextRange;
 
 use super::{
@@ -265,10 +265,8 @@ impl Bundler<'_> {
                         ctx,
                     );
                 }
-                // TypeAlias statements are safe metadata definitions
-                Stmt::TypeAlias(_) => {
-                    // Type aliases don't need renaming in Python, they're just metadata
-                    ctx.inlined_stmts.push(stmt.clone());
+                Stmt::TypeAlias(type_alias) => {
+                    self.inline_type_alias(type_alias, module_name, &mut module_renames, ctx);
                 }
                 // Pass statements are no-ops and safe
                 Stmt::Pass(_) => {
@@ -324,6 +322,31 @@ impl Bundler<'_> {
         }
 
         // Statements are accumulated in ctx.inlined_stmts
+    }
+
+    /// Inline a type alias definition, applying semantic conflict renames to its binding.
+    fn inline_type_alias(
+        &self,
+        type_alias: &StmtTypeAlias,
+        module_name: &str,
+        module_renames: &mut FxIndexMap<String, String>,
+        ctx: &mut InlineContext<'_>,
+    ) {
+        let Expr::Name(name) = type_alias.name.as_ref() else {
+            ctx.inlined_stmts.push(Stmt::TypeAlias(type_alias.clone()));
+            return;
+        };
+
+        let alias_name = name.id.to_string();
+        let renamed_name = self.resolve_renamed_name(&alias_name, module_name, ctx);
+        module_renames.insert(alias_name, renamed_name.clone());
+        ctx.global_symbols.insert(renamed_name.clone());
+
+        let mut type_alias_clone = type_alias.clone();
+        if let Expr::Name(name) = type_alias_clone.name.as_mut() {
+            name.id = renamed_name.into();
+        }
+        ctx.inlined_stmts.push(Stmt::TypeAlias(type_alias_clone));
     }
 
     /// Rewrite a class argument expression (base class or keyword value)

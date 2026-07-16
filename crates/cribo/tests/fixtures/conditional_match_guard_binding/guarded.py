@@ -1,5 +1,13 @@
+import guard_observer
+
+
 def get_subject():
     return "captured"
+
+
+class GuardResult:
+    def __bool__(self):
+        return guard_observer.capture_was_mutated()
 
 
 match get_subject():
@@ -11,3 +19,7 @@ match get_subject():
         pass
 
 assert REBOUND_GUARD_VALUE == "rebound"
+
+match get_subject():
+    case BOOL_GUARD_VALUE if guard_observer.mutate_and_return(GuardResult()):
+        BOOL_GUARD_PASSED = True

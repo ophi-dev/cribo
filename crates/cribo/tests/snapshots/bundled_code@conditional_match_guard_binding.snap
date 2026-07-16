@@ -28,28 +28,66 @@ class _Cribo():
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
+guard_observer = _cribo.types.SimpleNamespace(__name__='guard_observer', __initializing__=False, __initialized__=False)
 guarded = _cribo.types.SimpleNamespace(__name__='guarded', __initializing__=False, __initialized__=False)
-def _cribo_init___cribo_7e6071_guarded(self):
+def _cribo_init___cribo_592ce1_guard_observer(self):
     if getattr(self, '__initialized__', False):
         return self
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    global guarded
+    guarded = _cribo_init___cribo_6238e8_guarded(guarded)
+    self.guarded = guarded
+
+    def mutate_and_return(result):
+        guarded.BOOL_GUARD_VALUE = "mutated"
+        return result
+    self.mutate_and_return = mutate_and_return
+
+    def capture_was_mutated():
+        return guarded.BOOL_GUARD_VALUE == "mutated"
+    self.capture_was_mutated = capture_was_mutated
+    self.__initialized__ = True
+    self.__initializing__ = False
+    return self
+guard_observer.__init__ = _cribo_init___cribo_592ce1_guard_observer
+def _cribo_init___cribo_6238e8_guarded(self):
+    if getattr(self, '__initialized__', False):
+        return self
+    if getattr(self, '__initializing__', False):
+        return self
+    self.__initializing__ = True
+    global guard_observer
+    guard_observer = _cribo_init___cribo_592ce1_guard_observer(guard_observer)
+    self.guard_observer = guard_observer
 
     def get_subject():
         return "captured"
     self.get_subject = get_subject
+
+    class GuardResult:
+
+        def __bool__(self):
+            return guard_observer.capture_was_mutated()
+    GuardResult.__module__ = 'guarded'
+    self.GuardResult = GuardResult
     match get_subject():
-        case GUARDED_VALUE if ((_cribo.builtins.setattr(guarded, 'GUARDED_VALUE', GUARDED_VALUE),), GUARDED_VALUE == "not-captured", (_cribo.builtins.setattr(guarded, 'GUARDED_VALUE', GUARDED_VALUE),))[1]:
+        case GUARDED_VALUE if ((_cribo.builtins.setattr(guarded, 'GUARDED_VALUE', GUARDED_VALUE),), _cribo.builtins.bool(GUARDED_VALUE == "not-captured"), (_cribo.builtins.setattr(guarded, 'GUARDED_VALUE', GUARDED_VALUE),))[1]:
             raise AssertionError
     match get_subject():
-        case REBOUND_GUARD_VALUE if ((_cribo.builtins.setattr(guarded, 'REBOUND_GUARD_VALUE', REBOUND_GUARD_VALUE),), (REBOUND_GUARD_VALUE := "rebound"), (_cribo.builtins.setattr(guarded, 'REBOUND_GUARD_VALUE', REBOUND_GUARD_VALUE),))[1]:
+        case REBOUND_GUARD_VALUE if ((_cribo.builtins.setattr(guarded, 'REBOUND_GUARD_VALUE', REBOUND_GUARD_VALUE),), _cribo.builtins.bool(((REBOUND_GUARD_VALUE := "rebound"), _cribo.builtins.setattr(guarded, 'REBOUND_GUARD_VALUE', REBOUND_GUARD_VALUE))[0]), (_cribo.builtins.setattr(guarded, 'REBOUND_GUARD_VALUE', REBOUND_GUARD_VALUE),))[1]:
             pass
     assert REBOUND_GUARD_VALUE == "rebound"
+    match get_subject():
+        case BOOL_GUARD_VALUE if ((_cribo.builtins.setattr(guarded, 'BOOL_GUARD_VALUE', BOOL_GUARD_VALUE),), _cribo.builtins.bool(guard_observer.mutate_and_return(GuardResult())), (_cribo.builtins.setattr(guarded, 'BOOL_GUARD_VALUE', BOOL_GUARD_VALUE),))[1]:
+            BOOL_GUARD_PASSED = True
+            guarded.BOOL_GUARD_PASSED = BOOL_GUARD_PASSED
     self.__initialized__ = True
     self.__initializing__ = False
     return self
-guarded.__init__ = _cribo_init___cribo_7e6071_guarded
-guarded = _cribo_init___cribo_7e6071_guarded(guarded)
+guarded.__init__ = _cribo_init___cribo_6238e8_guarded
+guarded = _cribo_init___cribo_6238e8_guarded(guarded)
 print(guarded.GUARDED_VALUE)
 print(guarded.REBOUND_GUARD_VALUE)
+print(guarded.BOOL_GUARD_PASSED)

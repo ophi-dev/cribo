@@ -62,9 +62,17 @@ def _cribo_init___cribo_2a6a8f_test_import(self):
         print("Successfully imported pandera.polars")
         print(f"pandera.polars module: {pa.__name__}")
     except ImportError as e:
-        print(f"ImportError: {e}")
+        test_import.e = e
+        try:
+            print(f"ImportError: {e}")
+        finally:
+            _cribo.builtins.delattr(test_import, 'e')
     except AttributeError as e:
-        print(f"AttributeError: {e}")
+        test_import.e = e
+        try:
+            print(f"AttributeError: {e}")
+        finally:
+            _cribo.builtins.delattr(test_import, 'e')
     try:
         pandera = _cribo_init___cribo_b061eb_pandera(pandera)
         test_import.pandera = pandera
@@ -75,7 +83,11 @@ def _cribo_init___cribo_2a6a8f_test_import(self):
         else:
             print("This is the third-party pandera module")
     except ImportError as e:
-        print(f"\nFailed to import pandera: {e}")
+        test_import.e = e
+        try:
+            print(f"\nFailed to import pandera: {e}")
+        finally:
+            _cribo.builtins.delattr(test_import, 'e')
     self.__initialized__ = True
     self.__initializing__ = False
     return self
