@@ -17,6 +17,7 @@ struct DependencyCollector<'a> {
     read_vars: &'a mut FxIndexSet<String>,
     write_vars: Option<&'a mut FxIndexSet<String>>,
     attribute_accesses: &'a mut FxIndexMap<String, FxIndexSet<String>>,
+    annotations_are_runtime: bool,
 }
 
 impl<'a> DependencyCollector<'a> {
@@ -28,6 +29,7 @@ impl<'a> DependencyCollector<'a> {
             read_vars,
             write_vars: None,
             attribute_accesses,
+            annotations_are_runtime: true,
         }
     }
 
@@ -40,6 +42,7 @@ impl<'a> DependencyCollector<'a> {
             read_vars,
             write_vars: Some(write_vars),
             attribute_accesses,
+            annotations_are_runtime: false,
         }
     }
 
@@ -143,7 +146,7 @@ impl<'a> DependencyCollector<'a> {
             self.read_vars.insert(base_path);
         }
 
-        if let Some(full_name) = Self::extract_dotted_name(attribute) {
+        if let Some(full_name) = Self::build_full_dotted_name(&attribute.value) {
             self.read_vars.insert(full_name.clone());
             if full_name.contains('.') {
                 let root = full_name
@@ -164,28 +167,11 @@ impl<'a> DependencyCollector<'a> {
         }
     }
 
-    fn extract_dotted_name(attribute: &ast::ExprAttribute) -> Option<String> {
-        fn build_dotted_name(expr: &Expr, parts: &mut Vec<String>) -> bool {
-            match expr {
-                Expr::Name(name) => {
-                    parts.push(name.id.to_string());
-                    true
-                }
-                Expr::Attribute(attribute) if build_dotted_name(&attribute.value, parts) => {
-                    parts.push(attribute.attr.to_string());
-                    true
-                }
-                _ => false,
-            }
-        }
-
-        let mut parts = Vec::new();
-        if build_dotted_name(&attribute.value, &mut parts) {
-            parts.reverse();
-            Some(parts.join("."))
-        } else {
-            None
-        }
+    fn visit_nested_scope(&mut self, stmt: &Stmt, annotations_are_runtime: bool) {
+        let enclosing_scope = self.annotations_are_runtime;
+        self.annotations_are_runtime = annotations_are_runtime;
+        visitor::walk_stmt(self, stmt);
+        self.annotations_are_runtime = enclosing_scope;
     }
 }
 
@@ -211,9 +197,13 @@ impl<'ast> Visitor<'ast> for DependencyCollector<'_> {
                 if let Some(value) = &ann_assign.value {
                     self.visit_expr(value);
                 }
-                self.visit_annotation(&ann_assign.annotation);
+                if self.annotations_are_runtime {
+                    self.visit_annotation(&ann_assign.annotation);
+                }
                 self.visit_assignment_target(&ann_assign.target);
             }
+            Stmt::ClassDef(_) => self.visit_nested_scope(stmt, true),
+            Stmt::FunctionDef(_) => self.visit_nested_scope(stmt, false),
             Stmt::For(for_stmt) => {
                 self.visit_expr(&for_stmt.iter);
                 self.visit_assignment_target(&for_stmt.target);

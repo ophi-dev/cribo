@@ -51,6 +51,18 @@ def slice_step() -> int:
     return 1
 def annotated_value() -> str:
     return "annotated"
+def class_annotation_value() -> str:
+    return "class-annotation"
+def annotation_scope_value() -> str:
+    local: function_local_annotation
+
+    class Annotated:
+        retained: class_annotation_value
+
+        def read(self) -> str:
+            local: method_local_annotation
+            return self.__annotations__["retained"]()
+    return Annotated().read()
 def augmented_value() -> str:
     return "-augmented"
 def delete_index() -> int:
@@ -75,11 +87,13 @@ async def exercise() -> str:
     generated = list(generated_value())
     delegated = list(delegated_values())
     type RuntimeAlias = type_alias_value()
-    values = [named, result, callback(), awaited, *generated, *delegated, *starred, *sliced, annotated, augmented, *deleted, RuntimeAlias.__value__.__name__]
+    values = [named, result, callback(), awaited, *generated, *delegated, *starred, *sliced, annotated, annotation_scope_value(), augmented, *deleted, RuntimeAlias.__value__.__name__]
     return "|".join(values)
 operations.annotated_value = annotated_value
+operations.annotation_scope_value = annotation_scope_value
 operations.augmented_value = augmented_value
 operations.await_value = await_value
+operations.class_annotation_value = class_annotation_value
 operations.delegated_values = delegated_values
 operations.delete_index = delete_index
 operations.exercise = exercise

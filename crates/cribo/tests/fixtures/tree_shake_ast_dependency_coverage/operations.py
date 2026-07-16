@@ -42,6 +42,31 @@ def annotated_value() -> str:
     return "annotated"
 
 
+def function_local_annotation():
+    return "unused-function-annotation"
+
+
+def method_local_annotation():
+    return "unused-method-annotation"
+
+
+def class_annotation_value() -> str:
+    return "class-annotation"
+
+
+def annotation_scope_value() -> str:
+    local: function_local_annotation
+
+    class Annotated:
+        retained: class_annotation_value
+
+        def read(self) -> str:
+            local: method_local_annotation
+            return self.__annotations__["retained"]()
+
+    return Annotated().read()
+
+
 def augmented_value() -> str:
     return "-augmented"
 
@@ -87,6 +112,7 @@ async def exercise() -> str:
         *starred,
         *sliced,
         annotated,
+        annotation_scope_value(),
         augmented,
         *deleted,
         RuntimeAlias.__value__.__name__,

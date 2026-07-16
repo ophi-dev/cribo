@@ -4,6 +4,6 @@ input_file: crates/cribo/tests/fixtures/tree_shake_ast_dependency_coverage/main.
 ---
 ExecutionResults {
     status: Success,
-    stdout: "named|named|lambda|await|yield|yield-from|starred|slice|annotated|base-augmented|keep|str",
+    stdout: "named|named|lambda|await|yield|yield-from|starred|slice|annotated|class-annotation|base-augmented|keep|str",
     stderr: "",
 }
