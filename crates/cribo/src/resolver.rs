@@ -435,6 +435,10 @@ impl ModuleResolver {
         pythonpath_override: Option<&str>,
         virtualenv_override: Option<&str>,
     ) -> Self {
+        let python_version = config
+            .python_version()
+            .expect("ModuleResolver requires a validated target Python version");
+
         Self {
             config,
             registry: Mutex::new(ModuleRegistry::new()),
@@ -442,7 +446,7 @@ impl ModuleResolver {
             classification_cache: RefCell::new(IndexMap::new()),
             virtualenv_packages_cache: RefCell::new(None),
             entry_dir: None,
-            python_version: 38, // Default to Python 3.8
+            python_version,
             pythonpath_override: pythonpath_override.map(str::to_owned),
             virtualenv_override: virtualenv_override.map(str::to_owned),
         }
@@ -1875,6 +1879,25 @@ mod tests {
             resolver.classify_import("unknown_module").origin,
             ImportOrigin::Unknown
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_classification_respects_target_python_version() -> Result<()> {
+        let mut py38_config = Config::default();
+        py38_config.set_target_version("py38".to_owned())?;
+        let py38_resolver = ModuleResolver::new(py38_config);
+        let py38_classification = py38_resolver.classify_import("zoneinfo");
+
+        assert_ne!(py38_classification.origin, ImportOrigin::StandardLibrary);
+        assert_eq!(py38_classification.requirement.as_deref(), Some("zoneinfo"));
+
+        let py310_resolver = ModuleResolver::new(Config::default());
+        let py310_classification = py310_resolver.classify_import("zoneinfo");
+
+        assert_eq!(py310_classification.origin, ImportOrigin::StandardLibrary);
+        assert_eq!(py310_classification.requirement, None);
 
         Ok(())
     }
