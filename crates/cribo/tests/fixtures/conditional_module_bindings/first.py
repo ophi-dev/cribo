@@ -1,6 +1,6 @@
 from contextlib import nullcontext
 
-if True:
+if __name__ != "__main__":
     CONDITIONAL_VALUE = "first"
     ANNOTATED_VALUE: str = "annotated"
     AUGMENTED_VALUE = 1
@@ -14,6 +14,9 @@ if True:
         VALUE = CONDITIONAL_VALUE
 
 for LOOP_VALUE in ("loop",):
+    pass
+
+for EMPTY_LOOP_VALUE in ():
     pass
 
 with nullcontext(("with", "rest")) as (WITH_VALUE, *WITH_REST):

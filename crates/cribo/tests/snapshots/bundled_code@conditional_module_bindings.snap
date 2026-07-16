@@ -29,7 +29,7 @@ class _Cribo():
         return _CriboModule(m, n)
 _cribo = _Cribo()
 first = _cribo.types.SimpleNamespace(__name__='first', __initializing__=False, __initialized__=False)
-def _cribo_init___cribo_ebdfaa_first(self):
+def _cribo_init___cribo_2da697_first(self):
     if getattr(self, '__initialized__', False):
         return self
     if getattr(self, '__initializing__', False):
@@ -37,7 +37,7 @@ def _cribo_init___cribo_ebdfaa_first(self):
     self.__initializing__ = True
     nullcontext = _cribo.contextlib.nullcontext
     self.nullcontext = nullcontext
-    if True:
+    if self.__name__ != "__main__":
         CONDITIONAL_VALUE = "first"
         first.CONDITIONAL_VALUE = CONDITIONAL_VALUE
         ANNOTATED_VALUE: str = "annotated"
@@ -59,7 +59,16 @@ def _cribo_init___cribo_ebdfaa_first(self):
             VALUE = CONDITIONAL_VALUE
         first.ConditionalClass = ConditionalClass
     for LOOP_VALUE in ("loop",):
+        pass
+    try:
         first.LOOP_VALUE = LOOP_VALUE
+    except _cribo.builtins.NameError:
+        pass
+    for EMPTY_LOOP_VALUE in ():
+        pass
+    try:
+        first.EMPTY_LOOP_VALUE = EMPTY_LOOP_VALUE
+    except _cribo.builtins.NameError:
         pass
     with _cribo.contextlib.nullcontext(("with", "rest")) as (WITH_VALUE, *WITH_REST):
         first.WITH_REST = WITH_REST
@@ -74,15 +83,15 @@ def _cribo_init___cribo_ebdfaa_first(self):
     self.__initialized__ = True
     self.__initializing__ = False
     return self
-first.__init__ = _cribo_init___cribo_ebdfaa_first
+first.__init__ = _cribo_init___cribo_2da697_first
 second = _cribo.types.SimpleNamespace(__name__='second', __initializing__=False, __initialized__=False)
-def _cribo_init___cribo_624db4_second(self):
+def _cribo_init___cribo_4717e4_second(self):
     if getattr(self, '__initialized__', False):
         return self
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
-    if True:
+    if self.__name__ != "__main__":
         CONDITIONAL_VALUE = "second"
         second.CONDITIONAL_VALUE = CONDITIONAL_VALUE
 
@@ -92,9 +101,9 @@ def _cribo_init___cribo_624db4_second(self):
     self.__initialized__ = True
     self.__initializing__ = False
     return self
-second.__init__ = _cribo_init___cribo_624db4_second
-first = _cribo_init___cribo_ebdfaa_first(first)
-second = _cribo_init___cribo_624db4_second(second)
+second.__init__ = _cribo_init___cribo_4717e4_second
+first = _cribo_init___cribo_2da697_first(first)
+second = _cribo_init___cribo_4717e4_second(second)
 print(first.CONDITIONAL_VALUE)
 print(second.CONDITIONAL_VALUE)
 print(first.conditional_function())
@@ -104,5 +113,6 @@ print(first.ANNOTATED_VALUE)
 print(first.AUGMENTED_VALUE)
 print(first.UNPACKED_LEFT, first.UNPACKED_MIDDLE, first.UNPACKED_RIGHT)
 print(first.LOOP_VALUE)
+print(hasattr(first, "EMPTY_LOOP_VALUE"))
 print(first.WITH_VALUE, first.WITH_REST)
 print(first.MATCH_VALUE, first.MATCH_REST)

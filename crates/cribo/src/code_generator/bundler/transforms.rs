@@ -84,6 +84,29 @@ fn module_attr_sync_name<'a>(stmt: &'a Stmt, module_var: &str) -> Option<&'a str
         .then(|| value.id.as_str())
 }
 
+fn guard_unbound_module_attr_assignments(assignments: Vec<Stmt>) -> Option<Stmt> {
+    if assignments.is_empty() {
+        return None;
+    }
+
+    let handler = ExceptHandler::ExceptHandler(ruff_python_ast::ExceptHandlerExceptHandler {
+        node_index: ruff_python_ast::AtomicNodeIndex::NONE,
+        type_: Some(Box::new(expressions::dotted_name(
+            &["_cribo", "builtins", "NameError"],
+            ExprContext::Load,
+        ))),
+        name: None,
+        body: vec![statements::pass()].into(),
+        range: TextRange::default(),
+    });
+    Some(statements::try_stmt(
+        assignments,
+        vec![handler],
+        vec![],
+        vec![],
+    ))
+}
+
 impl Bundler<'_> {
     /// Process module body recursively to handle conditional imports
     pub(crate) fn process_body_recursive(
@@ -494,21 +517,23 @@ impl Bundler<'_> {
                     }
                 }
                 Stmt::For(for_stmt) => {
-                    let mut processed_body = Self::conditional_module_attr_assignments(
+                    let names = crate::visitors::utils::collect_names_from_assignment_target(
+                        &for_stmt.target,
+                    )
+                    .into_iter()
+                    .map(str::to_owned)
+                    .filter(|name| !explicit_module_attr_syncs.contains(name));
+                    let module_attr_assignments = Self::conditional_module_attr_assignments(
                         module_name,
                         module_scope_symbols,
-                        crate::visitors::utils::collect_names_from_assignment_target(
-                            &for_stmt.target,
-                        )
-                        .into_iter()
-                        .map(str::to_owned),
+                        names,
                     );
-                    processed_body.extend(self.process_body_recursive_impl(
+                    let processed_body = self.process_body_recursive_impl(
                         for_stmt.body.to_vec(),
                         module_name,
                         module_scope_symbols,
                         true,
-                    ));
+                    );
                     let processed_orelse = self.process_body_recursive_impl(
                         for_stmt.orelse.to_vec(),
                         module_name,
@@ -524,6 +549,11 @@ impl Bundler<'_> {
                         is_async: for_stmt.is_async,
                         range: for_stmt.range,
                     }));
+                    if let Some(sync) =
+                        guard_unbound_module_attr_assignments(module_attr_assignments)
+                    {
+                        result.push(sync);
+                    }
                 }
                 Stmt::While(while_stmt) => {
                     let processed_body = self.process_body_recursive_impl(
