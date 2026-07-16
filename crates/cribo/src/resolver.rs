@@ -920,7 +920,7 @@ impl ModuleResolver {
             let is_native_extension = path
                 .extension()
                 .and_then(OsStr::to_str)
-                .is_some_and(|extension| matches!(extension, "so" | "pyd" | "dll" | "dylib"));
+                .is_some_and(|extension| matches!(extension, "so" | "pyd"));
             if is_module_name && is_native_extension {
                 candidates.push(path);
             }
@@ -1945,6 +1945,32 @@ mod tests {
         assert_eq!(
             resolver.classify_import("namespace_pkg").origin,
             ImportOrigin::FirstParty
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_non_python_shared_libraries_do_not_shadow_namespace_package() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let root = temp_dir.path();
+
+        create_test_file(&root.join("namespace_pkg/module.py"), "")?;
+        create_test_file(&root.join("namespace_pkg.dll"), "")?;
+        create_test_file(&root.join("namespace_pkg.dylib"), "")?;
+
+        let resolver = ModuleResolver::new(Config {
+            src: vec![root.to_path_buf()],
+            ..Default::default()
+        });
+
+        assert_eq!(
+            resolver.resolve_module_path("namespace_pkg")?,
+            Some(root.join("namespace_pkg").canonicalize()?)
+        );
+        assert_eq!(
+            resolver.classify_import("namespace_pkg").source,
+            ImportSource::NamespacePackage
         );
 
         Ok(())
