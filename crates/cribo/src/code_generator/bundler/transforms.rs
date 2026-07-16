@@ -1,7 +1,7 @@
 //! AST statement/expression transformation and global variable lifting.
 
 use ruff_python_ast::{
-    BoolOp, ExceptHandler, Expr, ExprContext, ModModule, Pattern, Stmt, StmtFunctionDef,
+    ExceptHandler, Expr, ExprContext, ModModule, Pattern, Stmt, StmtFunctionDef,
 };
 use ruff_text_size::TextRange;
 
@@ -127,26 +127,40 @@ impl Bundler<'_> {
         guard: Expr,
     ) -> Expr {
         let module_var = sanitize_module_name_for_identifier(module_name);
-        let mut values: Vec<Expr> = names
+        let names: Vec<String> = names
             .into_iter()
             .filter(|name| Self::should_sync_conditional_module_attr(name, module_scope_symbols))
-            .map(|name| {
-                expressions::call(
-                    expressions::dotted_name(&["_cribo", "builtins", "setattr"], ExprContext::Load),
-                    vec![
-                        expressions::name(&module_var, ExprContext::Load),
-                        expressions::string_literal(&name),
-                        expressions::name(&name, ExprContext::Load),
-                    ],
-                    vec![],
-                )
-            })
             .collect();
-        if values.is_empty() {
+        if names.is_empty() {
             return guard;
         }
-        values.push(guard);
-        expressions::bool_op(BoolOp::Or, values)
+
+        let sync_calls = || {
+            expressions::tuple(
+                names
+                    .iter()
+                    .map(|name| {
+                        expressions::call(
+                            expressions::dotted_name(
+                                &["_cribo", "builtins", "setattr"],
+                                ExprContext::Load,
+                            ),
+                            vec![
+                                expressions::name(&module_var, ExprContext::Load),
+                                expressions::string_literal(name),
+                                expressions::name(name, ExprContext::Load),
+                            ],
+                            vec![],
+                        )
+                    })
+                    .collect(),
+            )
+        };
+        expressions::subscript(
+            expressions::tuple(vec![sync_calls(), guard, sync_calls()]),
+            expressions::integer_literal(1),
+            ExprContext::Load,
+        )
     }
 
     /// Implementation of `process_body_recursive` with conditional context tracking
@@ -519,6 +533,11 @@ impl Bundler<'_> {
                 Stmt::ClassDef(class) => {
                     result.push(stmt.clone());
                     if in_conditional_context {
+                        result.push(statements::assign_attribute(
+                            class.name.as_str(),
+                            "__module__",
+                            expressions::string_literal(module_name),
+                        ));
                         result.extend(Self::conditional_module_attr_assignments(
                             module_name,
                             module_scope_symbols,

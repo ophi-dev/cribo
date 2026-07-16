@@ -29,7 +29,7 @@ class _Cribo():
         return _CriboModule(m, n)
 _cribo = _Cribo()
 guarded = _cribo.types.SimpleNamespace(__name__='guarded', __initializing__=False, __initialized__=False)
-def _cribo_init___cribo_ca0dcb_guarded(self):
+def _cribo_init___cribo_fc732a_guarded(self):
     if getattr(self, '__initialized__', False):
         return self
     if getattr(self, '__initializing__', False):
@@ -40,11 +40,15 @@ def _cribo_init___cribo_ca0dcb_guarded(self):
         return "captured"
     self.get_subject = get_subject
     match get_subject():
-        case GUARDED_VALUE if (_cribo.builtins.setattr(guarded, 'GUARDED_VALUE', GUARDED_VALUE) or GUARDED_VALUE == "not-captured"):
+        case GUARDED_VALUE if ((_cribo.builtins.setattr(guarded, 'GUARDED_VALUE', GUARDED_VALUE),), GUARDED_VALUE == "not-captured", (_cribo.builtins.setattr(guarded, 'GUARDED_VALUE', GUARDED_VALUE),))[1]:
             raise AssertionError
+    match get_subject():
+        case REBOUND_GUARD_VALUE if ((_cribo.builtins.setattr(guarded, 'REBOUND_GUARD_VALUE', REBOUND_GUARD_VALUE),), (REBOUND_GUARD_VALUE := "rebound"), (_cribo.builtins.setattr(guarded, 'REBOUND_GUARD_VALUE', REBOUND_GUARD_VALUE),))[1]:
+            pass
     self.__initialized__ = True
     self.__initializing__ = False
     return self
-guarded.__init__ = _cribo_init___cribo_ca0dcb_guarded
-guarded = _cribo_init___cribo_ca0dcb_guarded(guarded)
+guarded.__init__ = _cribo_init___cribo_fc732a_guarded
+guarded = _cribo_init___cribo_fc732a_guarded(guarded)
 print(guarded.GUARDED_VALUE)
+print(guarded.REBOUND_GUARD_VALUE)

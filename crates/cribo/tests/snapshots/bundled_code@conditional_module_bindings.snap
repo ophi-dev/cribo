@@ -57,6 +57,7 @@ def _cribo_init___cribo_8618fb_first(self):
 
         class ConditionalClass:
             VALUE = CONDITIONAL_VALUE
+        ConditionalClass.__module__ = 'first'
         first.ConditionalClass = ConditionalClass
     for LOOP_VALUE in ("loop",):
         first.LOOP_VALUE = LOOP_VALUE
@@ -107,6 +108,7 @@ print(second.CONDITIONAL_VALUE)
 print(first.conditional_function())
 print(second.conditional_function())
 print(first.ConditionalClass.VALUE)
+print(first.ConditionalClass.__module__)
 print(first.ANNOTATED_VALUE)
 print(first.AUGMENTED_VALUE)
 print(first.UNPACKED_LEFT, first.UNPACKED_MIDDLE, first.UNPACKED_RIGHT)

@@ -7,9 +7,9 @@
 use ruff_python_ast::{
     AtomicNodeIndex, BoolOp, CmpOp, Expr, ExprAttribute, ExprBinOp, ExprBoolOp, ExprBooleanLiteral,
     ExprCall, ExprCompare, ExprContext, ExprIf, ExprList, ExprName, ExprNoneLiteral,
-    ExprStringLiteral, ExprSubscript, ExprTuple, ExprUnaryOp, FStringFlags, FStringPart,
-    FStringValue, Keyword, Operator, StringLiteral, StringLiteralFlags, StringLiteralValue,
-    UnaryOp,
+    ExprNumberLiteral, ExprStringLiteral, ExprSubscript, ExprTuple, ExprUnaryOp, FStringFlags,
+    FStringPart, FStringValue, Int, Keyword, Number, Operator, StringLiteral, StringLiteralFlags,
+    StringLiteralValue, UnaryOp,
 };
 use ruff_text_size::TextRange;
 
@@ -130,6 +130,15 @@ pub(crate) fn none_literal() -> Expr {
 pub(crate) fn bool_literal(value: bool) -> Expr {
     Expr::BooleanLiteral(ExprBooleanLiteral {
         value,
+        range: TextRange::default(),
+        node_index: AtomicNodeIndex::NONE,
+    })
+}
+
+/// Creates an integer literal expression node.
+pub(crate) fn integer_literal(value: u64) -> Expr {
+    Expr::NumberLiteral(ExprNumberLiteral {
+        value: Number::Int(Int::from(value)),
         range: TextRange::default(),
         node_index: AtomicNodeIndex::NONE,
     })

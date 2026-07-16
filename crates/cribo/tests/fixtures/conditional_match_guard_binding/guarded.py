@@ -5,3 +5,7 @@ def get_subject():
 match get_subject():
     case GUARDED_VALUE if GUARDED_VALUE == "not-captured":
         raise AssertionError
+
+match get_subject():
+    case REBOUND_GUARD_VALUE if (REBOUND_GUARD_VALUE := "rebound"):
+        pass

@@ -4,6 +4,6 @@ input_file: crates/cribo/tests/fixtures/conditional_match_guard_binding/main.py
 ---
 ExecutionResults {
     status: Success,
-    stdout: "captured",
+    stdout: "captured\nrebound",
     stderr: "",
 }
