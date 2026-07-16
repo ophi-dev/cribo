@@ -64,7 +64,7 @@ jobs:
           RUSTFLAGS: ''
 
       - name: Publish mehen metrics
-        uses: ophidiarium/mehen@v0
+        uses: ophi-dev/mehen@v1
         with:
           install-method: cargo
           github-token: ${{ secrets.GITHUB_TOKEN }}
