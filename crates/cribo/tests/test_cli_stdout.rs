@@ -2,7 +2,11 @@
 
 mod common;
 
-use std::{env, fs, path::Path, process::Command};
+use std::{
+    env, fs,
+    path::Path,
+    process::{Command, Output},
+};
 
 use insta::{assert_snapshot, with_settings};
 use tempfile::TempDir;
@@ -39,16 +43,21 @@ fn write_test_distribution(
     .expect("Failed to write distribution metadata");
 }
 
+/// Build a Cribo command with deterministic test output.
+fn cribo_command() -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_cribo"));
+    command
+        .env("RUST_LOG", "off")
+        .env("CARGO_TERM_COLOR", "never")
+        .env("NO_COLOR", "1");
+    command
+}
+
 /// Run cribo with given arguments and return (stdout, stderr, `exit_code`)
 fn run_cribo(args: &[&str]) -> (String, String, i32) {
     // Use the pre-built binary instead of cargo run for performance
-    let cribo_exe = env!("CARGO_BIN_EXE_cribo");
-
-    let output = Command::new(cribo_exe)
+    let output = cribo_command()
         .args(args)
-        .env("RUST_LOG", "off")
-        .env("CARGO_TERM_COLOR", "never")
-        .env("NO_COLOR", "1")
         .output()
         .expect("Failed to execute command");
 
@@ -57,6 +66,41 @@ fn run_cribo(args: &[&str]) -> (String, String, i32) {
     let exit_code = output.status.code().unwrap_or(-1);
 
     (stdout, stderr, exit_code)
+}
+
+/// Run Cribo with requirement generation enabled and customize its environment.
+fn run_requirement_cribo(
+    entry_path: &Path,
+    output_path: &Path,
+    configure: impl FnOnce(&mut Command),
+) -> Output {
+    let mut command = cribo_command();
+    command
+        .arg("--entry")
+        .arg(entry_path)
+        .arg("--output")
+        .arg(output_path)
+        .arg("--emit-requirements")
+        .arg("--python")
+        .arg(common::get_python_executable())
+        .env_remove("VIRTUAL_ENV")
+        .env_remove("CONDA_PREFIX");
+    configure(&mut command);
+    command.output().expect("Failed to execute cribo")
+}
+
+/// Assert that Cribo succeeded and emitted the expected requirement.
+fn assert_requirement_output(output: &Output, output_dir: &Path, expected: &str) {
+    assert!(
+        output.status.success(),
+        "Cribo failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(output_dir.join("requirements.txt"))
+            .expect("Failed to read requirements"),
+        expected
+    );
 }
 
 /// Filters for normalizing paths in snapshots
@@ -271,36 +315,11 @@ fn test_requirements_use_cwd_fallback_virtualenv_for_external_entry() {
     )
     .expect("Failed to write entry module");
     let output_path = output_dir.join("bundle.py");
-    let python = common::get_python_executable();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_cribo"))
-        .arg("--entry")
-        .arg(&entry_path)
-        .arg("--output")
-        .arg(&output_path)
-        .arg("--emit-requirements")
-        .arg("--python")
-        .arg(python)
-        .current_dir(&launch_dir)
-        .env_remove("VIRTUAL_ENV")
-        .env_remove("CONDA_PREFIX")
-        .env_remove("PYTHONPATH")
-        .env("RUST_LOG", "off")
-        .env("CARGO_TERM_COLOR", "never")
-        .env("NO_COLOR", "1")
-        .output()
-        .expect("Failed to execute cribo");
-
-    assert!(
-        output.status.success(),
-        "Cribo failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(
-        fs::read_to_string(output_dir.join("requirements.txt"))
-            .expect("Failed to read requirements"),
-        "cwd-only-distribution"
-    );
+    let output = run_requirement_cribo(&entry_path, &output_path, |command| {
+        command.current_dir(&launch_dir).env_remove("PYTHONPATH");
+    });
+    assert_requirement_output(&output, &output_dir, "cwd-only-distribution");
 }
 
 #[test]
@@ -336,33 +355,10 @@ fn test_requirements_follow_pythonpath_precedence() {
     let pythonpath =
         env::join_paths([&first_root, &second_root]).expect("Failed to construct PYTHONPATH");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_cribo"))
-        .arg("--entry")
-        .arg(&entry_path)
-        .arg("--output")
-        .arg(&output_path)
-        .arg("--emit-requirements")
-        .arg("--python")
-        .arg(common::get_python_executable())
-        .env_remove("VIRTUAL_ENV")
-        .env_remove("CONDA_PREFIX")
-        .env("PYTHONPATH", pythonpath)
-        .env("RUST_LOG", "off")
-        .env("CARGO_TERM_COLOR", "never")
-        .env("NO_COLOR", "1")
-        .output()
-        .expect("Failed to execute cribo");
-
-    assert!(
-        output.status.success(),
-        "Cribo failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(
-        fs::read_to_string(output_dir.join("requirements.txt"))
-            .expect("Failed to read requirements"),
-        "first-distribution"
-    );
+    let output = run_requirement_cribo(&entry_path, &output_path, |command| {
+        command.env("PYTHONPATH", pythonpath);
+    });
+    assert_requirement_output(&output, &output_dir, "first-distribution");
 }
 
 #[test]
