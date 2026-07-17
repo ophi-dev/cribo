@@ -1,7 +1,7 @@
 //! AST statement/expression transformation and global variable lifting.
 
 use ruff_python_ast::{
-    ExceptHandler, Expr, ExprContext, ModModule, Pattern, Stmt, StmtFunctionDef,
+    ExceptHandler, Expr, ExprContext, ModModule, Stmt, StmtFunctionDef,
     visitor::transformer::{self, Transformer},
 };
 use ruff_text_size::TextRange;
@@ -12,10 +12,9 @@ use crate::{
     code_generator::{
         expression_handlers,
         module_registry::{generate_unique_name, sanitize_module_name_for_identifier},
-        patterns,
     },
     types::{FxIndexMap, FxIndexSet},
-    visitors::LocalVarCollector,
+    visitors::{LocalVarCollector, patterns},
 };
 
 /// Parameters for transforming functions with lifted globals
@@ -24,52 +23,6 @@ struct TransformFunctionParams<'a> {
     global_info: &'a crate::symbol_conflict_resolver::ModuleGlobalInfo,
     function_globals: &'a FxIndexSet<String>,
     module_name: Option<&'a str>,
-}
-
-/// Collect every name bound by a structural pattern, including nested and starred captures.
-fn collect_pattern_binding_names(pattern: &Pattern, names: &mut FxIndexSet<String>) {
-    match pattern {
-        Pattern::MatchSequence(sequence) => {
-            for pattern in &sequence.patterns {
-                collect_pattern_binding_names(pattern, names);
-            }
-        }
-        Pattern::MatchMapping(mapping) => {
-            for pattern in &mapping.patterns {
-                collect_pattern_binding_names(pattern, names);
-            }
-            if let Some(name) = &mapping.rest {
-                names.insert(name.to_string());
-            }
-        }
-        Pattern::MatchClass(class) => {
-            for pattern in &class.arguments.patterns {
-                collect_pattern_binding_names(pattern, names);
-            }
-            for keyword in &class.arguments.keywords {
-                collect_pattern_binding_names(&keyword.pattern, names);
-            }
-        }
-        Pattern::MatchStar(star) => {
-            if let Some(name) = &star.name {
-                names.insert(name.to_string());
-            }
-        }
-        Pattern::MatchAs(as_pattern) => {
-            if let Some(pattern) = &as_pattern.pattern {
-                collect_pattern_binding_names(pattern, names);
-            }
-            if let Some(name) = &as_pattern.name {
-                names.insert(name.to_string());
-            }
-        }
-        Pattern::MatchOr(or_pattern) => {
-            for pattern in &or_pattern.patterns {
-                collect_pattern_binding_names(pattern, names);
-            }
-        }
-        Pattern::MatchValue(_) | Pattern::MatchSingleton(_) => {}
-    }
 }
 
 /// Return the name synchronized by a simple generated `module.name = name` assignment.
@@ -1303,7 +1256,9 @@ impl Bundler<'_> {
                         .iter()
                         .map(|case| {
                             let mut names = FxIndexSet::default();
-                            collect_pattern_binding_names(&case.pattern, &mut names);
+                            patterns::visit_binding_names(&case.pattern, &mut |name| {
+                                names.insert(name.to_owned());
+                            });
                             let processed_body = self.process_body_recursive_impl(
                                 &case.body,
                                 module_name,

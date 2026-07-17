@@ -131,7 +131,7 @@ inline_second.record_result = record_result_1
 wrapped_matcher = _cribo.types.SimpleNamespace(__name__='wrapped_matcher', __initializing__=False, __initialized__=False)
 _cribo_wrapped_matcher_EVENT_PATTERN = None
 _cribo_wrapped_matcher_STATUS_PATTERN = None
-def _cribo_init___cribo_93bea3_wrapped_matcher(self):
+def _cribo_init___cribo_a0cda3_wrapped_matcher(self):
     if getattr(self, '__initialized__', False):
         return self
     if getattr(self, '__initializing__', False):
@@ -183,13 +183,24 @@ def _cribo_init___cribo_93bea3_wrapped_matcher(self):
             case _:
                 return "wrapped-global-miss"
     self.match_wrapped_global = match_wrapped_global
+    value = "module-value"
+    self.value = value
+    if True:
+
+        def match_capture(subject):
+            match subject:
+                case [value] if (value == "captured-value"):
+                    return value
+                case _:
+                    return "capture-miss"
+        wrapped_matcher.match_capture = match_capture
     LOADED_MODULES = []
     self.LOADED_MODULES = LOADED_MODULES
     self.LOADED_MODULES.append("wrapped_matcher")
     self.__initialized__ = True
     self.__initializing__ = False
     return self
-wrapped_matcher.__init__ = _cribo_init___cribo_93bea3_wrapped_matcher
+wrapped_matcher.__init__ = _cribo_init___cribo_a0cda3_wrapped_matcher
 FirstEvent = inline_first.Event
 get_first_result = inline_first.get_last_result
 match_first_class = inline_first.match_class
@@ -202,11 +213,13 @@ match_second_class = inline_second.match_class
 match_second_mapping = inline_second.match_mapping
 match_second_sequence = inline_second.match_sequence
 record_second_result = inline_second.record_result
-wrapped_matcher = _cribo_init___cribo_93bea3_wrapped_matcher(wrapped_matcher)
+wrapped_matcher = _cribo_init___cribo_a0cda3_wrapped_matcher(wrapped_matcher)
 MODULE_MATCH = wrapped_matcher.MODULE_MATCH
 WrappedEvent = wrapped_matcher.WrappedEvent
+match_capture = wrapped_matcher.match_capture
 match_wrapped = wrapped_matcher.match_wrapped
 match_wrapped_global = wrapped_matcher.match_wrapped_global
+module_value = wrapped_matcher.value
 print(match_first_class(FirstEvent("first-ready")))
 print(match_first_mapping({"kind": "first-ready"}))
 print(match_first_sequence(["first-pending"]))
@@ -220,3 +233,5 @@ print(get_second_result())
 print(match_wrapped(WrappedEvent("wrapped-ready")))
 print(match_wrapped_global(WrappedEvent("wrapped-ready")))
 print(MODULE_MATCH)
+print(match_capture(["captured-value"]))
+print(module_value)

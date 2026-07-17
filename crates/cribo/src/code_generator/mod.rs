@@ -18,7 +18,6 @@ pub(crate) mod inliner;
 pub(crate) mod module_registry;
 pub(crate) mod module_transformer;
 pub(crate) mod namespace_manager;
-pub(crate) mod patterns;
 pub(crate) mod phases;
 pub(crate) mod python_codegen;
 pub(crate) mod symbol_source;

@@ -44,3 +44,49 @@ pub(crate) fn transform_runtime_exprs(
         Pattern::MatchSingleton(_) | Pattern::MatchStar(_) => {}
     }
 }
+
+/// Visit every name bound by a structural pattern.
+pub(crate) fn visit_binding_names(pattern: &Pattern, visit_name: &mut impl FnMut(&str)) {
+    match pattern {
+        Pattern::MatchSequence(sequence) => {
+            for pattern in &sequence.patterns {
+                visit_binding_names(pattern, visit_name);
+            }
+        }
+        Pattern::MatchMapping(mapping) => {
+            for pattern in &mapping.patterns {
+                visit_binding_names(pattern, visit_name);
+            }
+            if let Some(name) = &mapping.rest {
+                visit_name(name);
+            }
+        }
+        Pattern::MatchClass(class) => {
+            for pattern in &class.arguments.patterns {
+                visit_binding_names(pattern, visit_name);
+            }
+            for keyword in &class.arguments.keywords {
+                visit_binding_names(&keyword.pattern, visit_name);
+            }
+        }
+        Pattern::MatchStar(star) => {
+            if let Some(name) = &star.name {
+                visit_name(name);
+            }
+        }
+        Pattern::MatchAs(as_pattern) => {
+            if let Some(pattern) = &as_pattern.pattern {
+                visit_binding_names(pattern, visit_name);
+            }
+            if let Some(name) = &as_pattern.name {
+                visit_name(name);
+            }
+        }
+        Pattern::MatchOr(or_pattern) => {
+            for pattern in &or_pattern.patterns {
+                visit_binding_names(pattern, visit_name);
+            }
+        }
+        Pattern::MatchValue(_) | Pattern::MatchSingleton(_) => {}
+    }
+}

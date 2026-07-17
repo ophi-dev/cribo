@@ -14,7 +14,14 @@ from inline_second import (
     match_sequence as match_second_sequence,
     record_result as record_second_result,
 )
-from wrapped_matcher import MODULE_MATCH, WrappedEvent, match_wrapped, match_wrapped_global
+from wrapped_matcher import (
+    MODULE_MATCH,
+    WrappedEvent,
+    match_capture,
+    match_wrapped,
+    match_wrapped_global,
+    value as module_value,
+)
 
 print(match_first_class(FirstEvent("first-ready")))
 print(match_first_mapping({"kind": "first-ready"}))
@@ -31,3 +38,5 @@ print(get_second_result())
 print(match_wrapped(WrappedEvent("wrapped-ready")))
 print(match_wrapped_global(WrappedEvent("wrapped-ready")))
 print(MODULE_MATCH)
+print(match_capture(["captured-value"]))
+print(module_value)

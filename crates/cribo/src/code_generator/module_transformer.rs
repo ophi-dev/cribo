@@ -15,9 +15,10 @@ use crate::{
     ast_builder,
     code_generator::{
         bundler::Bundler, context::ModuleTransformContext, expression_handlers,
-        import_deduplicator, module_registry::sanitize_module_name_for_identifier, patterns,
+        import_deduplicator, module_registry::sanitize_module_name_for_identifier,
     },
     types::{FxIndexMap, FxIndexSet},
+    visitors::patterns,
 };
 
 /// Process each statement from the transformed module body
@@ -1668,6 +1669,14 @@ fn collect_local_vars(stmts: &[Stmt], local_vars: &mut FxIndexSet<String>) {
                 }
                 collect_local_vars(&try_stmt.orelse, local_vars);
                 collect_local_vars(&try_stmt.finalbody, local_vars);
+            }
+            Stmt::Match(match_stmt) => {
+                for case in &match_stmt.cases {
+                    patterns::visit_binding_names(&case.pattern, &mut |name| {
+                        local_vars.insert(name.to_owned());
+                    });
+                    collect_local_vars(&case.body, local_vars);
+                }
             }
             Stmt::FunctionDef(func_def) => {
                 // Function definitions create local names

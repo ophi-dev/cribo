@@ -38,5 +38,16 @@ def match_wrapped_global(value):
             return "wrapped-global-miss"
 
 
+value = "module-value"
+if True:
+
+    def match_capture(subject):
+        match subject:
+            case [value] if value == "captured-value":
+                return value
+            case _:
+                return "capture-miss"
+
+
 LOADED_MODULES = []
 LOADED_MODULES.append("wrapped_matcher")

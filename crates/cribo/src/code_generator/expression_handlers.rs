@@ -13,8 +13,8 @@ use ruff_text_size::TextRange;
 use super::bundler::Bundler;
 use crate::{
     ast_builder::expressions,
-    code_generator::patterns,
     types::{FxIndexMap, FxIndexSet},
+    visitors::patterns,
 };
 
 /// Extract attribute path from expression (e.g., "foo.bar.baz" from foo.bar.baz)
