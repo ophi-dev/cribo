@@ -2,7 +2,7 @@
 
 mod common;
 
-use std::{env, fs, process::Command};
+use std::{env, fs, path::Path, process::Command};
 
 use insta::{assert_snapshot, with_settings};
 use tempfile::TempDir;
@@ -12,6 +12,31 @@ fn get_fixture_path(relative_path: &str) -> String {
     let cwd = env::current_dir().expect("Failed to get current directory");
     let test_fixture_path = cwd.join("tests/fixtures").join(relative_path);
     test_fixture_path.to_string_lossy().to_string()
+}
+
+/// Create an importable package and its owning distribution metadata.
+fn write_test_distribution(
+    root: &Path,
+    module_name: &str,
+    distribution_name: &str,
+    module_body: &str,
+) {
+    let package_dir = root.join(module_name);
+    fs::create_dir_all(&package_dir).expect("Failed to create test package");
+    fs::write(package_dir.join("__init__.py"), module_body).expect("Failed to write test package");
+
+    let metadata_dir = root.join(format!("{distribution_name}-1.0.dist-info"));
+    fs::create_dir_all(&metadata_dir).expect("Failed to create distribution metadata");
+    fs::write(
+        metadata_dir.join("METADATA"),
+        format!(
+            "Metadata-Version: 2.5\n\
+             Name: {distribution_name}\n\
+             Version: 1.0\n\
+             Import-Name: {module_name}\n"
+        ),
+    )
+    .expect("Failed to write distribution metadata");
 }
 
 /// Run cribo with given arguments and return (stdout, stderr, `exit_code`)
@@ -275,6 +300,68 @@ fn test_requirements_use_cwd_fallback_virtualenv_for_external_entry() {
         fs::read_to_string(output_dir.join("requirements.txt"))
             .expect("Failed to read requirements"),
         "cwd-only-distribution"
+    );
+}
+
+#[test]
+fn test_requirements_follow_pythonpath_precedence() {
+    let sandbox = TempDir::new().expect("Failed to create temporary directory");
+    let entry_dir = sandbox.path().join("entry");
+    let first_root = sandbox.path().join("first");
+    let second_root = sandbox.path().join("second");
+    let output_dir = sandbox.path().join("output");
+    fs::create_dir_all(&entry_dir).expect("Failed to create entry directory");
+    fs::create_dir_all(&output_dir).expect("Failed to create output directory");
+
+    write_test_distribution(
+        &first_root,
+        "precedence_module",
+        "first-distribution",
+        "SOURCE = 'first'\n",
+    );
+    write_test_distribution(
+        &second_root,
+        "precedence_module",
+        "second-distribution",
+        "SOURCE = 'second'\n",
+    );
+
+    let entry_path = entry_dir.join("main.py");
+    fs::write(
+        &entry_path,
+        "import precedence_module\nprint(precedence_module.SOURCE)\n",
+    )
+    .expect("Failed to write entry module");
+    let output_path = output_dir.join("bundle.py");
+    let pythonpath =
+        env::join_paths([&first_root, &second_root]).expect("Failed to construct PYTHONPATH");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cribo"))
+        .arg("--entry")
+        .arg(&entry_path)
+        .arg("--output")
+        .arg(&output_path)
+        .arg("--emit-requirements")
+        .arg("--python")
+        .arg(common::get_python_executable())
+        .env_remove("VIRTUAL_ENV")
+        .env_remove("CONDA_PREFIX")
+        .env("PYTHONPATH", pythonpath)
+        .env("RUST_LOG", "off")
+        .env("CARGO_TERM_COLOR", "never")
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("Failed to execute cribo");
+
+    assert!(
+        output.status.success(),
+        "Cribo failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(output_dir.join("requirements.txt"))
+            .expect("Failed to read requirements"),
+        "first-distribution"
     );
 }
 

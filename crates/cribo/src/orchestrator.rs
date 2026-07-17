@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
-use indexmap::IndexSet;
+use indexmap::{IndexMap, IndexSet};
 use log::{debug, info, trace, warn};
 use ruff_python_ast::ModModule;
 
@@ -1746,7 +1746,7 @@ impl BundleOrchestrator {
         resolver: &ModuleResolver,
         graph: &DependencyGraph,
     ) -> Result<String> {
-        let mut requirement_imports = IndexSet::new();
+        let mut requirement_imports = IndexMap::new();
 
         // TODO: Use TYPE_CHECKING information from the dependency graph to filter out
         // dependencies that are only used for type checking. These could be placed
@@ -1758,11 +1758,14 @@ impl BundleOrchestrator {
                 let imports = self.extract_imports_from_module_items(&module.items);
                 for import in &imports {
                     debug!("Checking import '{import}' for requirements");
+                    let classification = resolver.classify_import(import);
                     if matches!(
-                        resolver.classify_import(import).origin,
+                        classification.origin,
                         ImportOrigin::ThirdParty | ImportOrigin::Unknown
                     ) {
-                        requirement_imports.insert(import.clone());
+                        requirement_imports
+                            .entry(import.clone())
+                            .or_insert_with(|| resolver.get_import_search_root(import));
                     }
                 }
             }

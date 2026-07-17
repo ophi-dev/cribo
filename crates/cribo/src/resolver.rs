@@ -585,6 +585,32 @@ impl ModuleResolver {
         unique_dirs.into_iter().collect()
     }
 
+    /// Return the search root that supplied a concrete importable module.
+    ///
+    /// Namespace packages intentionally have no preferred root because multiple roots can
+    /// contribute providers to the same namespace.
+    pub(crate) fn get_import_search_root(&self, module_name: &str) -> Option<PathBuf> {
+        let classification = self.classify_import(module_name);
+        if !classification.is_resolved()
+            || matches!(classification.source, ImportSource::NamespacePackage)
+        {
+            return None;
+        }
+
+        let search_dirs = self.get_search_directories();
+        if let Some((search_root, resolved)) = self.locate_in_directories(module_name, &search_dirs)
+        {
+            return (!matches!(resolved.source, ImportSource::NamespacePackage))
+                .then_some(search_root);
+        }
+
+        let virtualenv_dirs = self.get_virtualenv_site_packages_search_directories(None);
+        self.locate_in_directories(module_name, &virtualenv_dirs)
+            .and_then(|(search_root, resolved)| {
+                (!matches!(resolved.source, ImportSource::NamespacePackage)).then_some(search_root)
+            })
+    }
+
     /// Get all directories to search for modules with optional PYTHONPATH override
     /// Returns deduplicated, canonicalized paths
     fn get_search_directories_with_overrides(

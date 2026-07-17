@@ -22,6 +22,11 @@ def normalized_path(path):
     return os.path.normcase(str(path)).replace("\\", "/")
 
 
+def normalized_absolute_path(path):
+    normalized = normalized_path(os.path.abspath(path)).rstrip("/")
+    return normalized or "/"
+
+
 def normalized_import_name(import_name):
     return normalized_path(import_name.replace(".", "/")).replace("/", ".")
 
@@ -217,26 +222,67 @@ def distribution_candidates(import_name, distribution_index):
     return sorted(candidates.values(), key=lambda candidate: candidate["distribution"].lower())
 
 
+def search_path_candidates(import_name, distribution_indexes, preferred_path):
+    combined_candidates = {}
+    preferred_candidates = None
+    preferred_path = (
+        normalized_absolute_path(preferred_path) if preferred_path else None
+    )
+
+    for search_path, distribution_index in distribution_indexes:
+        candidates = distribution_candidates(import_name, distribution_index)
+        if search_path == preferred_path and candidates:
+            preferred_candidates = candidates
+        for candidate in candidates:
+            add_candidate(
+                combined_candidates,
+                candidate["distribution"],
+                candidate["score"],
+                candidate["evidence"],
+            )
+
+    if preferred_candidates is not None:
+        return preferred_candidates
+    return sorted(
+        combined_candidates.values(),
+        key=lambda candidate: candidate["distribution"].lower(),
+    )
+
+
 def main():
     request = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     search_paths = []
+    seen_search_paths = set()
     for path in request["metadata_paths"] + sys.path:
-        if path and path not in search_paths:
-            search_paths.append(path)
+        if not path:
+            continue
+        normalized = normalized_absolute_path(path)
+        if normalized not in seen_search_paths:
+            seen_search_paths.add(normalized)
+            search_paths.append((path, normalized))
     import_roots = sorted(
-        {
-            normalized_path(os.path.abspath(path)).rstrip("/")
-            for path in search_paths
-        },
+        {normalized for _, normalized in search_paths},
         key=len,
         reverse=True,
     )
 
-    distributions = list(importlib.metadata.distributions(path=search_paths))
-    distribution_index = build_distribution_index(distributions, import_roots)
+    distribution_indexes = [
+        (
+            normalized,
+            build_distribution_index(
+                list(importlib.metadata.distributions(path=[path])),
+                import_roots,
+            ),
+        )
+        for path, normalized in search_paths
+    ]
     resolutions = {
-        import_name: distribution_candidates(import_name, distribution_index)
-        for import_name in sorted(request["imports"])
+        item["name"]: search_path_candidates(
+            item["name"],
+            distribution_indexes,
+            item.get("preferred_path"),
+        )
+        for item in sorted(request["imports"], key=lambda item: item["name"])
     }
     response = json.dumps({"resolutions": resolutions}, sort_keys=True)
     sys.stdout.buffer.write(response.encode("utf-8"))

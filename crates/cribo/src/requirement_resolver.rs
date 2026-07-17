@@ -18,8 +18,14 @@ const METADATA_QUERY: &str = include_str!("requirement_resolver.py");
 
 #[derive(Debug, Serialize)]
 struct MetadataRequest {
-    imports: Vec<String>,
+    imports: Vec<MetadataImportRequest>,
     metadata_paths: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct MetadataImportRequest {
+    name: String,
+    preferred_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -50,15 +56,18 @@ impl<'a> RequirementResolver<'a> {
     }
 
     /// Resolve imported module names to normalized PEP 508 requirements.
-    pub(crate) fn resolve(&self, imports: &IndexSet<String>) -> Result<IndexSet<String>> {
+    pub(crate) fn resolve(
+        &self,
+        imports: &IndexMap<String, Option<PathBuf>>,
+    ) -> Result<IndexSet<String>> {
         let mut requirements = IndexSet::new();
         let mut pending = Vec::new();
 
-        for import_name in imports {
+        for (import_name, preferred_path) in imports {
             if let Some(requirement) = self.override_for(import_name)? {
                 requirements.insert(requirement);
             } else {
-                pending.push(import_name.clone());
+                pending.push((import_name.clone(), preferred_path.clone()));
             }
         }
 
@@ -74,7 +83,7 @@ impl<'a> RequirementResolver<'a> {
         );
         let response = self.query_metadata(&python, pending)?;
 
-        for import_name in imports {
+        for import_name in imports.keys() {
             if self.override_for(import_name)?.is_some() {
                 continue;
             }
@@ -130,7 +139,11 @@ impl<'a> RequirementResolver<'a> {
     }
 
     /// Query distribution ownership through the bundled Python metadata helper.
-    fn query_metadata(&self, python: &Path, imports: Vec<String>) -> Result<MetadataResponse> {
+    fn query_metadata(
+        &self,
+        python: &Path,
+        imports: Vec<(String, Option<PathBuf>)>,
+    ) -> Result<MetadataResponse> {
         let metadata_paths = self
             .metadata_paths
             .iter()
@@ -140,6 +153,25 @@ impl<'a> RequirementResolver<'a> {
                         "Distribution metadata path is not valid UTF-8: {}",
                         path.display()
                     )
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let imports = imports
+            .into_iter()
+            .map(|(name, preferred_path)| {
+                let preferred_path = preferred_path
+                    .map(|path| {
+                        path.to_str().map(ToOwned::to_owned).ok_or_else(|| {
+                            anyhow!(
+                                "Preferred distribution metadata path is not valid UTF-8: {}",
+                                path.display()
+                            )
+                        })
+                    })
+                    .transpose()?;
+                Ok(MetadataImportRequest {
+                    name,
+                    preferred_path,
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -392,6 +424,7 @@ namespace = runpy.run_path(sys.argv[1], run_name="requirement_resolver_test")
 build_distribution_index = namespace["build_distribution_index"]
 file_score = namespace["file_score"]
 distribution_candidates = namespace["distribution_candidates"]
+search_path_candidates = namespace["search_path_candidates"]
 
 assert file_score(
     "shared.beta",
@@ -468,6 +501,16 @@ assert distribution_candidates("counted.child", counting_index)
 assert counting_distribution.metadata_reads == 1
 assert counting_distribution.files_reads == 1
 assert counting_distribution.top_level_reads == 1
+
+empty_index = {"prefix": {}, "exact": {}}
+assert search_path_candidates(
+    "counted",
+    [
+        ("/editable/src", empty_index),
+        ("/site-packages", counting_index),
+    ],
+    "/editable/src",
+)[0]["distribution"] == "Counting-Distribution"
 "#;
         let output = Command::new(python)
             .args(["-I", "-c", test_script])
@@ -501,7 +544,7 @@ assert counting_distribution.top_level_reads == 1
         let resolver = RequirementResolver::new(&config, vec![temp_dir.path().to_path_buf()]);
         let python = resolver.python_executable()?;
         let error = resolver
-            .query_metadata(&python, vec!["shared".to_owned()])
+            .query_metadata(&python, vec![("shared".to_owned(), None)])
             .expect_err("conflicting Core Metadata declarations should fail");
 
         assert!(
@@ -519,7 +562,7 @@ assert counting_distribution.top_level_reads == 1
         let python = resolver.python_executable()?;
         let import_name = "m\u{00f3}dulo".to_owned();
 
-        let response = resolver.query_metadata(&python, vec![import_name.clone()])?;
+        let response = resolver.query_metadata(&python, vec![(import_name.clone(), None)])?;
 
         assert!(response.resolutions.contains_key(&import_name));
         Ok(())
