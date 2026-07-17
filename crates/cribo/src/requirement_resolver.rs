@@ -556,6 +556,46 @@ assert search_path_candidates(
     }
 
     #[test]
+    fn metadata_query_ignores_unrelated_conflicting_import_declarations() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let conflicting_metadata = temp_dir.path().join("conflicting-1.0.dist-info");
+        fs::create_dir_all(&conflicting_metadata)?;
+        fs::write(
+            conflicting_metadata.join("METADATA"),
+            "Metadata-Version: 2.5\n\
+             Name: conflicting\n\
+             Version: 1.0\n\
+             Import-Name: unrelated\n\
+             Import-Namespace: unrelated\n",
+        )?;
+
+        let requested_metadata = temp_dir.path().join("requested_provider-1.0.dist-info");
+        fs::create_dir_all(&requested_metadata)?;
+        fs::write(
+            requested_metadata.join("METADATA"),
+            "Metadata-Version: 2.5\n\
+             Name: requested-provider\n\
+             Version: 1.0\n\
+             Import-Name: requested\n",
+        )?;
+
+        let config = RequirementsConfig::default();
+        let resolver = RequirementResolver::new(&config, vec![temp_dir.path().to_path_buf()]);
+        let python = resolver.python_executable()?;
+        let response = resolver.query_metadata(&python, vec![("requested".to_owned(), None)])?;
+        let candidates = response
+            .resolutions
+            .get("requested")
+            .context("metadata query should include the requested import")?;
+
+        assert_eq!(
+            RequirementResolver::select_candidate("requested", candidates)?,
+            Some("requested-provider".to_owned())
+        );
+        Ok(())
+    }
+
+    #[test]
     fn metadata_query_uses_utf8_protocol() -> Result<()> {
         let config = RequirementsConfig::default();
         let resolver = RequirementResolver::new(&config, Vec::new());

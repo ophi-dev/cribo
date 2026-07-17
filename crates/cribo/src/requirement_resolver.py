@@ -43,7 +43,9 @@ def import_relative_path(path, import_roots):
 def is_importable_file(path):
     if path.endswith(".py"):
         return True
-    return any(path.endswith(suffix) for suffix in importlib.machinery.EXTENSION_SUFFIXES)
+    return any(
+        path.endswith(suffix) for suffix in importlib.machinery.EXTENSION_SUFFIXES
+    )
 
 
 def file_ownership(path, import_roots=()):
@@ -72,9 +74,7 @@ def file_ownership(path, import_roots=()):
         return None
 
     import_name = ".".join(parts)
-    namespace_prefixes = [
-        ".".join(parts[:depth]) for depth in range(1, len(parts))
-    ]
+    namespace_prefixes = [".".join(parts[:depth]) for depth in range(1, len(parts))]
     return import_name, evidence, namespace_prefixes
 
 
@@ -108,7 +108,11 @@ def add_index_candidate(index, import_name, distribution, score, evidence):
     add_candidate(candidates, distribution, score, evidence)
 
 
-def build_distribution_index(distributions, import_roots=()):
+def build_distribution_index(
+    distributions,
+    import_roots=(),
+    requested_import_prefixes=(),
+):
     index = {"prefix": {}, "exact": {}}
     for distribution in distributions:
         try:
@@ -130,12 +134,15 @@ def build_distribution_index(distributions, import_roots=()):
             continue
 
         conflicting_names = import_names & namespace_names
-        if conflicting_names:
-            names = ", ".join(sorted(conflicting_names))
+        relevant_conflicts = conflicting_names.intersection(requested_import_prefixes)
+        if relevant_conflicts:
+            names = ", ".join(sorted(relevant_conflicts))
             raise InvalidDistributionMetadata(
                 f"Distribution '{project_name}' declares {names} in both "
                 "Import-Name and Import-Namespace"
             )
+        import_names -= conflicting_names
+        namespace_names -= conflicting_names
 
         for import_name in import_names:
             depth = import_name.count(".") + 1
@@ -219,7 +226,9 @@ def distribution_candidates(import_name, distribution_index):
         )
     normalized_name = normalized_import_name(import_name)
     merge_candidates(candidates, distribution_index["exact"].get(normalized_name, {}))
-    return sorted(candidates.values(), key=lambda candidate: candidate["distribution"].lower())
+    return sorted(
+        candidates.values(), key=lambda candidate: candidate["distribution"].lower()
+    )
 
 
 def search_path_candidates(import_name, distribution_indexes, preferred_path):
@@ -265,6 +274,11 @@ def main():
         key=len,
         reverse=True,
     )
+    requested_import_prefixes = {
+        prefix
+        for item in request["imports"]
+        for prefix in import_prefixes(item["name"])
+    }
 
     distribution_indexes = [
         (
@@ -272,6 +286,7 @@ def main():
             build_distribution_index(
                 list(importlib.metadata.distributions(path=[path])),
                 import_roots,
+                requested_import_prefixes,
             ),
         )
         for path, normalized in search_paths
