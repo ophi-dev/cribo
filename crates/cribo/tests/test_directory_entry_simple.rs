@@ -154,7 +154,8 @@ print("Running from __main__.py")
 }
 
 #[test]
-fn test_explicit_package_main_entry_with_sibling_import() {
+fn test_explicit_package_main_entry_initializes_package() {
+    // The snapshot fixture harness always enters main.py, so it cannot exercise this CLI path.
     let temp_dir = TempDir::new().unwrap();
     let package_dir = temp_dir.path().join("testpkg");
     fs::create_dir_all(&package_dir).unwrap();
@@ -197,6 +198,39 @@ print(f"Running entry {VALUE}")
     assert_eq!(
         python_stdout.lines().collect::<Vec<_>>(),
         ["Initializing package", "Running entry from sibling"],
+        "Generated bundle:\n{bundled_content}"
+    );
+
+    fs::write(
+        &entry_path,
+        r#"print("Running entry without package imports")"#,
+    )
+    .unwrap();
+    let standalone_output_path = temp_dir.path().join("standalone-bundled.py");
+
+    let (_, stderr, exit_code) = run_cribo(&[
+        "--entry",
+        entry_path.to_str().unwrap(),
+        "--output",
+        standalone_output_path.to_str().unwrap(),
+    ]);
+
+    assert_eq!(exit_code, 0, "Bundling failed: {stderr}");
+
+    let python_output = Command::new("python3")
+        .arg(&standalone_output_path)
+        .output()
+        .expect("Failed to execute Python");
+    let python_stdout = String::from_utf8_lossy(&python_output.stdout);
+    let bundled_content = fs::read_to_string(&standalone_output_path).unwrap();
+
+    assert!(python_output.status.success());
+    assert_eq!(
+        python_stdout.lines().collect::<Vec<_>>(),
+        [
+            "Initializing package",
+            "Running entry without package imports"
+        ],
         "Generated bundle:\n{bundled_content}"
     );
 }

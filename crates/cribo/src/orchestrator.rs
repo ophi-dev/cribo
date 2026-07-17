@@ -750,6 +750,11 @@ impl BundleOrchestrator {
         let mut modules_to_process = ModuleQueue::new();
         modules_to_process.push((ModuleId::ENTRY, entry_path));
         queued_modules.insert(ModuleId::ENTRY);
+        Self::queue_main_entry_package_initializer(
+            params.resolver,
+            &mut modules_to_process,
+            &mut queued_modules,
+        )?;
 
         // Store module data for phase 2, including the parse products.
         type DiscoveryData = (ModuleId, PathBuf, Vec<String>, ProcessedModule);
@@ -929,6 +934,44 @@ impl BundleOrchestrator {
             params.graph.modules.len()
         );
         Ok(parsed_modules)
+    }
+
+    /// Queue the containing package so its initializer runs before a package `__main__.py`.
+    fn queue_main_entry_package_initializer(
+        resolver: &ModuleResolver,
+        modules_to_process: &mut ModuleQueue,
+        queued_modules: &mut IndexSet<ModuleId>,
+    ) -> Result<()> {
+        if resolver.get_module_kind(ModuleId::ENTRY)
+            != Some(crate::python::module_path::ModuleKind::Main)
+        {
+            return Ok(());
+        }
+
+        let Some(entry_module_name) = resolver.get_module_name(ModuleId::ENTRY) else {
+            return Ok(());
+        };
+        let Some(package_name) =
+            entry_module_name.strip_suffix(&format!(".{}", crate::python::constants::MAIN_STEM))
+        else {
+            return Ok(());
+        };
+        if !resolver.classify_import(package_name).should_bundle() {
+            return Ok(());
+        }
+        let Some(package_path) = resolver.resolve_module_path(package_name)? else {
+            return Ok(());
+        };
+
+        let package_id = resolver.register_module(package_name, &package_path)?;
+        if queued_modules.insert(package_id) {
+            debug!(
+                "Adding entry package initializer '{}' to discovery queue",
+                package_path.display()
+            );
+            modules_to_process.push((package_id, package_path));
+        }
+        Ok(())
     }
 
     /// Resolve imports from precomputed module facts with full context information.
