@@ -136,9 +136,15 @@ fn benchmark_dependency_graph(c: &mut Criterion) {
 
     let resolver =
         ModuleResolver::new(Config::default()).expect("benchmark configuration should be valid");
-    let main_id = resolver.register_module("main", Path::new("main.py"));
-    let utils_id = resolver.register_module("utils.helpers", Path::new("utils/helpers.py"));
-    let models_id = resolver.register_module("models.user", Path::new("models/user.py"));
+    let main_id = resolver
+        .register_module("main", Path::new("main.py"))
+        .expect("benchmark module registration should succeed");
+    let utils_id = resolver
+        .register_module("utils.helpers", Path::new("utils/helpers.py"))
+        .expect("benchmark module registration should succeed");
+    let models_id = resolver
+        .register_module("models.user", Path::new("models/user.py"))
+        .expect("benchmark module registration should succeed");
 
     c.bench_function("build_dependency_graph", |b| {
         b.iter(|| {

@@ -1038,7 +1038,9 @@ mod tests {
     fn test_type_checking_import_collector_treats_not_type_checking_continuations_as_type_only() {
         let resolver =
             ModuleResolver::new(Config::default()).expect("default configuration should be valid");
-        let imported_id = resolver.register_module("types_mod", Path::new("types_mod.py"));
+        let imported_id = resolver
+            .register_module("types_mod", Path::new("types_mod.py"))
+            .expect("test module registration should succeed");
 
         let statements = ruff_python_parser::parse_module(
             r"

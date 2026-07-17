@@ -47,7 +47,6 @@ impl ClassificationPhase {
         // Classify modules into inlinable and wrapper modules
         let classifier = ModuleClassifier::new(
             bundler.resolver,
-            bundler.entry_is_package_init_or_main,
             bundler.namespace_imported_modules.clone(),
             bundler.circular_modules.clone(),
         );

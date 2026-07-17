@@ -1206,9 +1206,15 @@ mod tests {
         let mut graph = DependencyGraph::new();
         let resolver = ModuleResolver::new(crate::config::Config::default())
             .expect("default configuration should be valid");
-        resolver.register_module("__main__", std::path::Path::new("main.py"));
-        let module_id = resolver.register_module("utils", std::path::Path::new("utils.py"));
-        let alias_id = resolver.register_module("src.utils", std::path::Path::new("utils.py"));
+        resolver
+            .register_module("__main__", std::path::Path::new("main.py"))
+            .expect("entry module registration should succeed");
+        let module_id = resolver
+            .register_module("utils", std::path::Path::new("utils.py"))
+            .expect("test module registration should succeed");
+        let alias_id = resolver
+            .register_module("src.utils", std::path::Path::new("utils.py"))
+            .expect("test alias registration should succeed");
         graph.add_module(module_id, &resolver);
 
         let shaker = TreeShaker::from_graph(&graph, &resolver);
@@ -1222,8 +1228,12 @@ mod tests {
         let mut graph = DependencyGraph::new();
         let resolver = ModuleResolver::new(crate::config::Config::default())
             .expect("default configuration should be valid");
-        let entry_id = resolver.register_module("__main__", std::path::Path::new("main.py"));
-        let module_id = resolver.register_module("test_module", std::path::Path::new("test.py"));
+        let entry_id = resolver
+            .register_module("__main__", std::path::Path::new("main.py"))
+            .expect("entry module registration should succeed");
+        let module_id = resolver
+            .register_module("test_module", std::path::Path::new("test.py"))
+            .expect("test module registration should succeed");
 
         // Create a simple module with used and unused functions
         graph.add_module(module_id, &resolver);
@@ -1312,9 +1322,12 @@ mod tests {
         let mut graph = DependencyGraph::new();
         let resolver = ModuleResolver::new(crate::config::Config::default())
             .expect("default configuration should be valid");
-        resolver.register_module("__main__", std::path::Path::new("main.py"));
-        let module_id =
-            resolver.register_module("all_module", std::path::Path::new("all_module.py"));
+        resolver
+            .register_module("__main__", std::path::Path::new("main.py"))
+            .expect("entry module registration should succeed");
+        let module_id = resolver
+            .register_module("all_module", std::path::Path::new("all_module.py"))
+            .expect("test module registration should succeed");
 
         graph.add_module(module_id, &resolver);
         let module = graph
@@ -1360,10 +1373,15 @@ mod tests {
         let mut graph = DependencyGraph::new();
         let resolver = ModuleResolver::new(crate::config::Config::default())
             .expect("default configuration should be valid");
-        resolver.register_module("__main__", std::path::Path::new("main.py"));
-        let module_id =
-            resolver.register_module("scoped_imports", std::path::Path::new("scoped_imports.py"));
-        let operator_id = resolver.register_module("operator", std::path::Path::new("operator.py"));
+        resolver
+            .register_module("__main__", std::path::Path::new("main.py"))
+            .expect("entry module registration should succeed");
+        let module_id = resolver
+            .register_module("scoped_imports", std::path::Path::new("scoped_imports.py"))
+            .expect("test module registration should succeed");
+        let operator_id = resolver
+            .register_module("operator", std::path::Path::new("operator.py"))
+            .expect("test module registration should succeed");
 
         graph.add_module(module_id, &resolver);
         let module = graph
@@ -1403,9 +1421,12 @@ mod tests {
         let mut graph = DependencyGraph::new();
         let resolver = ModuleResolver::new(crate::config::Config::default())
             .expect("default configuration should be valid");
-        resolver.register_module("__main__", std::path::Path::new("main.py"));
-        let module_id =
-            resolver.register_module("scoped_side_effect", std::path::Path::new("module.py"));
+        resolver
+            .register_module("__main__", std::path::Path::new("main.py"))
+            .expect("entry module registration should succeed");
+        let module_id = resolver
+            .register_module("scoped_side_effect", std::path::Path::new("module.py"))
+            .expect("test module registration should succeed");
 
         graph.add_module(module_id, &resolver);
         let module = graph
@@ -1455,9 +1476,12 @@ mod tests {
         let mut graph = DependencyGraph::new();
         let resolver = ModuleResolver::new(crate::config::Config::default())
             .expect("default configuration should be valid");
-        resolver.register_module("__main__", std::path::Path::new("main.py"));
-        let module_id =
-            resolver.register_module("class_side_effect", std::path::Path::new("module.py"));
+        resolver
+            .register_module("__main__", std::path::Path::new("main.py"))
+            .expect("entry module registration should succeed");
+        let module_id = resolver
+            .register_module("class_side_effect", std::path::Path::new("module.py"))
+            .expect("test module registration should succeed");
 
         graph.add_module(module_id, &resolver);
         let module = graph
@@ -1490,15 +1514,21 @@ mod tests {
         let mut graph = DependencyGraph::new();
         let resolver = ModuleResolver::new(crate::config::Config::default())
             .expect("default configuration should be valid");
-        resolver.register_module("__main__", std::path::Path::new("main.py"));
-        let submodule_id = resolver.register_module(
-            "real_pkg.feature",
-            std::path::Path::new("real_pkg/feature.py"),
-        );
-        let alias_id = resolver.register_module(
-            "namespace_pkg.feature",
-            std::path::Path::new("real_pkg/feature.py"),
-        );
+        resolver
+            .register_module("__main__", std::path::Path::new("main.py"))
+            .expect("entry module registration should succeed");
+        let submodule_id = resolver
+            .register_module(
+                "real_pkg.feature",
+                std::path::Path::new("real_pkg/feature.py"),
+            )
+            .expect("test module registration should succeed");
+        let alias_id = resolver
+            .register_module(
+                "namespace_pkg.feature",
+                std::path::Path::new("real_pkg/feature.py"),
+            )
+            .expect("test alias registration should succeed");
 
         graph.add_module(submodule_id, &resolver);
         let submodule = graph

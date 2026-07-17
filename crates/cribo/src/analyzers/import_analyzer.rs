@@ -931,7 +931,9 @@ mod tests {
         let resolver = ModuleResolver::new(config).expect("test configuration should be valid");
         let mut modules = FxIndexMap::default();
         for (name, ast, path, hash) in entries {
-            let id = resolver.register_module(name, &path);
+            let id = resolver
+                .register_module(name, &path)
+                .expect("test module registration should succeed");
             modules.insert(id, (Arc::new(ast), path, hash.to_owned()));
         }
         (resolver, modules)
