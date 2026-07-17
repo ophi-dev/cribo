@@ -7,11 +7,12 @@ use ruff_python_ast::{
 };
 
 use crate::{
-    dependency_graph::{ItemData, ItemType, ModuleDepGraph},
+    dependency_graph::{ItemData, ItemType, ModuleDepGraph, ScopeKind, ScopePath},
     types::{FxIndexMap, FxIndexSet},
     visitors::{ExpressionSideEffectDetector, utils::extract_string_list_from_expr},
 };
 
+/// Python scope kinds that affect name resolution during dependency collection.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DependencyScopeKind {
     Function,
@@ -19,6 +20,7 @@ enum DependencyScopeKind {
     Comprehension,
 }
 
+/// Names bound or redirected within one Python lexical scope.
 struct ScopeBindings {
     kind: DependencyScopeKind,
     locals: FxIndexSet<String>,
@@ -27,6 +29,7 @@ struct ScopeBindings {
 }
 
 impl ScopeBindings {
+    /// Collect bindings for a function body, including all parameters.
     fn function(parameters: &ast::Parameters, body: &[Stmt]) -> Self {
         let mut collector = BindingCollector::new(DependencyScopeKind::Function);
         collector.add_parameters(parameters);
@@ -34,6 +37,7 @@ impl ScopeBindings {
         collector.finish()
     }
 
+    /// Collect bindings for a lambda body and its optional parameters.
     fn lambda(parameters: Option<&ast::Parameters>, body: &Expr) -> Self {
         let mut collector = BindingCollector::new(DependencyScopeKind::Function);
         if let Some(parameters) = parameters {
@@ -43,12 +47,14 @@ impl ScopeBindings {
         collector.finish()
     }
 
+    /// Collect names bound while executing a class body.
     fn class(body: &[Stmt]) -> Self {
         let mut collector = BindingCollector::new(DependencyScopeKind::Class);
         collector.visit_body(body);
         collector.finish()
     }
 
+    /// Collect target names local to a comprehension's implicit scope.
     fn comprehension(generators: &[ast::Comprehension]) -> Self {
         let mut locals = FxIndexSet::default();
         for generator in generators {
@@ -63,11 +69,13 @@ impl ScopeBindings {
     }
 }
 
+/// Collects Python bindings without descending into nested lexical bodies.
 struct BindingCollector {
     bindings: ScopeBindings,
 }
 
 impl BindingCollector {
+    /// Create a binding collector for the requested lexical scope kind.
     fn new(kind: DependencyScopeKind) -> Self {
         Self {
             bindings: ScopeBindings {
@@ -79,6 +87,7 @@ impl BindingCollector {
         }
     }
 
+    /// Add all positional and variadic parameter names as local bindings.
     fn add_parameters(&mut self, parameters: &ast::Parameters) {
         for parameter in parameters.iter_non_variadic_params() {
             self.bindings
@@ -93,6 +102,7 @@ impl BindingCollector {
         }
     }
 
+    /// Add the local name introduced by a direct import alias.
     fn add_import(&mut self, alias: &ast::Alias) {
         let local_name = alias.asname.as_ref().map_or_else(
             || {
@@ -108,6 +118,48 @@ impl BindingCollector {
         self.bindings.locals.insert(local_name.to_owned());
     }
 
+    /// Record a nested function binding and visit only its definition-time expressions.
+    fn add_function_definition(&mut self, function_def: &ast::StmtFunctionDef) {
+        self.bindings.locals.insert(function_def.name.to_string());
+        self.visit_definition_time_parts(function_def);
+    }
+
+    /// Record a nested class binding and visit only its definition-time expressions.
+    fn add_class_definition(&mut self, class_def: &ast::StmtClassDef) {
+        self.bindings.locals.insert(class_def.name.to_string());
+        for decorator in &class_def.decorator_list {
+            self.visit_decorator(decorator);
+        }
+        if let Some(type_params) = &class_def.type_params {
+            self.visit_type_params(type_params);
+        }
+        if let Some(arguments) = &class_def.arguments {
+            self.visit_arguments(arguments);
+        }
+    }
+
+    /// Add all local names introduced by a direct import statement.
+    fn add_import_statement(&mut self, import_stmt: &ast::StmtImport) {
+        for alias in &import_stmt.names {
+            self.add_import(alias);
+        }
+    }
+
+    /// Add all explicit local names introduced by a from-import statement.
+    fn add_from_import_statement(&mut self, import_from: &ast::StmtImportFrom) {
+        for alias in &import_from.names {
+            if alias.name.as_str() == "*" {
+                continue;
+            }
+            let local_name = alias
+                .asname
+                .as_ref()
+                .map_or(alias.name.as_str(), ruff_python_ast::Identifier::as_str);
+            self.bindings.locals.insert(local_name.to_owned());
+        }
+    }
+
+    /// Visit expressions evaluated when a function object is defined.
     fn visit_definition_time_parts(&mut self, function_def: &ast::StmtFunctionDef) {
         for decorator in &function_def.decorator_list {
             self.visit_decorator(decorator);
@@ -121,6 +173,7 @@ impl BindingCollector {
         }
     }
 
+    /// Remove names redirected by global or nonlocal declarations.
     fn finish(mut self) -> ScopeBindings {
         for name in self
             .bindings
@@ -137,38 +190,10 @@ impl BindingCollector {
 impl<'ast> Visitor<'ast> for BindingCollector {
     fn visit_stmt(&mut self, stmt: &'ast Stmt) {
         match stmt {
-            Stmt::FunctionDef(function_def) => {
-                self.bindings.locals.insert(function_def.name.to_string());
-                self.visit_definition_time_parts(function_def);
-            }
-            Stmt::ClassDef(class_def) => {
-                self.bindings.locals.insert(class_def.name.to_string());
-                for decorator in &class_def.decorator_list {
-                    self.visit_decorator(decorator);
-                }
-                if let Some(type_params) = &class_def.type_params {
-                    self.visit_type_params(type_params);
-                }
-                if let Some(arguments) = &class_def.arguments {
-                    self.visit_arguments(arguments);
-                }
-            }
-            Stmt::Import(import_stmt) => {
-                for alias in &import_stmt.names {
-                    self.add_import(alias);
-                }
-            }
-            Stmt::ImportFrom(import_from) => {
-                for alias in &import_from.names {
-                    if alias.name.as_str() != "*" {
-                        let local_name = alias
-                            .asname
-                            .as_ref()
-                            .map_or(alias.name.as_str(), ruff_python_ast::Identifier::as_str);
-                        self.bindings.locals.insert(local_name.to_owned());
-                    }
-                }
-            }
+            Stmt::FunctionDef(function_def) => self.add_function_definition(function_def),
+            Stmt::ClassDef(class_def) => self.add_class_definition(class_def),
+            Stmt::Import(import_stmt) => self.add_import_statement(import_stmt),
+            Stmt::ImportFrom(import_from) => self.add_from_import_statement(import_from),
             Stmt::Global(global_stmt) => {
                 for name in &global_stmt.names {
                     self.bindings.globals.insert(name.to_string());
@@ -245,6 +270,7 @@ impl<'ast> Visitor<'ast> for BindingCollector {
     }
 }
 
+/// Add names bound by an assignment target, including destructuring targets.
 fn collect_binding_names(target: &Expr, names: &mut FxIndexSet<String>) {
     match target {
         Expr::Name(name) => {
@@ -288,6 +314,7 @@ impl<'a> DependencyCollector<'a> {
         }
     }
 
+    /// Create a collector for one function body with its bindings pre-indexed.
     fn function_body(
         parameters: &ast::Parameters,
         body: &[Stmt],
@@ -304,12 +331,14 @@ impl<'a> DependencyCollector<'a> {
         }
     }
 
+    /// Record a read only when Python resolves the name outside local scopes.
     fn record_read(&mut self, name: &str) {
         if self.name_resolves_to_module(name) {
             self.read_vars.insert(name.to_owned());
         }
     }
 
+    /// Record writes explicitly redirected to the module scope.
     fn record_write(&mut self, name: &str) {
         let writes_module = self
             .scopes
@@ -320,6 +349,7 @@ impl<'a> DependencyCollector<'a> {
         }
     }
 
+    /// Record a named-expression write in its nearest non-comprehension scope.
     fn record_named_expression_write(&mut self, name: &str) {
         let writes_module = self
             .scopes
@@ -332,21 +362,26 @@ impl<'a> DependencyCollector<'a> {
         }
     }
 
+    /// Return whether a name load resolves beyond all active local scopes.
     fn name_resolves_to_module(&self, name: &str) -> bool {
-        for scope in self.scopes.iter().rev() {
+        for (index, scope) in self.scopes.iter().enumerate().rev() {
             if scope.globals.contains(name) {
                 return true;
             }
             if scope.nonlocals.contains(name) {
                 continue;
             }
-            if scope.kind != DependencyScopeKind::Class && scope.locals.contains(name) {
+            let is_innermost = index + 1 == self.scopes.len();
+            if (is_innermost || scope.kind != DependencyScopeKind::Class)
+                && scope.locals.contains(name)
+            {
                 return false;
             }
         }
         true
     }
 
+    /// Visit an assignment target, recording writes and reads from complex targets.
     fn visit_assignment_target(&mut self, target: &Expr) {
         match target {
             Expr::Name(name) => self.record_write(&name.id),
@@ -370,6 +405,7 @@ impl<'a> DependencyCollector<'a> {
         }
     }
 
+    /// Visit a read-before-write augmented assignment target.
     fn visit_augmented_assignment_target(&mut self, target: &Expr) {
         match target {
             Expr::Name(name) => {
@@ -388,6 +424,7 @@ impl<'a> DependencyCollector<'a> {
         }
     }
 
+    /// Visit a deletion target, which reads the binding or containing object.
     fn visit_delete_target(&mut self, target: &Expr) {
         match target {
             Expr::Name(name) => self.record_read(&name.id),
@@ -414,6 +451,7 @@ impl<'a> DependencyCollector<'a> {
         }
     }
 
+    /// Record a module-resolved dotted attribute access.
     fn track_attribute_access(&mut self, attribute: &ast::ExprAttribute) {
         let Some(full_name) = Self::build_full_dotted_name(&attribute.value) else {
             return;
@@ -454,6 +492,7 @@ impl<'a> DependencyCollector<'a> {
         }
     }
 
+    /// Build a dotted name from a name-or-attribute expression chain.
     fn build_full_dotted_name(expr: &Expr) -> Option<String> {
         match expr {
             Expr::Name(name) => Some(name.id.to_string()),
@@ -463,6 +502,7 @@ impl<'a> DependencyCollector<'a> {
         }
     }
 
+    /// Visit function definition-time expressions and then its deferred body scope.
     fn visit_function_def(&mut self, function_def: &ast::StmtFunctionDef) {
         for decorator in &function_def.decorator_list {
             self.visit_decorator(decorator);
@@ -486,6 +526,7 @@ impl<'a> DependencyCollector<'a> {
             .expect("function dependency scope should be present");
     }
 
+    /// Visit class definition-time expressions and then its executing body scope.
     fn visit_class_def(&mut self, class_def: &ast::StmtClassDef) {
         for decorator in &class_def.decorator_list {
             self.visit_decorator(decorator);
@@ -508,6 +549,7 @@ impl<'a> DependencyCollector<'a> {
             .expect("class dependency scope should be present");
     }
 
+    /// Visit a comprehension in Python's evaluation order and implicit scope.
     fn visit_comprehension_parts(
         &mut self,
         generators: &[ast::Comprehension],
@@ -720,32 +762,36 @@ impl<'ast> Visitor<'ast> for DependencyCollector<'_> {
 /// Builds a `ModuleDepGraph` from a Python AST
 pub(crate) struct GraphBuilder<'a> {
     graph: &'a mut ModuleDepGraph,
-    current_scope: ScopeType,
     /// Track import aliases for importlib detection
     /// Maps local name -> module path (e.g., "il" -> "importlib", "im" ->
     /// "`importlib.import_module`")
     import_aliases: FxIndexMap<String, String>,
     python_version: u8,
-    /// When inside a function or class, track the scope name
-    scope_name: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum ScopeType {
-    Module,
-    Function,
-    Class,
+    /// Qualified identity of the function or class currently being traversed.
+    scope_path: Option<ScopePath>,
+    /// Next module-local scope identifier.
+    next_scope_id: u32,
 }
 
 impl<'a> GraphBuilder<'a> {
     pub(crate) fn new(graph: &'a mut ModuleDepGraph, python_version: u8) -> Self {
         Self {
             graph,
-            current_scope: ScopeType::Module,
             import_aliases: FxIndexMap::default(),
             python_version,
-            scope_name: None,
+            scope_path: None,
+            next_scope_id: 0,
         }
+    }
+
+    /// Allocate a unique qualified path beneath the current lexical scope.
+    fn allocate_scope(&mut self, kind: ScopeKind) -> ScopePath {
+        let scope_id = self.next_scope_id;
+        self.next_scope_id += 1;
+        self.scope_path.as_ref().map_or_else(
+            || ScopePath::root(scope_id, kind),
+            |parent| parent.child(scope_id, kind),
+        )
     }
 
     /// Build the graph from an AST
@@ -766,7 +812,11 @@ impl<'a> GraphBuilder<'a> {
         );
         // Inside functions, process imports, functions, and classes normally
         // Skip other statements as they're tracked via eventual_read_vars
-        if matches!(self.current_scope, ScopeType::Function) {
+        if self
+            .scope_path
+            .as_ref()
+            .is_some_and(|scope| scope.kind() == ScopeKind::Function)
+        {
             match stmt {
                 Stmt::Import(import_stmt) => {
                     self.process_import(import_stmt);
@@ -900,7 +950,7 @@ impl<'a> GraphBuilder<'a> {
                 defined_symbols: FxIndexSet::default(),
                 symbol_dependencies: FxIndexMap::default(),
                 attribute_accesses: FxIndexMap::default(),
-                containing_scope: self.scope_name.clone(),
+                containing_scope: self.scope_path.clone(),
             };
 
             self.graph.add_item(item_data);
@@ -998,7 +1048,7 @@ impl<'a> GraphBuilder<'a> {
             defined_symbols: FxIndexSet::default(),
             symbol_dependencies: FxIndexMap::default(),
             attribute_accesses: FxIndexMap::default(),
-            containing_scope: self.scope_name.clone(),
+            containing_scope: self.scope_path.clone(),
         };
 
         self.graph.add_item(item_data);
@@ -1007,6 +1057,7 @@ impl<'a> GraphBuilder<'a> {
     /// Process a function definition
     fn process_function_def(&mut self, func_def: &ast::StmtFunctionDef) -> Result<()> {
         let func_name = func_def.name.to_string();
+        let function_scope = self.allocate_scope(ScopeKind::Function);
 
         // Collect variables from decorators and type annotations
         let mut read_vars = FxIndexSet::default();
@@ -1051,6 +1102,7 @@ impl<'a> GraphBuilder<'a> {
         let item_data = ItemData {
             item_type: ItemType::FunctionDef {
                 name: func_name.clone(),
+                scope: function_scope.clone(),
             },
             var_decls: std::iter::once(func_name.clone()).collect(),
             read_vars,
@@ -1060,24 +1112,20 @@ impl<'a> GraphBuilder<'a> {
             has_side_effects: false,
             imported_names: FxIndexSet::default(),
             reexported_names: FxIndexSet::default(),
-            defined_symbols: std::iter::once(func_name.clone()).collect(),
+            defined_symbols: std::iter::once(func_name).collect(),
             symbol_dependencies,
             attribute_accesses: eventual_attribute_accesses,
-            containing_scope: self.scope_name.clone(),
+            containing_scope: self.scope_path.clone(),
         };
 
         self.graph.add_item(item_data);
 
         // Process the function body in function scope
-        let old_scope = self.current_scope;
-        let old_scope_name = self.scope_name.clone();
-        self.current_scope = ScopeType::Function;
-        self.scope_name = Some(func_name);
+        let old_scope_path = self.scope_path.replace(function_scope);
         for stmt in &func_def.body {
             self.process_statement(stmt)?;
         }
-        self.current_scope = old_scope;
-        self.scope_name = old_scope_name;
+        self.scope_path = old_scope_path;
 
         Ok(())
     }
@@ -1085,6 +1133,7 @@ impl<'a> GraphBuilder<'a> {
     /// Process a class definition
     fn process_class_def(&mut self, class_def: &ast::StmtClassDef) -> Result<()> {
         let class_name = class_def.name.to_string();
+        let class_scope = self.allocate_scope(ScopeKind::Class);
 
         // Collect variables from decorators
         let mut read_vars = FxIndexSet::default();
@@ -1200,6 +1249,7 @@ impl<'a> GraphBuilder<'a> {
         let item_data = ItemData {
             item_type: ItemType::ClassDef {
                 name: class_name.clone(),
+                scope: class_scope.clone(),
             },
             var_decls: std::iter::once(class_name.clone()).collect(),
             read_vars,
@@ -1209,24 +1259,20 @@ impl<'a> GraphBuilder<'a> {
             has_side_effects: false,
             imported_names: FxIndexSet::default(),
             reexported_names: FxIndexSet::default(),
-            defined_symbols: std::iter::once(class_name.clone()).collect(),
+            defined_symbols: std::iter::once(class_name).collect(),
             symbol_dependencies,
             attribute_accesses: method_attribute_accesses,
-            containing_scope: self.scope_name.clone(),
+            containing_scope: self.scope_path.clone(),
         };
 
         self.graph.add_item(item_data);
 
         // Process the class body in class scope
-        let old_scope = self.current_scope;
-        let old_scope_name = self.scope_name.clone();
-        self.current_scope = ScopeType::Class;
-        self.scope_name = Some(class_name);
+        let old_scope_path = self.scope_path.replace(class_scope);
         for stmt in &class_def.body {
             self.process_statement(stmt)?;
         }
-        self.current_scope = old_scope;
-        self.scope_name = old_scope_name;
+        self.scope_path = old_scope_path;
 
         Ok(())
     }
@@ -1290,7 +1336,7 @@ impl<'a> GraphBuilder<'a> {
                     defined_symbols: std::iter::once(target.clone()).collect(),
                     symbol_dependencies: FxIndexMap::default(),
                     attribute_accesses: FxIndexMap::default(),
-                    containing_scope: self.scope_name.clone(),
+                    containing_scope: self.scope_path.clone(),
                 };
 
                 self.graph.add_item(item_data);
@@ -1328,7 +1374,7 @@ impl<'a> GraphBuilder<'a> {
                 defined_symbols: var_decls,
                 symbol_dependencies: FxIndexMap::default(),
                 attribute_accesses,
-                containing_scope: self.scope_name.clone(),
+                containing_scope: self.scope_path.clone(),
             };
 
             self.graph.add_item(item_data);
@@ -1371,7 +1417,7 @@ impl<'a> GraphBuilder<'a> {
             defined_symbols: var_decls,
             symbol_dependencies: FxIndexMap::default(),
             attribute_accesses: FxIndexMap::default(),
-            containing_scope: self.scope_name.clone(),
+            containing_scope: self.scope_path.clone(),
         };
 
         self.graph.add_item(item_data);
@@ -1449,7 +1495,7 @@ impl<'a> GraphBuilder<'a> {
             defined_symbols: var_decls,
             symbol_dependencies: FxIndexMap::default(),
             attribute_accesses,
-            containing_scope: self.scope_name.clone(),
+            containing_scope: self.scope_path.clone(),
         });
     }
 
@@ -1490,7 +1536,7 @@ impl<'a> GraphBuilder<'a> {
             defined_symbols: FxIndexSet::default(),
             symbol_dependencies: FxIndexMap::default(),
             attribute_accesses,
-            containing_scope: self.scope_name.clone(),
+            containing_scope: self.scope_path.clone(),
         };
 
         self.graph.add_item(item_data);
@@ -1532,7 +1578,7 @@ impl<'a> GraphBuilder<'a> {
             defined_symbols: FxIndexSet::default(),
             symbol_dependencies: FxIndexMap::default(),
             attribute_accesses,
-            containing_scope: self.scope_name.clone(),
+            containing_scope: self.scope_path.clone(),
         };
 
         self.graph.add_item(item_data);
@@ -1559,7 +1605,7 @@ impl<'a> GraphBuilder<'a> {
             defined_symbols: FxIndexSet::default(),
             symbol_dependencies: FxIndexMap::default(),
             attribute_accesses: FxIndexMap::default(),
-            containing_scope: self.scope_name.clone(),
+            containing_scope: self.scope_path.clone(),
         };
 
         self.graph.add_item(item_data);
@@ -1608,7 +1654,7 @@ impl<'a> GraphBuilder<'a> {
             defined_symbols: FxIndexSet::default(),
             symbol_dependencies: FxIndexMap::default(),
             attribute_accesses: FxIndexMap::default(),
-            containing_scope: self.scope_name.clone(),
+            containing_scope: self.scope_path.clone(),
         };
 
         self.graph.add_item(item_data);
@@ -1796,7 +1842,7 @@ impl<'a> GraphBuilder<'a> {
             defined_symbols: FxIndexSet::default(),
             symbol_dependencies: FxIndexMap::default(),
             attribute_accesses,
-            containing_scope: self.scope_name.clone(),
+            containing_scope: self.scope_path.clone(),
         });
     }
 
@@ -2118,5 +2164,71 @@ def used(parameter):
         let expected_writes: FxIndexSet<String> =
             std::iter::once("module_state".to_owned()).collect();
         assert_eq!(function.eventual_write_vars, expected_writes);
+    }
+
+    #[test]
+    fn class_locals_resolve_only_inside_the_current_class_body() {
+        let ast = parse_module(
+            r"
+def outer():
+    class Container:
+        class_local = object()
+        alias = class_local
+
+        def method(self):
+            return method_global
+
+    return Container
+",
+        )
+        .expect("Class-local binding fixture should parse")
+        .into_syntax();
+        let mut graph = ModuleDepGraph::new(ModuleId::ENTRY, "module".to_owned());
+        GraphBuilder::new(&mut graph, 13)
+            .build_from_ast(&ast)
+            .expect("Dependency graph should build");
+
+        let function = graph
+            .items
+            .values()
+            .find(|item| item.var_decls.contains("outer"))
+            .expect("Outer function item should exist");
+
+        assert!(!function.eventual_read_vars.contains("class_local"));
+        assert!(function.eventual_read_vars.contains("method_global"));
+    }
+
+    #[test]
+    fn same_named_nested_functions_have_distinct_scope_paths() {
+        let ast = parse_module(
+            r"
+def first():
+    def nested():
+        import first_dependency
+    return nested
+
+def second():
+    def nested():
+        import second_dependency
+    return nested
+",
+        )
+        .expect("Nested-scope fixture should parse")
+        .into_syntax();
+        let mut graph = ModuleDepGraph::new(ModuleId::ENTRY, "module".to_owned());
+        GraphBuilder::new(&mut graph, 13)
+            .build_from_ast(&ast)
+            .expect("Dependency graph should build");
+
+        let nested_scopes: FxIndexSet<ScopePath> = graph
+            .items
+            .values()
+            .filter_map(|item| match &item.item_type {
+                ItemType::FunctionDef { name, scope } if name == "nested" => Some(scope.clone()),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(nested_scopes.len(), 2);
     }
 }

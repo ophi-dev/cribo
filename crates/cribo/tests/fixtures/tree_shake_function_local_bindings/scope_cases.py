@@ -29,6 +29,15 @@ def nested_local():
     return "dead-nested-local"
 
 
+def unused_exercise() -> str:
+    def nested() -> str:
+        from scoped_imports import unused_value
+
+        return unused_value()
+
+    return nested()
+
+
 def exercise(parameter: str) -> str:
     global module_state
 

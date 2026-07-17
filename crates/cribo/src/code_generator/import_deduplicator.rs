@@ -626,12 +626,14 @@ fn is_import_used_by_side_effect_code(
     }
 
     module_dep_graph.items.values().any(|item| {
-        matches!(
-            item.item_type,
-            crate::dependency_graph::ItemType::Expression
-                | crate::dependency_graph::ItemType::Assignment { .. }
-                | crate::dependency_graph::ItemType::Other
-        ) && (item.read_vars.contains(local_name) || item.eventual_read_vars.contains(local_name))
+        item.executes_at_module_import()
+            && matches!(
+                item.item_type,
+                crate::dependency_graph::ItemType::Expression
+                    | crate::dependency_graph::ItemType::Assignment { .. }
+                    | crate::dependency_graph::ItemType::Other
+            )
+            && (item.read_vars.contains(local_name) || item.eventual_read_vars.contains(local_name))
     })
 }
 
@@ -641,7 +643,8 @@ fn is_module_import_used_by_side_effects(
     import_name: &str,
 ) -> bool {
     module_dep_graph.items.values().any(|item| {
-        item.has_side_effects
+        item.executes_at_module_import()
+            && item.has_side_effects
             && !matches!(
                 item.item_type,
                 crate::dependency_graph::ItemType::Import { .. }

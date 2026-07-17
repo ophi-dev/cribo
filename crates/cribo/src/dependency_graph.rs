@@ -23,6 +23,59 @@ use crate::{
     types::{FxIndexMap, FxIndexSet},
 };
 
+/// Kind of lexical scope represented in the dependency graph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum ScopeKind {
+    /// A function or lambda body, which executes only when called.
+    Function,
+    /// A class body, which executes when its enclosing definition executes.
+    Class,
+}
+
+/// One uniquely identified component in a lexical scope path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ScopeComponent {
+    id: u32,
+    kind: ScopeKind,
+}
+
+/// Stable, qualified identity for a function or class scope within one module.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct ScopePath {
+    components: Vec<ScopeComponent>,
+}
+
+impl ScopePath {
+    /// Create a top-level lexical scope.
+    pub(crate) fn root(id: u32, kind: ScopeKind) -> Self {
+        Self {
+            components: vec![ScopeComponent { id, kind }],
+        }
+    }
+
+    /// Create a child scope while retaining the full qualified identity.
+    pub(crate) fn child(&self, id: u32, kind: ScopeKind) -> Self {
+        let mut components = self.components.clone();
+        components.push(ScopeComponent { id, kind });
+        Self { components }
+    }
+
+    /// Return the kind of the innermost scope.
+    pub(crate) fn kind(&self) -> ScopeKind {
+        self.components
+            .last()
+            .expect("scope path should have at least one component")
+            .kind
+    }
+
+    /// Return whether code in this scope executes while importing the module.
+    pub(crate) fn executes_at_module_import(&self) -> bool {
+        self.components
+            .iter()
+            .all(|component| component.kind == ScopeKind::Class)
+    }
+}
+
 /// Unique identifier for an item within a module
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct ItemId(u32);
@@ -37,9 +90,9 @@ impl ItemId {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ItemType {
     /// Function definition
-    FunctionDef { name: String },
+    FunctionDef { name: String, scope: ScopePath },
     /// Class definition
-    ClassDef { name: String },
+    ClassDef { name: String, scope: ScopePath },
     /// Variable assignment
     Assignment { targets: Vec<String> },
     /// Import statement
@@ -68,7 +121,7 @@ impl ItemType {
     /// Get the name of this item if it has one
     pub(crate) fn name(&self) -> Option<&str> {
         match self {
-            Self::FunctionDef { name } | Self::ClassDef { name } => Some(name),
+            Self::FunctionDef { name, .. } | Self::ClassDef { name, .. } => Some(name),
             _ => None,
         }
     }
@@ -131,8 +184,17 @@ pub(crate) struct ItemData {
     /// NEW: Map of variable -> accessed attributes (for tree-shaking namespace access)
     /// e.g., `{"greetings": ["message"]}` for `greetings.message`
     pub attribute_accesses: FxIndexMap<String, FxIndexSet<String>>,
-    /// For scoped items: the containing scope name (function or class name)
-    pub containing_scope: Option<String>,
+    /// For scoped items: the stable path of the containing function or class.
+    pub containing_scope: Option<ScopePath>,
+}
+
+impl ItemData {
+    /// Return whether this item executes as part of importing its module.
+    pub(crate) fn executes_at_module_import(&self) -> bool {
+        self.containing_scope
+            .as_ref()
+            .is_none_or(ScopePath::executes_at_module_import)
+    }
 }
 
 /// Fine-grained dependency graph for a single module
@@ -226,7 +288,7 @@ impl ModuleDepGraph {
         }
 
         // Track side effects
-        if data.has_side_effects {
+        if data.has_side_effects && data.executes_at_module_import() {
             self.side_effect_items.push(id);
         }
 
@@ -862,6 +924,7 @@ mod tests {
         let item1 = utils_module.add_item(ItemData {
             item_type: ItemType::FunctionDef {
                 name: "helper".into(),
+                scope: ScopePath::root(0, ScopeKind::Function),
             },
             var_decls: std::iter::once("helper".into()).collect(),
             read_vars: FxIndexSet::default(),
@@ -905,6 +968,7 @@ mod tests {
             utils_module.add_item(ItemData {
                 item_type: ItemType::FunctionDef {
                     name: "new_helper".into(),
+                    scope: ScopePath::root(1, ScopeKind::Function),
                 },
                 var_decls: std::iter::once("new_helper".into()).collect(),
                 read_vars: FxIndexSet::default(),

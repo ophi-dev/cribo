@@ -3,7 +3,7 @@ use std::{cell::RefCell, collections::VecDeque};
 use log::{debug, info, trace, warn};
 
 use crate::{
-    dependency_graph::{DependencyGraph, ItemData, ItemType},
+    dependency_graph::{DependencyGraph, ItemData, ItemType, ScopeKind, ScopePath},
     resolver::{ModuleId, ModuleResolver},
     types::{FxIndexMap, FxIndexSet},
 };
@@ -260,7 +260,7 @@ impl<'a> TreeShaker<'a> {
             );
             self.seed_dynamic_all_symbols_for_module(module_id, worklist);
             for item in module_dep.items.values() {
-                if item.containing_scope.is_some() {
+                if !item.executes_at_module_import() {
                     continue;
                 }
                 match &item.item_type {
@@ -309,7 +309,7 @@ impl<'a> TreeShaker<'a> {
         if let Some(entry_dep) = self.graph.modules.get(&entry_id) {
             self.seed_dynamic_all_symbols_for_module(entry_id, &mut worklist);
             for item in entry_dep.items.values() {
-                if item.containing_scope.is_some() {
+                if !item.executes_at_module_import() {
                     continue;
                 }
                 match &item.item_type {
@@ -326,7 +326,7 @@ impl<'a> TreeShaker<'a> {
                 // This ensures that classes/functions defined in the entry module
                 // (even inside try blocks) are kept along with their dependencies
                 match &item.item_type {
-                    ItemType::ClassDef { name } | ItemType::FunctionDef { name } => {
+                    ItemType::ClassDef { name, .. } | ItemType::FunctionDef { name, .. } => {
                         debug!("Marking entry module class/function '{name}' as used");
                         worklist.push_back((entry_id, name.clone()));
                     }
@@ -448,12 +448,11 @@ impl<'a> TreeShaker<'a> {
             self.add_item_dependencies(item, module_id, worklist);
 
             // If this is a function or class, also mark all imports within its scope as used
-            if matches!(
-                item.item_type,
-                ItemType::FunctionDef { .. } | ItemType::ClassDef { .. }
-            ) {
+            if let ItemType::FunctionDef { scope, .. } | ItemType::ClassDef { scope, .. } =
+                &item.item_type
+            {
                 debug!("Symbol {symbol} is a function/class, checking for scoped imports");
-                self.mark_scoped_imports_as_used(module_id, symbol, worklist);
+                self.mark_scoped_imports_as_used(module_id, scope, worklist);
             }
 
             // Add symbol-specific dependencies if tracked
@@ -471,28 +470,23 @@ impl<'a> TreeShaker<'a> {
         }
     }
 
-    /// Mark all imports within a function or class scope as used
+    /// Mark imports and executing class-body effects in a reachable lexical scope.
     fn mark_scoped_imports_as_used(
         &self,
         module_id: ModuleId,
-        scope_name: &str,
+        scope: &ScopePath,
         worklist: &mut VecDeque<(ModuleId, String)>,
     ) {
-        let mut visited_scopes = FxIndexSet::default();
-        self.mark_imports_in_scope(module_id, scope_name, worklist, &mut visited_scopes);
+        self.mark_imports_in_scope(module_id, scope, worklist);
     }
 
+    /// Recursively preserve scoped imports using stable qualified scope identities.
     fn mark_imports_in_scope(
         &self,
         module_id: ModuleId,
-        scope_name: &str,
+        scope: &ScopePath,
         worklist: &mut VecDeque<(ModuleId, String)>,
-        visited_scopes: &mut FxIndexSet<String>,
     ) {
-        if !visited_scopes.insert(scope_name.to_owned()) {
-            return;
-        }
-
         let Some(module_dep) = self.graph.modules.get(&module_id) else {
             return;
         };
@@ -503,7 +497,7 @@ impl<'a> TreeShaker<'a> {
             let Some(ref containing_scope) = item.containing_scope else {
                 continue;
             };
-            if containing_scope != scope_name {
+            if containing_scope != scope {
                 continue;
             }
 
@@ -513,7 +507,6 @@ impl<'a> TreeShaker<'a> {
                     module: imported_module,
                     ..
                 } => {
-                    self.handle_direct_import(imported_module, scope_name, worklist);
                     if let Some(imported_module_id) = self.get_graph_module_id(imported_module) {
                         self.mark_module_namespace_as_used(
                             imported_module_id,
@@ -523,17 +516,27 @@ impl<'a> TreeShaker<'a> {
                     }
                 }
                 ItemType::FromImport { .. } => {
-                    self.handle_from_import(item, module_id, scope_name, worklist);
+                    self.handle_from_import(item, module_id, "scoped import", worklist);
                 }
-                ItemType::FunctionDef { name } | ItemType::ClassDef { name } => {
-                    nested_scopes.push(name.clone());
+                ItemType::FunctionDef {
+                    scope: nested_scope,
+                    ..
+                }
+                | ItemType::ClassDef {
+                    scope: nested_scope,
+                    ..
+                } => {
+                    nested_scopes.push(nested_scope.clone());
+                }
+                _ if scope.kind() == ScopeKind::Class && item.has_side_effects => {
+                    self.add_item_dependencies(item, module_id, worklist);
                 }
                 _ => {}
             }
         }
 
         for nested_scope in nested_scopes {
-            self.mark_imports_in_scope(module_id, &nested_scope, worklist, visited_scopes);
+            self.mark_imports_in_scope(module_id, &nested_scope, worklist);
         }
     }
 
@@ -627,6 +630,7 @@ impl<'a> TreeShaker<'a> {
         }
     }
 
+    /// Resolve a named import inside a reachable scope to its bundled target.
     fn handle_scoped_named_imports(
         &self,
         resolved_module_name: &str,
@@ -828,9 +832,9 @@ impl<'a> TreeShaker<'a> {
             .modules
             .get(&module_id)
             .is_some_and(|module_dep| {
-                // Check if any top-level item has side effects
+                // Class bodies execute during import unless nested beneath a function.
                 module_dep.items.values().any(|item| {
-                    item.containing_scope.is_none()
+                    item.executes_at_module_import()
                         && item.has_side_effects
                         && !matches!(
                             item.item_type,
@@ -1132,10 +1136,11 @@ mod tests {
 
     use super::*;
 
-    fn function_item(name: &str) -> ItemData {
+    fn function_item(name: &str, scope: ScopePath) -> ItemData {
         ItemData {
             item_type: ItemType::FunctionDef {
                 name: name.to_owned(),
+                scope,
             },
             defined_symbols: std::iter::once(name.to_owned()).collect(),
             read_vars: FxIndexSet::default(),
@@ -1152,7 +1157,7 @@ mod tests {
         }
     }
 
-    fn scoped_import_item(module: &str, local_name: &str, scope_name: &str) -> ItemData {
+    fn scoped_import_item(module: &str, local_name: &str, scope: ScopePath) -> ItemData {
         ItemData {
             item_type: ItemType::Import {
                 module: module.to_owned(),
@@ -1169,11 +1174,11 @@ mod tests {
             reexported_names: FxIndexSet::default(),
             symbol_dependencies: FxIndexMap::default(),
             attribute_accesses: FxIndexMap::default(),
-            containing_scope: Some(scope_name.to_owned()),
+            containing_scope: Some(scope),
         }
     }
 
-    fn scoped_from_import_item(module: &str, name: &str, scope_name: &str) -> ItemData {
+    fn scoped_from_import_item(module: &str, name: &str, scope: ScopePath) -> ItemData {
         ItemData {
             item_type: ItemType::FromImport {
                 module: module.to_owned(),
@@ -1192,7 +1197,7 @@ mod tests {
             reexported_names: FxIndexSet::default(),
             symbol_dependencies: FxIndexMap::default(),
             attribute_accesses: FxIndexMap::default(),
-            containing_scope: Some(scope_name.to_owned()),
+            containing_scope: Some(scope),
         }
     }
 
@@ -1231,6 +1236,7 @@ mod tests {
         module.add_item(ItemData {
             item_type: ItemType::FunctionDef {
                 name: "used_func".to_owned(),
+                scope: ScopePath::root(0, ScopeKind::Function),
             },
             defined_symbols: std::iter::once("used_func".into()).collect(),
             read_vars: FxIndexSet::default(),
@@ -1250,6 +1256,7 @@ mod tests {
         module.add_item(ItemData {
             item_type: ItemType::FunctionDef {
                 name: "unused_func".to_owned(),
+                scope: ScopePath::root(1, ScopeKind::Function),
             },
             defined_symbols: std::iter::once("unused_func".into()).collect(),
             read_vars: FxIndexSet::default(),
@@ -1332,7 +1339,10 @@ mod tests {
             attribute_accesses: FxIndexMap::default(),
             containing_scope: None,
         });
-        module.add_item(function_item("local_export"));
+        module.add_item(function_item(
+            "local_export",
+            ScopePath::root(0, ScopeKind::Function),
+        ));
 
         let shaker = TreeShaker::from_graph(&graph, &resolver);
         let mut worklist = VecDeque::new();
@@ -1361,19 +1371,27 @@ mod tests {
             .get_mut(&module_id)
             .expect("module should exist");
 
-        module.add_item(function_item("load"));
-        module.add_item(scoped_import_item("math", "math", "load"));
-        module.add_item(scoped_from_import_item("operator", "add", "load"));
+        let load_scope = ScopePath::root(0, ScopeKind::Function);
+        module.add_item(function_item("load", load_scope.clone()));
+        module.add_item(scoped_import_item("math", "math", load_scope.clone()));
+        module.add_item(scoped_from_import_item(
+            "operator",
+            "add",
+            load_scope.clone(),
+        ));
         graph.add_module(operator_id, &resolver);
         graph
             .modules
             .get_mut(&operator_id)
             .expect("operator module should exist")
-            .add_item(function_item("add"));
+            .add_item(function_item(
+                "add",
+                ScopePath::root(0, ScopeKind::Function),
+            ));
 
         let shaker = TreeShaker::from_graph(&graph, &resolver);
         let mut worklist = VecDeque::new();
-        shaker.mark_scoped_imports_as_used(module_id, "load", &mut worklist);
+        shaker.mark_scoped_imports_as_used(module_id, &load_scope, &mut worklist);
 
         let queued_symbols: FxIndexSet<(ModuleId, String)> = worklist.into_iter().collect();
         assert!(queued_symbols.contains(&(operator_id, "add".to_owned())));
@@ -1381,7 +1399,7 @@ mod tests {
     }
 
     #[test]
-    fn scoped_items_do_not_seed_module_side_effects() {
+    fn function_scoped_items_do_not_seed_module_side_effects() {
         let mut graph = DependencyGraph::new();
         let resolver = ModuleResolver::new(crate::config::Config::default())
             .expect("default configuration should be valid");
@@ -1407,11 +1425,64 @@ mod tests {
             reexported_names: FxIndexSet::default(),
             symbol_dependencies: FxIndexMap::default(),
             attribute_accesses: FxIndexMap::default(),
-            containing_scope: Some("load".to_owned()),
+            containing_scope: Some(ScopePath::root(0, ScopeKind::Function)),
         });
+        module.add_item(ItemData {
+            item_type: ItemType::Expression,
+            defined_symbols: FxIndexSet::default(),
+            read_vars: FxIndexSet::default(),
+            eventual_read_vars: FxIndexSet::default(),
+            var_decls: FxIndexSet::default(),
+            write_vars: FxIndexSet::default(),
+            eventual_write_vars: FxIndexSet::default(),
+            has_side_effects: true,
+            imported_names: FxIndexSet::default(),
+            reexported_names: FxIndexSet::default(),
+            symbol_dependencies: FxIndexMap::default(),
+            attribute_accesses: FxIndexMap::default(),
+            containing_scope: Some(
+                ScopePath::root(1, ScopeKind::Function).child(2, ScopeKind::Class),
+            ),
+        });
+        assert!(module.side_effect_items.is_empty());
 
         let shaker = TreeShaker::from_graph(&graph, &resolver);
         assert!(!shaker.module_has_side_effects(module_id));
+    }
+
+    #[test]
+    fn class_scoped_items_seed_module_side_effects() {
+        let mut graph = DependencyGraph::new();
+        let resolver = ModuleResolver::new(crate::config::Config::default())
+            .expect("default configuration should be valid");
+        resolver.register_module("__main__", std::path::Path::new("main.py"));
+        let module_id =
+            resolver.register_module("class_side_effect", std::path::Path::new("module.py"));
+
+        graph.add_module(module_id, &resolver);
+        let module = graph
+            .modules
+            .get_mut(&module_id)
+            .expect("module should exist");
+        module.add_item(ItemData {
+            item_type: ItemType::Expression,
+            defined_symbols: FxIndexSet::default(),
+            read_vars: FxIndexSet::default(),
+            eventual_read_vars: FxIndexSet::default(),
+            var_decls: FxIndexSet::default(),
+            write_vars: FxIndexSet::default(),
+            eventual_write_vars: FxIndexSet::default(),
+            has_side_effects: true,
+            imported_names: FxIndexSet::default(),
+            reexported_names: FxIndexSet::default(),
+            symbol_dependencies: FxIndexMap::default(),
+            attribute_accesses: FxIndexMap::default(),
+            containing_scope: Some(ScopePath::root(0, ScopeKind::Class)),
+        });
+        assert_eq!(module.side_effect_items.len(), 1);
+
+        let shaker = TreeShaker::from_graph(&graph, &resolver);
+        assert!(shaker.module_has_side_effects(module_id));
     }
 
     #[test]
@@ -1435,7 +1506,10 @@ mod tests {
             .get_mut(&submodule_id)
             .expect("namespace submodule should exist");
 
-        submodule.add_item(function_item("exported_attr"));
+        submodule.add_item(function_item(
+            "exported_attr",
+            ScopePath::root(0, ScopeKind::Function),
+        ));
 
         let shaker = TreeShaker::from_graph(&graph, &resolver);
         let accessed_attrs = std::iter::once("exported_attr".to_owned()).collect();

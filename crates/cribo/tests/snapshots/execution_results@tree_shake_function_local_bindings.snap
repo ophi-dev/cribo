@@ -4,6 +4,6 @@ input_file: crates/cribo/tests/fixtures/tree_shake_function_local_bindings/main.
 ---
 ExecutionResults {
     status: Success,
-    stdout: "parameter|local|comprehension|exception|pattern|loop|6|nested-import|method-import|global-dependency",
+    stdout: "parameter|local|comprehension|exception|pattern|loop|6|nested-import|method-import|global-dependency|class-body",
     stderr: "",
 }
