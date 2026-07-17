@@ -1,10 +1,10 @@
 use std::{
-    env,
+    env, fmt,
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, anyhow};
-use indexmap::IndexSet;
+use indexmap::{IndexMap, IndexSet};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -38,6 +38,38 @@ pub struct Config {
 
     /// Whether to enable tree-shaking to remove unused code
     pub tree_shake: bool,
+
+    /// Configuration for mapping imports to installable requirements
+    pub requirements: RequirementsConfig,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RequirementsConfig {
+    /// Python interpreter whose environment supplies distribution metadata
+    pub python: Option<PathBuf>,
+
+    /// Explicit import-prefix to PEP 508 requirement mappings
+    #[serde(rename = "module-map")]
+    pub module_map: IndexMap<String, String>,
+}
+
+struct RedactedModuleMap(usize);
+
+impl fmt::Debug for RedactedModuleMap {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "<redacted: {} entries>", self.0)
+    }
+}
+
+impl fmt::Debug for RequirementsConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RequirementsConfig")
+            .field("python", &self.python)
+            .field("module_map", &RedactedModuleMap(self.module_map.len()))
+            .finish()
+    }
 }
 
 impl Default for Config {
@@ -50,6 +82,7 @@ impl Default for Config {
             preserve_type_hints: true,
             target_version: "py310".to_owned(),
             tree_shake: true, // Tree-shaking enabled by default
+            requirements: RequirementsConfig::default(),
         }
     }
 }
@@ -79,6 +112,14 @@ impl Combine for Config {
             preserve_type_hints: self.preserve_type_hints,
             target_version: self.target_version,
             tree_shake: self.tree_shake,
+            requirements: RequirementsConfig {
+                python: self.requirements.python.or(other.requirements.python),
+                module_map: if self.requirements.module_map.is_empty() {
+                    other.requirements.module_map
+                } else {
+                    self.requirements.module_map
+                },
+            },
         }
     }
 }
@@ -93,6 +134,7 @@ pub(crate) struct EnvConfig {
     pub preserve_type_hints: Option<bool>,
     pub target_version: Option<String>,
     pub tree_shake: Option<bool>,
+    pub python: Option<PathBuf>,
 }
 
 impl EnvConfig {
@@ -159,6 +201,10 @@ impl EnvConfig {
             config.tree_shake = parse_bool(&tree_shake_str);
         }
 
+        if let Ok(python) = env::var("CRIBO_PYTHON") {
+            config.python = parse_env_path(&python);
+        }
+
         config
     }
 
@@ -185,6 +231,9 @@ impl EnvConfig {
         if let Some(tree_shake) = self.tree_shake {
             config.tree_shake = tree_shake;
         }
+        if let Some(python) = self.python {
+            config.requirements.python = Some(python);
+        }
         config
     }
 }
@@ -196,6 +245,15 @@ fn parse_bool(value: &str) -> Option<bool> {
         "true" | "1" | "yes" | "on" => Some(true),
         "false" | "0" | "no" | "off" => Some(false),
         _ => None,
+    }
+}
+
+/// Parse a non-empty environment value as a filesystem path.
+fn parse_env_path(value: &str) -> Option<PathBuf> {
+    if value.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(value))
     }
 }
 
@@ -325,6 +383,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_empty_environment_path_is_ignored() {
+        assert_eq!(parse_env_path(""), None);
+        assert_eq!(
+            parse_env_path(".venv/bin/python"),
+            Some(PathBuf::from(".venv/bin/python"))
+        );
+    }
+
+    #[test]
+    fn test_requirements_debug_redacts_module_map() {
+        let config = Config {
+            requirements: RequirementsConfig {
+                python: Some(PathBuf::from(".venv/bin/python")),
+                module_map: IndexMap::from([(
+                    "private_module".to_owned(),
+                    "private-package @ https://user:secret-token@example.com/package.whl"
+                        .to_owned(),
+                )]),
+            },
+            ..Config::default()
+        };
+
+        let debug_output = format!("{config:?}");
+        assert!(debug_output.contains(".venv/bin/python"));
+        assert!(debug_output.contains("<redacted: 1 entries>"));
+        assert!(!debug_output.contains("private_module"));
+        assert!(!debug_output.contains("secret-token"));
+    }
+
+    #[test]
     fn test_target_version_configuration() {
         // Test default behavior (should be "py310")
         let default_config = Config::default();
@@ -389,6 +477,10 @@ mod tests {
 target-version = "py312"
 preserve_comments = false
 src = ["src", "lib"]
+
+[requirements]
+python = ".venv/bin/python"
+module-map = { sklearn = "scikit-learn", "google.cloud.storage" = "google-cloud-storage>=2" }
         "#;
 
         let mut temp_file =
@@ -407,6 +499,18 @@ src = ["src", "lib"]
             12
         );
         assert!(!config.preserve_comments);
+        assert_eq!(
+            config.requirements.python,
+            Some(PathBuf::from(".venv/bin/python"))
+        );
+        assert_eq!(
+            config.requirements.module_map.get("sklearn"),
+            Some(&"scikit-learn".to_owned())
+        );
+        assert_eq!(
+            config.requirements.module_map.get("google.cloud.storage"),
+            Some(&"google-cloud-storage>=2".to_owned())
+        );
     }
 
     #[test]

@@ -4,5 +4,5 @@ assertion_line: 547
 input_file: crates/cribo/tests/fixtures/try_except_function_export/main.py
 ---
 packages:
-  - nonexistent_module
+  - nonexistent-module
 count: 1

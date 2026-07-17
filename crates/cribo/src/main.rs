@@ -20,6 +20,7 @@ mod import_rewriter;
 mod module_facts;
 mod orchestrator;
 mod python;
+mod requirement_resolver;
 mod resolver;
 mod side_effects;
 mod symbol_conflict_resolver;
@@ -63,6 +64,10 @@ struct Cli {
     #[arg(long, alias = "python-version")]
     target_version: Option<String>,
 
+    /// Python interpreter whose installed distributions should be inspected
+    #[arg(long)]
+    python: Option<PathBuf>,
+
     /// Disable tree-shaking optimization (tree-shaking is enabled by default)
     #[arg(long = "no-tree-shake", default_value_t = true, action = clap::ArgAction::SetFalse)]
     tree_shake: bool,
@@ -99,6 +104,10 @@ fn main() -> anyhow::Result<()> {
     // Override target-version from CLI if provided
     if let Some(target_version) = cli.target_version {
         config.set_target_version(target_version)?;
+    }
+
+    if let Some(python) = cli.python {
+        config.requirements.python = Some(python);
     }
 
     // Override tree-shake from CLI

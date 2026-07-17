@@ -6,7 +6,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
-use indexmap::IndexSet;
+use indexmap::{IndexMap, IndexSet};
 use log::{debug, info, trace, warn};
 use ruff_python_ast::ModModule;
 
@@ -20,7 +20,8 @@ use crate::{
     dependency_graph::DependencyGraph,
     import_rewriter::{ImportDeduplicationStrategy, ImportRewriter},
     module_facts::ModuleFacts,
-    resolver::{ModuleId, ModuleResolver},
+    requirement_resolver::RequirementResolver,
+    resolver::{ImportOrigin, ModuleId, ModuleResolver},
     symbol_conflict_resolver::SymbolConflictResolver,
     tree_shaking::TreeShaker,
     types::FxIndexMap,
@@ -1557,7 +1558,8 @@ impl BundleOrchestrator {
         resolver: &ModuleResolver,
         graph: &DependencyGraph,
     ) -> Result<()> {
-        let requirements_content = self.generate_requirements(sorted_module_ids, resolver, graph);
+        let requirements_content =
+            self.generate_requirements(sorted_module_ids, resolver, graph)?;
         if requirements_content.is_empty() {
             info!("No third-party dependencies found, skipping requirements.txt");
         } else {
@@ -1583,7 +1585,8 @@ impl BundleOrchestrator {
         graph: &DependencyGraph,
         output_path: &Path,
     ) -> Result<()> {
-        let requirements_content = self.generate_requirements(sorted_module_ids, resolver, graph);
+        let requirements_content =
+            self.generate_requirements(sorted_module_ids, resolver, graph)?;
         if requirements_content.is_empty() {
             info!("No third-party dependencies found, skipping requirements.txt");
         } else {
@@ -1742,8 +1745,8 @@ impl BundleOrchestrator {
         module_ids: &[ModuleId],
         resolver: &ModuleResolver,
         graph: &DependencyGraph,
-    ) -> String {
-        let mut third_party_imports = IndexSet::new();
+    ) -> Result<String> {
+        let mut requirement_imports = IndexMap::new();
 
         // TODO: Use TYPE_CHECKING information from the dependency graph to filter out
         // dependencies that are only used for type checking. These could be placed
@@ -1755,17 +1758,27 @@ impl BundleOrchestrator {
                 let imports = self.extract_imports_from_module_items(&module.items);
                 for import in &imports {
                     debug!("Checking import '{import}' for requirements");
-                    if let Some(package_name) = resolver.classify_import(import).requirement {
-                        debug!("Adding '{package_name}' to requirements (from '{import}')");
-                        third_party_imports.insert(package_name);
+                    let classification = resolver.classify_import(import);
+                    if matches!(
+                        classification.origin,
+                        ImportOrigin::ThirdParty | ImportOrigin::Unknown
+                    ) {
+                        requirement_imports
+                            .entry(import.clone())
+                            .or_insert_with(|| resolver.get_import_search_root(import));
                     }
                 }
             }
         }
 
-        let mut requirements: Vec<String> = third_party_imports.into_iter().collect();
+        let requirement_resolver = RequirementResolver::new(
+            &self.config.requirements,
+            resolver.get_distribution_metadata_search_directories(),
+        );
+        let resolved_requirements = requirement_resolver.resolve(&requirement_imports)?;
+        let mut requirements: Vec<String> = resolved_requirements.into_iter().collect();
         requirements.sort();
 
-        requirements.join("\n")
+        Ok(requirements.join("\n"))
     }
 }

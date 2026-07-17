@@ -26,6 +26,7 @@ pub(crate) mod import_alias_tracker;
 pub(crate) mod import_rewriter;
 pub(crate) mod module_facts;
 pub(crate) mod python;
+pub(crate) mod requirement_resolver;
 pub(crate) mod side_effects;
 pub(crate) mod symbol_conflict_resolver;
 pub(crate) mod transformation_context;

@@ -124,6 +124,10 @@ cribo --entry mypackage/ --output bundle.py
 # Generate requirements.txt
 cribo --entry src/main.py --output bundle.py --emit-requirements
 
+# Resolve requirement names from a specific Python environment
+cribo --entry src/main.py --output bundle.py --emit-requirements \
+  --python .venv/bin/python
+
 # Verbose output (can be repeated for more detail: -v, -vv, -vvv)
 cribo --entry src/main.py --output bundle.py -v
 cribo --entry src/main.py --output bundle.py -vv    # debug level
@@ -144,6 +148,7 @@ cribo --entry src/main.py --output bundle.py --config my-cribo.toml
   - `-vvv` or more: trace messages
 - `-c, --config <PATH>`: Custom configuration file path
 - `--emit-requirements`: Generate requirements.txt with third-party dependencies
+- `--python <PATH>`: Python interpreter whose installed distribution metadata is used for requirements
 - `--no-tree-shake`: Disable tree-shaking optimization (tree-shaking is enabled by default)
 - `--target-version <VERSION>`: Target Python version (e.g., py38, py39, py310, py311, py312, py313)
 - `-h, --help`: Print help information
@@ -241,6 +246,15 @@ preserve_type_hints = true
 # Target Python version for standard library checks
 # Supported: "py38", "py39", "py310", "py311", "py312", "py313"
 target-version = "py310"
+
+[requirements]
+# Interpreter used to map imports to installed distribution names
+python = ".venv/bin/python"
+
+# Explicit longest-prefix mappings for ambiguous or unavailable metadata
+[requirements.module-map]
+sklearn = "scikit-learn"
+"google.cloud.storage" = "google-cloud-storage>=2"
 ```
 
 ### Environment Variables
@@ -259,6 +273,7 @@ export CRIBO_PRESERVE_TYPE_HINTS="true"
 
 # String values
 export CRIBO_TARGET_VERSION="py312"
+export CRIBO_PYTHON=".venv/bin/python"
 ```
 
 ### Configuration Locations

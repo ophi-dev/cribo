@@ -5,10 +5,11 @@ Cribo.
 
 ## Supported Variables
 
-| Variable      | Type | Effect                           | Documentation                          |
-| ------------- | ---- | -------------------------------- | -------------------------------------- |
-| `PYTHONPATH`  | Std  | First-party module discovery     | [PYTHONPATH](./pythonpath_support.md)  |
-| `VIRTUAL_ENV` | Std  | Third-party dependency detection | [VIRTUAL_ENV](./virtualenv_support.md) |
+| Variable       | Type  | Effect                                  | Documentation                          |
+| -------------- | ----- | --------------------------------------- | -------------------------------------- |
+| `PYTHONPATH`   | Std   | First-party module discovery            | [PYTHONPATH](./pythonpath_support.md)  |
+| `VIRTUAL_ENV`  | Std   | Third-party dependency detection        | [VIRTUAL_ENV](./virtualenv_support.md) |
+| `CRIBO_PYTHON` | Cribo | Distribution metadata interpreter       | This document                          |
 
 ## Configuration
 
@@ -101,6 +102,21 @@ cribo --entry main.py --output bundle.py
 
 # Manual override
 VIRTUAL_ENV=/path/to/venv cribo --entry main.py --output bundle.py
+```
+
+### `CRIBO_PYTHON`
+
+**Purpose**: Select the Python environment used to map imports to distribution
+requirements.
+
+This is equivalent to `--python` and `[requirements].python` in `cribo.toml`.
+When omitted, Cribo uses `VIRTUAL_ENV`, `CONDA_PREFIX`, a project-local
+virtual environment named `.venv`, `venv`, `env`, `.virtualenv`, or
+`virtualenv`, or a Python interpreter on `PATH`, in that order.
+
+```bash
+CRIBO_PYTHON=.venv/bin/python \
+  cribo --entry main.py --output bundle.py --emit-requirements
 ```
 
 ```bash

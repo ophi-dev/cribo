@@ -1,0 +1,6 @@
+---
+source: crates/cribo/tests/test_bundling_snapshots.rs
+expression: error_msg
+input_file: crates/cribo/tests/fixtures/xfail_ambiguous_requirement_namespace/main.py
+---
+Bundling failed as expected: Error: Cannot determine a requirement for import 'shared': multiple installed distributions provide equally strong evidence: Alpha-Distribution (core metadata Import-Namespace), Beta-Distribution (core metadata Import-Namespace). Configure requirements.module-map for this import.

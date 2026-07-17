@@ -11,13 +11,15 @@ use anyhow::{Context, Result, anyhow};
 use cow_utils::CowUtils;
 use indexmap::{IndexMap, IndexSet};
 use log::{debug, info, warn};
-use pep508_rs::PackageName;
 use ruff_python_stdlib::sys;
 
 use crate::{
     config::Config,
     types::{FxIndexMap, FxIndexSet},
 };
+
+pub(crate) const AUTO_DETECTED_VIRTUALENV_NAMES: [&str; 5] =
+    [".venv", "venv", "env", ".virtualenv", "virtualenv"];
 
 /// Unique identifier for a module in the dependency graph
 /// The entry module ALWAYS has ID 0 - this is a fundamental invariant
@@ -295,24 +297,19 @@ pub struct ImportClassification {
     pub origin: ImportOrigin,
     pub source: ImportSource,
     pub bundle: BundleDisposition,
-    pub requirement: Option<String>,
 }
 
 impl ImportClassification {
-    const fn new(
-        origin: ImportOrigin,
-        source: ImportSource,
-        bundle: BundleDisposition,
-        requirement: Option<String>,
-    ) -> Self {
+    /// Construct an import classification from its independent resolution facts.
+    const fn new(origin: ImportOrigin, source: ImportSource, bundle: BundleDisposition) -> Self {
         Self {
             origin,
             source,
             bundle,
-            requirement,
         }
     }
 
+    /// Whether the bundler should include the module's Python source.
     pub const fn should_bundle(&self) -> bool {
         matches!(self.bundle, BundleDisposition::Include)
     }
@@ -373,6 +370,25 @@ impl ImportModuleDescriptor {
     }
 }
 
+#[derive(Debug, Default)]
+struct DistributionOwnershipIndex {
+    declared_prefixes: IndexSet<String>,
+    record_imports: IndexSet<String>,
+}
+
+impl DistributionOwnershipIndex {
+    /// Return whether indexed metadata or installed files claim an import.
+    fn owns_import(&self, import_name: &str) -> bool {
+        self.record_imports.contains(import_name)
+            || self.declared_prefixes.iter().any(|prefix| {
+                import_name == prefix
+                    || import_name
+                        .strip_prefix(prefix)
+                        .is_some_and(|suffix| suffix.starts_with('.'))
+            })
+    }
+}
+
 #[derive(Debug)]
 pub struct ModuleResolver {
     config: Config,
@@ -384,6 +400,8 @@ pub struct ModuleResolver {
     classification_cache: RefCell<IndexMap<String, ImportClassification>>,
     /// Cache of virtual environment packages to avoid repeated filesystem scans
     virtualenv_packages_cache: RefCell<Option<IndexSet<String>>>,
+    /// Distribution ownership indexed once for each searched filesystem root
+    distribution_ownership_cache: RefCell<IndexMap<PathBuf, DistributionOwnershipIndex>>,
     /// Entry file's directory (first in search path)
     entry_dir: Option<PathBuf>,
     /// Python version for stdlib classification
@@ -428,6 +446,7 @@ impl ModuleResolver {
             module_cache: RefCell::new(IndexMap::new()),
             classification_cache: RefCell::new(IndexMap::new()),
             virtualenv_packages_cache: RefCell::new(None),
+            distribution_ownership_cache: RefCell::new(IndexMap::new()),
             entry_dir: None,
             python_version,
             pythonpath_override: pythonpath_override.map(str::to_owned),
@@ -556,6 +575,40 @@ impl ModuleResolver {
         let pythonpath = self.pythonpath_override.as_deref();
         let virtualenv = self.virtualenv_override.as_deref();
         self.get_search_directories_with_overrides(pythonpath, virtualenv)
+    }
+
+    /// Get import roots and the selected virtual environments' distribution metadata roots.
+    pub(crate) fn get_distribution_metadata_search_directories(&self) -> Vec<PathBuf> {
+        let mut unique_dirs: IndexSet<PathBuf> =
+            self.get_search_directories().into_iter().collect();
+        unique_dirs.extend(self.get_virtualenv_site_packages_search_directories(None));
+        unique_dirs.into_iter().collect()
+    }
+
+    /// Return the search root that supplied a concrete importable module.
+    ///
+    /// Namespace packages intentionally have no preferred root because multiple roots can
+    /// contribute providers to the same namespace.
+    pub(crate) fn get_import_search_root(&self, module_name: &str) -> Option<PathBuf> {
+        let classification = self.classify_import(module_name);
+        if !classification.is_resolved()
+            || matches!(classification.source, ImportSource::NamespacePackage)
+        {
+            return None;
+        }
+
+        let search_dirs = self.get_search_directories();
+        if let Some((search_root, resolved)) = self.locate_in_directories(module_name, &search_dirs)
+        {
+            return (!matches!(resolved.source, ImportSource::NamespacePackage))
+                .then_some(search_root);
+        }
+
+        let virtualenv_dirs = self.get_virtualenv_site_packages_search_directories(None);
+        self.locate_in_directories(module_name, &virtualenv_dirs)
+            .and_then(|(search_root, resolved)| {
+                (!matches!(resolved.source, ImportSource::NamespacePackage)).then_some(search_root)
+            })
     }
 
     /// Get all directories to search for modules with optional PYTHONPATH override
@@ -969,11 +1022,12 @@ impl ModuleResolver {
     ) -> ImportClassification {
         let explicit_first_party = self.config.known_first_party.contains(module_name);
         let explicit_third_party = self.config.known_third_party.contains(module_name);
-        let root_import = module_name.split('.').next().unwrap_or(module_name);
-        let distribution = self.find_package_name_in_site_packages(search_root, root_import);
         let origin = if explicit_first_party {
             ImportOrigin::FirstParty
-        } else if explicit_third_party || distribution.is_some() {
+        } else if explicit_third_party
+            || default_origin == ImportOrigin::ThirdParty
+            || self.distribution_owns_import(search_root, module_name)
+        {
             ImportOrigin::ThirdParty
         } else {
             default_origin
@@ -989,10 +1043,8 @@ impl ModuleResolver {
             } else {
                 BundleDisposition::External
             };
-        let requirement = (origin == ImportOrigin::ThirdParty)
-            .then(|| distribution.unwrap_or_else(|| self.map_import_to_package_name(module_name)));
 
-        ImportClassification::new(origin, resolved.source, bundle, requirement)
+        ImportClassification::new(origin, resolved.source, bundle)
     }
 
     /// Classify an import without conflating its origin, source kind, bundle policy, and
@@ -1015,7 +1067,6 @@ impl ModuleResolver {
                 ImportOrigin::FirstParty,
                 ImportSource::Unresolved,
                 BundleDisposition::Include,
-                None,
             );
         }
 
@@ -1029,7 +1080,6 @@ impl ModuleResolver {
                 ImportOrigin::StandardLibrary,
                 ImportSource::Unresolved,
                 BundleDisposition::External,
-                None,
             );
         }
 
@@ -1066,7 +1116,6 @@ impl ModuleResolver {
                         parent_classification.origin,
                         ImportSource::Unresolved,
                         BundleDisposition::Include,
-                        parent_classification.requirement,
                     );
                 }
             }
@@ -1090,7 +1139,6 @@ impl ModuleResolver {
                 ImportOrigin::FirstParty,
                 ImportSource::Unresolved,
                 BundleDisposition::Include,
-                None,
             );
         }
 
@@ -1099,7 +1147,6 @@ impl ModuleResolver {
                 ImportOrigin::ThirdParty,
                 ImportSource::Unresolved,
                 BundleDisposition::External,
-                Some(self.map_import_to_package_name(module_name)),
             );
         }
 
@@ -1107,7 +1154,6 @@ impl ModuleResolver {
             ImportOrigin::Unknown,
             ImportSource::Unresolved,
             BundleDisposition::External,
-            Some(self.map_import_to_package_name(module_name)),
         )
     }
 
@@ -1187,10 +1233,9 @@ impl ModuleResolver {
             return Vec::new();
         };
 
-        let common_venv_names = [".venv", "venv", "env", ".virtualenv", "virtualenv"];
         let mut venv_paths = Vec::new();
 
-        for venv_name in &common_venv_names {
+        for venv_name in AUTO_DETECTED_VIRTUALENV_NAMES {
             let venv_path = current_dir.join(venv_name);
             if venv_path.is_dir() {
                 // Check if it looks like a virtual environment
@@ -1286,64 +1331,31 @@ impl ModuleResolver {
         false
     }
 
-    /// Map an import name to its package name by checking dist-info metadata in the virtual
-    /// environment For example: "`markdown_it`" -> "markdown-it-py"
-    pub fn map_import_to_package_name(&self, import_name: &str) -> String {
-        // Extract the root module name (e.g., "markdown_it" from "markdown_it.parser")
-        let root_import = import_name.split('.').next().unwrap_or(import_name);
-
-        debug!("Attempting to map import '{import_name}' (root: '{root_import}') to package name");
-
-        let mut metadata_roots: IndexSet<PathBuf> =
-            self.get_search_directories().into_iter().collect();
-        metadata_roots.extend(self.get_virtualenv_site_packages_search_directories(None));
-
-        for site_packages_dir in metadata_roots {
-            debug!(
-                "Checking package metadata root: {}",
-                site_packages_dir.display()
-            );
-            if let Some(package_name) =
-                self.find_package_name_in_site_packages(&site_packages_dir, root_import)
-            {
-                debug!("Mapped import '{root_import}' to package '{package_name}'");
-                return package_name;
-            }
+    /// Return whether installed distribution metadata claims an import.
+    fn distribution_owns_import(&self, site_packages_dir: &Path, import_name: &str) -> bool {
+        let search_root = self.canonicalize_path(site_packages_dir.to_path_buf());
+        if let Some(owns_import) = self
+            .distribution_ownership_cache
+            .borrow()
+            .get(&search_root)
+            .map(|index| index.owns_import(import_name))
+        {
+            return owns_import;
         }
 
-        // If no mapping found, return the import name as-is
-        debug!("No package mapping found for '{root_import}', using import name as-is");
-        root_import.to_owned()
+        let index = Self::build_distribution_ownership_index(&search_root);
+        let owns_import = index.owns_import(import_name);
+        self.distribution_ownership_cache
+            .borrow_mut()
+            .insert(search_root, index);
+        owns_import
     }
 
-    /// Normalize a package name according to PEP 503 using `pep508_rs`
-    fn normalize_package_name(name: &str) -> String {
-        // Use pep508_rs::PackageName for proper PEP 503 normalization
-        PackageName::new(name.to_owned()).map_or_else(
-            |_| {
-                // If normalization fails (shouldn't happen for valid package names),
-                // fall back to simple lowercase
-                debug!("Failed to normalize package name '{name}', using lowercase");
-                name.cow_to_lowercase().into_owned()
-            },
-            |package_name| package_name.to_string(),
-        )
-    }
-
-    /// Find the package name for an import by scanning dist-info directories
-    fn find_package_name_in_site_packages(
-        &self,
-        site_packages_dir: &Path,
-        import_name: &str,
-    ) -> Option<String> {
-        // Look for corresponding dist-info directory
-        // Note: We don't check if the import exists first because:
-        // - Single-file modules (foo.py)
-        // - Compiled extensions (foo.cpython-312-darwin.so)
-        // - Namespace packages
-        // may not have a directory
+    /// Build distribution ownership data for one search root.
+    fn build_distribution_ownership_index(site_packages_dir: &Path) -> DistributionOwnershipIndex {
+        let mut index = DistributionOwnershipIndex::default();
         let Ok(entries) = std::fs::read_dir(site_packages_dir) else {
-            return None;
+            return index;
         };
 
         for entry in entries.flatten() {
@@ -1355,52 +1367,83 @@ impl ModuleResolver {
             let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-
-            // Check if this is a dist-info directory
             if !dir_name.ends_with(".dist-info") {
                 continue;
             }
 
-            // Check if this dist-info might be related to our import
-            // by checking the RECORD file for the import directory
+            let metadata_file = path.join("METADATA");
+            if let Ok(metadata) = std::fs::read_to_string(metadata_file) {
+                Self::index_distribution_metadata(&metadata, &mut index);
+            }
+
             let record_file = path.join("RECORD");
             if record_file.exists()
                 && let Ok(file) = std::fs::File::open(&record_file)
             {
                 let reader = BufReader::new(file);
-                let mut matches_import = false;
                 for line in reader.lines().map_while(Result::ok) {
-                    // RECORD entries are CSV; the first field is the path
                     let path_part = line.split(',').next().unwrap_or("");
-                    // Normalize separators to forward slash for matching
-                    let path_norm = path_part.cow_replace('\\', "/").into_owned();
-                    if path_norm == format!("{import_name}.py")
-                        || path_norm.starts_with(&format!("{import_name}/"))
-                        // Handle compiled extension modules (e.g., ujson.cpython-312-darwin.so)
-                        || (path_norm.starts_with(&format!("{import_name}.")) && !path_norm.contains('/'))
-                    {
-                        matches_import = true;
-                        break;
-                    }
-                }
-                if matches_import {
-                    // Found the right dist-info, now extract package name from METADATA
-                    let metadata_file = path.join("METADATA");
-                    if metadata_file.exists()
-                        && let Ok(metadata) = std::fs::read_to_string(&metadata_file)
-                    {
-                        for line in metadata.lines() {
-                            if let Some(name) = line.strip_prefix("Name: ") {
-                                let normalized = Self::normalize_package_name(name.trim());
-                                return Some(normalized);
-                            }
-                        }
-                    }
+                    Self::index_record_path(path_part, &mut index);
                 }
             }
         }
 
-        None
+        index
+    }
+
+    /// Add Core Metadata import declarations to an ownership index.
+    fn index_distribution_metadata(metadata: &str, index: &mut DistributionOwnershipIndex) {
+        for line in metadata.lines() {
+            let Some((header, value)) = line.split_once(':') else {
+                continue;
+            };
+            if !header.eq_ignore_ascii_case("Import-Name")
+                && !header.eq_ignore_ascii_case("Import-Namespace")
+            {
+                continue;
+            }
+            let prefix = value.split(';').next().unwrap_or("").trim();
+            if !prefix.is_empty() {
+                index.declared_prefixes.insert(prefix.to_owned());
+            }
+        }
+    }
+
+    /// Add import paths implied by one installed distribution `RECORD` entry.
+    fn index_record_path(record_path: &str, index: &mut DistributionOwnershipIndex) {
+        let normalized = record_path.cow_replace('\\', "/");
+        if normalized.starts_with('/')
+            || normalized
+                .as_bytes()
+                .get(1)
+                .is_some_and(|byte| *byte == b':')
+        {
+            return;
+        }
+
+        let mut components: Vec<&str> = normalized.split('/').collect();
+        if components.is_empty()
+            || components
+                .iter()
+                .any(|component| component.is_empty() || matches!(*component, "." | ".."))
+        {
+            return;
+        }
+        let file_name = components
+            .pop()
+            .expect("non-empty record path should contain a file name");
+        let mut import_parts = Vec::new();
+        for directory in components {
+            import_parts.push(directory);
+            index.record_imports.insert(import_parts.join("."));
+        }
+
+        if let Some((module_name, _)) = file_name.split_once('.')
+            && !module_name.is_empty()
+        {
+            import_parts.push(module_name);
+            index.record_imports.insert(import_parts.join("."));
+        }
     }
 
     /// Resolves a relative import to an absolute module name.
@@ -1905,13 +1948,11 @@ mod tests {
         let py38_classification = py38_resolver.classify_import("zoneinfo");
 
         assert_ne!(py38_classification.origin, ImportOrigin::StandardLibrary);
-        assert_eq!(py38_classification.requirement.as_deref(), Some("zoneinfo"));
 
         let py310_resolver = ModuleResolver::new(Config::default())?;
         let py310_classification = py310_resolver.classify_import("zoneinfo");
 
         assert_eq!(py310_classification.origin, ImportOrigin::StandardLibrary);
-        assert_eq!(py310_classification.requirement, None);
 
         Ok(())
     }
@@ -1952,31 +1993,53 @@ mod tests {
         assert_eq!(package.origin, ImportOrigin::ThirdParty);
         assert_eq!(package.source, ImportSource::Python);
         assert_eq!(package.bundle, BundleDisposition::Include);
-        assert_eq!(package.requirement.as_deref(), Some("mixed-package"));
 
         let source_submodule = resolver.classify_import("mixed_package.core");
         assert_eq!(source_submodule.origin, ImportOrigin::ThirdParty);
         assert_eq!(source_submodule.source, ImportSource::Python);
         assert_eq!(source_submodule.bundle, BundleDisposition::Include);
-        assert_eq!(
-            source_submodule.requirement.as_deref(),
-            Some("mixed-package")
-        );
 
         let native_submodule = resolver.classify_import("mixed_package._native");
         assert_eq!(native_submodule.origin, ImportOrigin::ThirdParty);
         assert_eq!(native_submodule.source, ImportSource::NativeExtension);
         assert_eq!(native_submodule.bundle, BundleDisposition::External);
-        assert_eq!(
-            native_submodule.requirement.as_deref(),
-            Some("mixed-package")
-        );
         assert!(
             resolver
                 .resolve_module_path("mixed_package._native")?
                 .is_none(),
             "native extensions must not be sent to the Python parser"
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_distribution_metadata_import_headers_are_case_insensitive() {
+        let metadata = "\
+Metadata-Version: 2.5
+import-name: lower_case.module
+IMPORT-NAMESPACE: UPPER_CASE
+";
+
+        let mut index = DistributionOwnershipIndex::default();
+        ModuleResolver::index_distribution_metadata(metadata, &mut index);
+
+        assert!(index.owns_import("lower_case.module.child"));
+        assert!(index.owns_import("UPPER_CASE.child"));
+        assert!(!index.owns_import("unrelated"));
+    }
+
+    #[test]
+    fn test_distribution_ownership_is_cached_by_search_root() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let site_packages = temp_dir.path().join("site-packages");
+        create_mixed_distribution(&site_packages)?;
+        let resolver = ModuleResolver::new(Config::default())?;
+
+        assert!(resolver.distribution_owns_import(&site_packages, "mixed_package.core"));
+        fs::remove_dir_all(site_packages.join("mixed_package-1.0.dist-info"))?;
+        assert!(resolver.distribution_owns_import(&site_packages, "mixed_package._native"));
+        assert_eq!(resolver.distribution_ownership_cache.borrow().len(), 1);
 
         Ok(())
     }
@@ -2027,7 +2090,6 @@ mod tests {
         assert_eq!(classification.origin, ImportOrigin::ThirdParty);
         assert_eq!(classification.source, ImportSource::Python);
         assert_eq!(classification.bundle, BundleDisposition::External);
-        assert_eq!(classification.requirement.as_deref(), Some("mixed-package"));
 
         Ok(())
     }

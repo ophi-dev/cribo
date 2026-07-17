@@ -4,16 +4,14 @@ This document describes how Cribo resolves Python imports during the bundling pr
 
 ## Overview
 
-Cribo records four independent facts for each import:
+Cribo records three independent module-resolution facts for each import:
 
 - **Origin**: First-party, third-party distribution, standard library, or unknown
 - **Source kind**: Python source, namespace package, native extension, or unresolved
 - **Bundle disposition**: Included in the bundle or preserved as an external import
-- **Requirement**: The normalized distribution name to emit, when one is needed
 
-Keeping these facts separate allows a pure-Python module from an installed distribution to be
-bundled while retaining its requirement, and a native module from the same distribution to remain
-external.
+Requirement generation is a separate step that maps runtime imports to installed distributions.
+This keeps bundling policy independent from distribution-name inference.
 
 ## Resolution Process
 
@@ -147,8 +145,12 @@ After locating a module, Cribo derives each classification fact independently:
      reports the missing source.
 
 4. **Requirement**
-   - Third-party distribution metadata supplies the normalized package name.
-   - Unknown external imports use their top-level import name as a fallback.
+   - Explicit `requirements.module-map` entries use longest-prefix matching.
+   - Core Metadata 2.5 `Import-Name` and `Import-Namespace` fields take precedence.
+   - Installed Python and native files provide compatibility evidence for older distributions.
+   - Multiple equally strong providers produce an actionable ambiguity error.
+   - Unknown external imports use a valid top-level import name as a fallback.
+   - Imports without a valid fallback requirement name are skipped with a warning.
    - First-party and standard-library imports do not produce requirements.
 
 ## Configuration
@@ -176,12 +178,17 @@ Explicitly classify modules:
 # cribo.toml
 known_first_party = ["mycompany", "internal_lib"]
 known_third_party = ["requests", "numpy"]
+
+[requirements]
+python = ".venv/bin/python"
+module-map = { sklearn = "scikit-learn" }
 ```
 
 ### Environment Variables
 
 - `PYTHONPATH`: Additional directories to search for first-party modules
 - `CRIBO_SRC`: Override source directories (comma-separated)
+- `CRIBO_PYTHON`: Interpreter used to inspect installed distribution metadata
 
 ## Examples
 
