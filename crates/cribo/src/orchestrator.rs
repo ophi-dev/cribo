@@ -690,7 +690,7 @@ impl BundleOrchestrator {
             return Ok(crate::python::constants::INIT_STEM.to_owned());
         }
 
-        // Special case: If the entry is __main__.py in a package, use the package name
+        // Special case: If the entry is __main__.py in a package, preserve the module suffix
         let file_name = entry_path.file_name().and_then(|f| f.to_str());
         log::debug!("Entry file name: {file_name:?}");
         if file_name.is_some_and(crate::python::module_path::is_main_file_name) {
@@ -698,12 +698,14 @@ impl BundleOrchestrator {
             if let Some(parent) = entry_path.parent()
                 && let Some(package_name) = self.find_module_in_src_dirs(parent)
             {
+                let module_name = format!("{package_name}.{}", crate::python::constants::MAIN_STEM);
                 log::debug!(
-                    "Entry is {} in package '{}', using package name as module name",
+                    "Entry is {} in package '{}', using '{}' as module name",
                     crate::python::constants::MAIN_FILE,
-                    package_name
+                    package_name,
+                    module_name
                 );
-                return Ok(package_name);
+                return Ok(module_name);
             }
             // Fall through to normal logic if we can't determine the package name
         }
@@ -1341,8 +1343,6 @@ impl BundleOrchestrator {
                 );
                 self.add_to_discovery_queue_if_new(parent_module, parent_path, params)?;
             }
-        } else {
-            // Parent is not first-party, processing stops here
         }
         Ok(())
     }

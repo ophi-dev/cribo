@@ -95,7 +95,7 @@ impl EntryModulePhase {
         Self::transform_entry_imports(bundler, &mut ast, symbol_renames, params.python_version);
 
         // Process statements with deduplication
-        let mut entry_statements = Vec::new();
+        let mut entry_statements = Self::initialize_package_for_main_entry(bundler, &module_name);
         Self::process_entry_statements(
             bundler,
             &ast,
@@ -119,6 +119,27 @@ impl EntryModulePhase {
             entry_symbols: entry_module_symbols,
             entry_renames: entry_module_renames,
         })
+    }
+
+    /// Initialize the containing package before executing a package's `__main__.py`.
+    fn initialize_package_for_main_entry(bundler: &Bundler<'_>, module_name: &str) -> Vec<Stmt> {
+        if bundler.resolver.get_module_kind(ModuleId::ENTRY)
+            != Some(crate::python::module_path::ModuleKind::Main)
+        {
+            return Vec::new();
+        }
+
+        let Some(package_name) =
+            module_name.strip_suffix(&format!(".{}", crate::python::constants::MAIN_STEM))
+        else {
+            return Vec::new();
+        };
+        let Some(package_id) = bundler.get_module_id(package_name) else {
+            return Vec::new();
+        };
+
+        log::debug!("Initializing entry package '{package_name}' before '{module_name}'");
+        bundler.create_module_initialization_for_import(package_id)
     }
 
     /// Reorder entry module statements for circular dependencies

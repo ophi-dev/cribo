@@ -154,6 +154,54 @@ print("Running from __main__.py")
 }
 
 #[test]
+fn test_explicit_package_main_entry_with_sibling_import() {
+    let temp_dir = TempDir::new().unwrap();
+    let package_dir = temp_dir.path().join("testpkg");
+    fs::create_dir_all(&package_dir).unwrap();
+
+    fs::write(
+        package_dir.join("__init__.py"),
+        r#"print("Initializing package")"#,
+    )
+    .unwrap();
+    fs::write(package_dir.join("sibling.py"), r#"VALUE = "from sibling""#).unwrap();
+    fs::write(
+        package_dir.join("__main__.py"),
+        r#"from .sibling import VALUE
+
+print(f"Running entry {VALUE}")
+"#,
+    )
+    .unwrap();
+
+    let output_path = temp_dir.path().join("bundled.py");
+    let entry_path = package_dir.join("__main__.py");
+
+    let (_, stderr, exit_code) = run_cribo(&[
+        "--entry",
+        entry_path.to_str().unwrap(),
+        "--output",
+        output_path.to_str().unwrap(),
+    ]);
+
+    assert_eq!(exit_code, 0, "Bundling failed: {stderr}");
+
+    let python_output = Command::new("python3")
+        .arg(&output_path)
+        .output()
+        .expect("Failed to execute Python");
+    let python_stdout = String::from_utf8_lossy(&python_output.stdout);
+    let bundled_content = fs::read_to_string(&output_path).unwrap();
+
+    assert!(python_output.status.success());
+    assert_eq!(
+        python_stdout.lines().collect::<Vec<_>>(),
+        ["Initializing package", "Running entry from sibling"],
+        "Generated bundle:\n{bundled_content}"
+    );
+}
+
+#[test]
 fn test_directory_entry_empty_dir_error() {
     let temp_dir = TempDir::new().unwrap();
     let empty_dir = temp_dir.path().join("empty");

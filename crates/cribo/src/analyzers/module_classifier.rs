@@ -21,7 +21,6 @@ pub(crate) struct ClassificationResult {
 /// Analyzes and classifies modules for bundling
 pub(crate) struct ModuleClassifier<'a> {
     resolver: &'a ModuleResolver,
-    entry_is_package_init_or_main: bool,
     modules_with_explicit_all: FxIndexSet<ModuleId>,
     namespace_imported_modules: FxIndexMap<ModuleId, FxIndexSet<ModuleId>>,
     circular_modules: FxIndexSet<ModuleId>,
@@ -31,29 +30,22 @@ impl<'a> ModuleClassifier<'a> {
     /// Create a new module classifier
     pub(crate) fn new(
         resolver: &'a ModuleResolver,
-        entry_is_package_init_or_main: bool,
         namespace_imported_modules: FxIndexMap<ModuleId, FxIndexSet<ModuleId>>,
         circular_modules: FxIndexSet<ModuleId>,
     ) -> Self {
         Self {
             resolver,
-            entry_is_package_init_or_main,
             modules_with_explicit_all: FxIndexSet::default(),
             namespace_imported_modules,
             circular_modules,
         }
     }
 
-    /// Get the entry package name when entry is a package __init__.py or __main__.py
-    /// Returns None if entry is not a package __init__.py or __main__.py
+    /// Get the entry package name when entry is a package `__init__.py`.
     fn entry_package_name(&self) -> Option<String> {
         let entry_module_name = self.resolver.get_module_name(ModuleId::ENTRY)?;
-        // Strip ".<init>" or ".<main>" suffix if present; bare "__init__"/"__main__" have no pkg.
         entry_module_name
             .strip_suffix(&format!(".{}", crate::python::constants::INIT_STEM))
-            .or_else(|| {
-                entry_module_name.strip_suffix(&format!(".{}", crate::python::constants::MAIN_STEM))
-            })
             .map(str::to_owned)
     }
 
@@ -87,7 +79,7 @@ impl<'a> ModuleClassifier<'a> {
 
             // Also skip if this is the entry package itself when entry is a package __init__.py
             // e.g., skip "yaml" when entry is "yaml.__init__"
-            if self.entry_is_package_init_or_main {
+            if self.resolver.is_package_init(ModuleId::ENTRY) {
                 if let Some(entry_pkg) = self.entry_package_name() {
                     if module_name == entry_pkg {
                         debug!(
