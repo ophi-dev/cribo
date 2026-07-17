@@ -80,34 +80,9 @@ def validate_6(data: _cribo.typing.Any) -> bool:
     elif isinstance(data, (int, float)):
         return data >= 0
     return True
-class Connection_5:
-    """Utility connection class - name conflict with database Connection"""
-
-    def __init__(self, connection_type: str="utility"):
-        self.connection_type = connection_type
-        self.active = False
-
-    def connect(self) -> str:
-        self.active = True
-        return f"Utility connection: {self.connection_type}"
-Connection_5.__module__ = 'core.utils.helpers'
-Connection_5.__name__ = 'Connection'
-Connection_5.__qualname__ = 'Connection'
-def connect_4() -> Connection_5:
-    """Utility connect function"""
-    return Connection_5("helper")
-def process_with_conflicts(data: _cribo.typing.Any, User: str="param_user", result: int=100, Logger: _cribo.typing.Any=None) -> _cribo.typing.Dict[str, _cribo.typing.Any]:
-    """Function with parameter names that conflict with globals and imports"""
-    connection = connect_4()
-    validate_result = validate_6(data)
-    local_result = {"data": data, "user_param": User_4, "result_param": result_6, "logger_param": Logger_4, "validation": validate_result, "connection_type": connection.connection_type}
-    return local_result
-core_utils_helpers.Connection = Connection_5
 core_utils_helpers.Logger = Logger_4
 core_utils_helpers.User = User_4
-core_utils_helpers.connect = connect_4
 core_utils_helpers.process = process_6
-core_utils_helpers.process_with_conflicts = process_with_conflicts
 core_utils_helpers.result = result_6
 core_utils_helpers.validate = validate_6
 def _cribo_init___cribo_62c387_core(self):
@@ -241,57 +216,11 @@ def process_user(data: _cribo.typing.Any) -> str:
         processed = "model_user_invalid_data"
     result_3["last_process"] = processed
     return processed
-def validate_4(user_data: _cribo.typing.Dict[str, _cribo.typing.Any]) -> bool:
-    """Module validate function - conflicts with other validates"""
-    required_fields = ["name"]
-    return all(field in user_data for field in required_fields)
-def process_4(data: _cribo.typing.Any) -> str:
-    """Module process function - major conflict"""
-    if isinstance(data, dict):
-        return process_user(data)
-    else:
-        return f"model_process_generic: {data}"
-class Connection_2:
-    """Model connection class - conflicts with other Connection classes"""
-
-    def __init__(self, User: "User"):
-        self.User = User_2
-        self.connected = False
-
-    def connect(self) -> str:
-        self.connected = True
-        return f"Model connection for user: {self.User.name}"
-
-    def process(self, action: str) -> str:
-        """Method with conflicted name"""
-        return f"connection_process: {action} for {self.User.name}"
-Connection_2.__module__ = 'models.user'
-Connection_2.__name__ = 'Connection'
-Connection_2.__qualname__ = 'Connection'
-def connect_2(User: "User") -> Connection_2:
-    """Module connect function with parameter conflicts"""
-    return Connection_2(User_2)
-def complex_operation(User: _cribo.typing.Any=None, Logger: _cribo.typing.Any=None, process: _cribo.typing.Any=None, validate: _cribo.typing.Any=None, result: _cribo.typing.Any=None, connection: _cribo.typing.Any=None) -> _cribo.typing.Dict[str, _cribo.typing.Any]:
-    """Function with all parameter names conflicting with globals/classes"""
-    operation_result = {"user_param": User_2, "logger_param": Logger_2, "process_param": process_4, "validate_param": validate_4, "result_param": result_3, "connection_param": connection_3}
-    User_2 = globals()["User"]
-    Logger_2 = globals()["Logger"]
-    if operation_result["user_param"]:
-        user = User_2("complex_user")
-        logger = Logger_2("complex_operation")
-        operation_result["created_user"] = user.name
-        operation_result["created_logger"] = logger.context
-    return operation_result
-models_user.Connection = Connection_2
 models_user.Logger = Logger_2
 models_user.User = User_2
-models_user.complex_operation = complex_operation
-models_user.connect = connect_2
 models_user.connection = connection_3
-models_user.process = process_4
 models_user.process_user = process_user
 models_user.result = result_3
-models_user.validate = validate_4
 models_base = _cribo.types.SimpleNamespace(__name__='models.base', __initializing__=False, __initialized__=False)
 models.base = models_base
 def _cribo_init___cribo_98ecc1_models(self):
@@ -484,23 +413,10 @@ def process_7(data):
     processed = {"db_process": True, "data": validated, "user_processing": user_result, "timestamp": "2024-01-01"}
     result_8.append(processed)
     return f"db_processed: {data}"
-def validate_7(data):
-    """Database validate function - another conflict"""
-    if not data:
-        return False
-    return f"db_valid: {data}"
-def connect_5():
-    """Module-level connect function"""
-    global connection_5
-    if connection_5 is None:
-        connection_5 = Connection_6()
-    return connection_5.connect()
 core_database_connection.Connection = Connection_6
-core_database_connection.connect = connect_5
 core_database_connection.connection = connection_5
 core_database_connection.process = process_7
 core_database_connection.result = result_8
-core_database_connection.validate = validate_7
 services_auth_manager = _cribo.types.SimpleNamespace(__name__='services.auth.manager', __initializing__=False, __initialized__=False)
 _cribo_services_auth_manager_result = None
 def _cribo_init___cribo_ee1d45_services_auth_manager(self):

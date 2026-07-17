@@ -242,6 +242,14 @@ pub(super) fn trim_unused_imports_from_modules(
                     module_name
                 );
                 for (item_id, import_item) in import_items {
+                    if import_item.containing_scope.is_some() {
+                        log::debug!(
+                            "Leaving scoped import {:?} to local unused-import analysis",
+                            import_item.containing_scope
+                        );
+                        continue;
+                    }
+
                     match &import_item.item_type {
                         crate::dependency_graph::ItemType::FromImport {
                             module: from_module,
@@ -618,12 +626,14 @@ fn is_import_used_by_side_effect_code(
     }
 
     module_dep_graph.items.values().any(|item| {
-        matches!(
-            item.item_type,
-            crate::dependency_graph::ItemType::Expression
-                | crate::dependency_graph::ItemType::Assignment { .. }
-                | crate::dependency_graph::ItemType::Other
-        ) && (item.read_vars.contains(local_name) || item.eventual_read_vars.contains(local_name))
+        item.executes_at_module_import()
+            && matches!(
+                item.item_type,
+                crate::dependency_graph::ItemType::Expression
+                    | crate::dependency_graph::ItemType::Assignment { .. }
+                    | crate::dependency_graph::ItemType::Other
+            )
+            && (item.read_vars.contains(local_name) || item.eventual_read_vars.contains(local_name))
     })
 }
 
@@ -633,7 +643,8 @@ fn is_module_import_used_by_side_effects(
     import_name: &str,
 ) -> bool {
     module_dep_graph.items.values().any(|item| {
-        item.has_side_effects
+        item.executes_at_module_import()
+            && item.has_side_effects
             && !matches!(
                 item.item_type,
                 crate::dependency_graph::ItemType::Import { .. }
