@@ -21,6 +21,7 @@ from wrapped_matcher import (
     match_capture,
     match_global_capture,
     match_import_capture,
+    match_import_capture_scope,
     match_wrapped,
     match_wrapped_global,
     value as module_value,
@@ -44,5 +45,6 @@ print(MODULE_MATCH)
 print(match_capture(["captured-value"]))
 print(module_value)
 print(match_import_capture(["captured-import"]))
+print(match_import_capture_scope(["captured-scope"]))
 print(match_global_capture(["captured-global"]))
 print(get_global_capture())

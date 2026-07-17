@@ -1,5 +1,7 @@
 import json
 
+assert json.__name__ == "json"
+
 
 class WrappedStatus:
     READY = "wrapped-ready"
@@ -56,6 +58,18 @@ def match_import_capture(subject):
         case [json]:
             return json
     return "import-capture-miss"
+
+
+def match_import_capture_scope(subject):
+    try:
+        match subject:
+            case json.JSONEncoder():
+                return "import-module-match"
+            case [json]:
+                return json
+    except UnboundLocalError:
+        return "capture-scope-local"
+    return "import-scope-miss"
 
 
 global_capture = "global-before"

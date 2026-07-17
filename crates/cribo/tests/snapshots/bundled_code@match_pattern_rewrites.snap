@@ -132,7 +132,7 @@ wrapped_matcher = _cribo.types.SimpleNamespace(__name__='wrapped_matcher', __ini
 _cribo_wrapped_matcher_EVENT_PATTERN = None
 _cribo_wrapped_matcher_STATUS_PATTERN = None
 _cribo_wrapped_matcher_global_capture = None
-def _cribo_init___cribo_a56bce_wrapped_matcher(self):
+def _cribo_init___cribo_52189b_wrapped_matcher(self):
     if getattr(self, '__initialized__', False):
         return self
     if getattr(self, '__initializing__', False):
@@ -142,6 +142,7 @@ def _cribo_init___cribo_a56bce_wrapped_matcher(self):
     json = _cribo.json
     self.json = json
     self.json = json
+    assert _cribo.json.__name__ == "json"
 
     class WrappedStatus:
         READY = "wrapped-ready"
@@ -204,6 +205,18 @@ def _cribo_init___cribo_a56bce_wrapped_matcher(self):
                 return json
         return "import-capture-miss"
     self.match_import_capture = match_import_capture
+
+    def match_import_capture_scope(subject):
+        try:
+            match subject:
+                case json.JSONEncoder():
+                    return "import-module-match"
+                case [json]:
+                    return json
+        except UnboundLocalError:
+            return "capture-scope-local"
+        return "import-scope-miss"
+    self.match_import_capture_scope = match_import_capture_scope
     global_capture = "global-before"
     _cribo_wrapped_matcher_global_capture = global_capture
     self.global_capture = _cribo_wrapped_matcher_global_capture
@@ -226,7 +239,7 @@ def _cribo_init___cribo_a56bce_wrapped_matcher(self):
     self.__initialized__ = True
     self.__initializing__ = False
     return self
-wrapped_matcher.__init__ = _cribo_init___cribo_a56bce_wrapped_matcher
+wrapped_matcher.__init__ = _cribo_init___cribo_52189b_wrapped_matcher
 FirstEvent = inline_first.Event
 get_first_result = inline_first.get_last_result
 match_first_class = inline_first.match_class
@@ -239,13 +252,14 @@ match_second_class = inline_second.match_class
 match_second_mapping = inline_second.match_mapping
 match_second_sequence = inline_second.match_sequence
 record_second_result = inline_second.record_result
-wrapped_matcher = _cribo_init___cribo_a56bce_wrapped_matcher(wrapped_matcher)
+wrapped_matcher = _cribo_init___cribo_52189b_wrapped_matcher(wrapped_matcher)
 MODULE_MATCH = wrapped_matcher.MODULE_MATCH
 WrappedEvent = wrapped_matcher.WrappedEvent
 get_global_capture = wrapped_matcher.get_global_capture
 match_capture = wrapped_matcher.match_capture
 match_global_capture = wrapped_matcher.match_global_capture
 match_import_capture = wrapped_matcher.match_import_capture
+match_import_capture_scope = wrapped_matcher.match_import_capture_scope
 match_wrapped = wrapped_matcher.match_wrapped
 match_wrapped_global = wrapped_matcher.match_wrapped_global
 module_value = wrapped_matcher.value
@@ -265,5 +279,6 @@ print(MODULE_MATCH)
 print(match_capture(["captured-value"]))
 print(module_value)
 print(match_import_capture(["captured-import"]))
+print(match_import_capture_scope(["captured-scope"]))
 print(match_global_capture(["captured-global"]))
 print(get_global_capture())

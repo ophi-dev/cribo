@@ -4,6 +4,6 @@ input_file: crates/cribo/tests/fixtures/match_pattern_rewrites/main.py
 ---
 ExecutionResults {
     status: Success,
-    stdout: "first-class\nfirst-mapping\nfirst-sequence:first-pending\nfirst-recorded\nsecond-class\nsecond-mapping\nsecond-sequence:second-pending\nsecond-recorded\nwrapped-class\nwrapped-global\nwrapped-module\ncaptured-value\nmodule-value\ncaptured-import\ncaptured-global\ncaptured-global",
+    stdout: "first-class\nfirst-mapping\nfirst-sequence:first-pending\nfirst-recorded\nsecond-class\nsecond-mapping\nsecond-sequence:second-pending\nsecond-recorded\nwrapped-class\nwrapped-global\nwrapped-module\ncaptured-value\nmodule-value\ncaptured-import\ncapture-scope-local\ncaptured-global\ncaptured-global",
     stderr: "",
 }
