@@ -131,13 +131,17 @@ inline_second.record_result = record_result_1
 wrapped_matcher = _cribo.types.SimpleNamespace(__name__='wrapped_matcher', __initializing__=False, __initialized__=False)
 _cribo_wrapped_matcher_EVENT_PATTERN = None
 _cribo_wrapped_matcher_STATUS_PATTERN = None
-def _cribo_init___cribo_a0cda3_wrapped_matcher(self):
+_cribo_wrapped_matcher_global_capture = None
+def _cribo_init___cribo_a56bce_wrapped_matcher(self):
     if getattr(self, '__initialized__', False):
         return self
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
-    global _cribo_wrapped_matcher_EVENT_PATTERN, _cribo_wrapped_matcher_STATUS_PATTERN
+    global _cribo_wrapped_matcher_EVENT_PATTERN, _cribo_wrapped_matcher_STATUS_PATTERN, _cribo_wrapped_matcher_global_capture
+    json = _cribo.json
+    self.json = json
+    self.json = json
 
     class WrappedStatus:
         READY = "wrapped-ready"
@@ -185,22 +189,44 @@ def _cribo_init___cribo_a0cda3_wrapped_matcher(self):
     self.match_wrapped_global = match_wrapped_global
     value = "module-value"
     self.value = value
-    if True:
+    if self.value:
 
         def match_capture(subject):
             match subject:
                 case [value] if (value == "captured-value"):
                     return value
-                case _:
-                    return "capture-miss"
+            return "capture-miss"
         wrapped_matcher.match_capture = match_capture
+
+    def match_import_capture(subject):
+        match subject:
+            case [json]:
+                return json
+        return "import-capture-miss"
+    self.match_import_capture = match_import_capture
+    global_capture = "global-before"
+    _cribo_wrapped_matcher_global_capture = global_capture
+    self.global_capture = _cribo_wrapped_matcher_global_capture
+
+    def match_global_capture(subject):
+        if subject is None:
+            global _cribo_wrapped_matcher_global_capture
+        match subject:
+            case [_cribo_wrapped_matcher_global_capture] if ((_cribo.builtins.setattr(wrapped_matcher, 'global_capture', _cribo_wrapped_matcher_global_capture),), _cribo.builtins.bool(_cribo_wrapped_matcher_global_capture == "captured-global"))[1]:
+                return _cribo_wrapped_matcher_global_capture
+        return "global-capture-miss"
+    self.match_global_capture = match_global_capture
+
+    def get_global_capture():
+        return self.global_capture
+    self.get_global_capture = get_global_capture
     LOADED_MODULES = []
     self.LOADED_MODULES = LOADED_MODULES
     self.LOADED_MODULES.append("wrapped_matcher")
     self.__initialized__ = True
     self.__initializing__ = False
     return self
-wrapped_matcher.__init__ = _cribo_init___cribo_a0cda3_wrapped_matcher
+wrapped_matcher.__init__ = _cribo_init___cribo_a56bce_wrapped_matcher
 FirstEvent = inline_first.Event
 get_first_result = inline_first.get_last_result
 match_first_class = inline_first.match_class
@@ -213,10 +239,13 @@ match_second_class = inline_second.match_class
 match_second_mapping = inline_second.match_mapping
 match_second_sequence = inline_second.match_sequence
 record_second_result = inline_second.record_result
-wrapped_matcher = _cribo_init___cribo_a0cda3_wrapped_matcher(wrapped_matcher)
+wrapped_matcher = _cribo_init___cribo_a56bce_wrapped_matcher(wrapped_matcher)
 MODULE_MATCH = wrapped_matcher.MODULE_MATCH
 WrappedEvent = wrapped_matcher.WrappedEvent
+get_global_capture = wrapped_matcher.get_global_capture
 match_capture = wrapped_matcher.match_capture
+match_global_capture = wrapped_matcher.match_global_capture
+match_import_capture = wrapped_matcher.match_import_capture
 match_wrapped = wrapped_matcher.match_wrapped
 match_wrapped_global = wrapped_matcher.match_wrapped_global
 module_value = wrapped_matcher.value
@@ -235,3 +264,6 @@ print(match_wrapped_global(WrappedEvent("wrapped-ready")))
 print(MODULE_MATCH)
 print(match_capture(["captured-value"]))
 print(module_value)
+print(match_import_capture(["captured-import"]))
+print(match_global_capture(["captured-global"]))
+print(get_global_capture())

@@ -199,6 +199,10 @@ impl StatementsHandler {
     ) {
         t.transform_expr(&mut s.subject);
         for case in &mut s.cases {
+            crate::visitors::patterns::visit_binding_names(&case.pattern, &mut |name| {
+                t.state.local_variables.insert(name.to_owned());
+                log::debug!("Tracking match case variable as local: {name}");
+            });
             crate::visitors::patterns::transform_runtime_exprs(&mut case.pattern, &mut |expr| {
                 t.transform_expr(expr);
             });

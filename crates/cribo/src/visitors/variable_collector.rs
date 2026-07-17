@@ -16,6 +16,12 @@ use crate::{
     types::FxIndexSet,
 };
 
+/// Names declared for the entire current function scope.
+pub(crate) struct FunctionScopeDeclarations {
+    pub(crate) globals: FxIndexSet<String>,
+    pub(crate) nonlocals: FxIndexSet<String>,
+}
+
 /// Variable collection visitor
 pub(crate) struct VariableCollector {
     /// Collected data
@@ -119,17 +125,40 @@ impl VariableCollector {
         self.in_assignment_target = prev_in_assignment;
     }
 
-    /// Collect global declarations from a function body (static helper)
-    pub(crate) fn collect_function_globals(body: &[Stmt]) -> FxIndexSet<String> {
-        let mut function_globals = FxIndexSet::default();
-        for stmt in body {
-            if let Stmt::Global(global_stmt) = stmt {
-                for name in &global_stmt.names {
-                    function_globals.insert(name.to_string());
+    /// Collect declarations that apply to the current function, including those nested in
+    /// compound statements while excluding nested function and class scopes.
+    pub(crate) fn collect_function_scope_declarations(body: &[Stmt]) -> FunctionScopeDeclarations {
+        struct DeclarationCollector {
+            declarations: FunctionScopeDeclarations,
+        }
+
+        impl<'a> Visitor<'a> for DeclarationCollector {
+            fn visit_stmt(&mut self, stmt: &'a Stmt) {
+                match stmt {
+                    Stmt::Global(global_stmt) => {
+                        for name in &global_stmt.names {
+                            self.declarations.globals.insert(name.to_string());
+                        }
+                    }
+                    Stmt::Nonlocal(nonlocal_stmt) => {
+                        for name in &nonlocal_stmt.names {
+                            self.declarations.nonlocals.insert(name.to_string());
+                        }
+                    }
+                    Stmt::FunctionDef(_) | Stmt::ClassDef(_) => {}
+                    _ => walk_stmt(self, stmt),
                 }
             }
         }
-        function_globals
+
+        let mut collector = DeclarationCollector {
+            declarations: FunctionScopeDeclarations {
+                globals: FxIndexSet::default(),
+                nonlocals: FxIndexSet::default(),
+            },
+        };
+        collector.visit_body(body);
+        collector.declarations
     }
 
     /// Check if a statement references a specific variable
@@ -435,21 +464,37 @@ del x
     }
 
     #[test]
-    fn test_static_collect_function_globals() {
+    fn test_collect_function_scope_declarations() {
         let code = r"
-def foo():
-    global x, y
-    x = 1
+def outer():
+    z = 0
+    def foo():
+        if condition:
+            global x, y
+            nonlocal z
+        def nested():
+            global nested_global
+        class Nested:
+            global class_global
+        x = 1
 ";
         let parsed = parse_module(code).expect("Test code should parse successfully");
         let module = parsed.into_syntax();
 
-        if let Stmt::FunctionDef(func) = &module.body[0] {
-            let globals = VariableCollector::collect_function_globals(&func.body);
-            assert_eq!(globals.len(), 2);
-            assert!(globals.contains("x"));
-            assert!(globals.contains("y"));
-        }
+        let Stmt::FunctionDef(outer) = &module.body[0] else {
+            panic!("Expected outer function");
+        };
+        let Stmt::FunctionDef(func) = &outer.body[1] else {
+            panic!("Expected nested function");
+        };
+        let declarations = VariableCollector::collect_function_scope_declarations(&func.body);
+        assert_eq!(declarations.globals.len(), 2);
+        assert!(declarations.globals.contains("x"));
+        assert!(declarations.globals.contains("y"));
+        assert!(!declarations.globals.contains("nested_global"));
+        assert!(!declarations.globals.contains("class_global"));
+        assert_eq!(declarations.nonlocals.len(), 1);
+        assert!(declarations.nonlocals.contains("z"));
     }
 
     #[test]

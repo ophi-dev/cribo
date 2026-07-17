@@ -1,3 +1,6 @@
+import json
+
+
 class WrappedStatus:
     READY = "wrapped-ready"
 
@@ -39,14 +42,37 @@ def match_wrapped_global(value):
 
 
 value = "module-value"
-if True:
+if value:
 
     def match_capture(subject):
         match subject:
             case [value] if value == "captured-value":
                 return value
-            case _:
-                return "capture-miss"
+        return "capture-miss"
+
+
+def match_import_capture(subject):
+    match subject:
+        case [json]:
+            return json
+    return "import-capture-miss"
+
+
+global_capture = "global-before"
+
+
+def match_global_capture(subject):
+    if subject is None:
+        global global_capture
+
+    match subject:
+        case [global_capture] if global_capture == "captured-global":
+            return global_capture
+    return "global-capture-miss"
+
+
+def get_global_capture():
+    return global_capture
 
 
 LOADED_MODULES = []

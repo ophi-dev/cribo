@@ -17,6 +17,7 @@ use ruff_text_size::TextRange;
 use crate::{
     symbol_conflict_resolver::ModuleGlobalInfo,
     types::{FxIndexMap, FxIndexSet},
+    visitors::VariableCollector,
 };
 
 /// Visitor that analyzes a module for global variable usage patterns
@@ -143,16 +144,9 @@ impl<'a> SourceOrderVisitor<'a> for GlobalAnalyzer {
         // Clean up when exiting scope-creating nodes
         match node {
             AnyNodeRef::StmtFunctionDef(func_def) => {
-                // Check if this function had any global declarations
-                let mut has_globals = false;
-                for body_stmt in &func_def.body {
-                    if matches!(body_stmt, Stmt::Global(_)) {
-                        has_globals = true;
-                        break;
-                    }
-                }
-
-                if has_globals {
+                let declarations =
+                    VariableCollector::collect_function_scope_declarations(&func_def.body);
+                if !declarations.globals.is_empty() {
                     // Use the full function path for nested functions
                     let function_name = self.function_stack.join(".");
                     self.functions_using_globals.insert(function_name);
@@ -268,7 +262,8 @@ def foo():
 x = 1
 
 def foo():
-    global x
+    if condition:
+        global x
     x = 2
     
 def bar():

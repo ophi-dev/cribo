@@ -366,6 +366,69 @@ impl Bundler<'_> {
         )
     }
 
+    /// Synchronize lifted pattern captures with their generated module namespace.
+    fn lifted_global_attr_assignments(
+        module_name: &str,
+        captures: &FxIndexMap<String, String>,
+    ) -> Vec<Stmt> {
+        let module_var = sanitize_module_name_for_identifier(module_name);
+        captures
+            .iter()
+            .map(|(original, lifted)| {
+                statements::assign(
+                    vec![expressions::attribute(
+                        expressions::name(&module_var, ExprContext::Load),
+                        original,
+                        ExprContext::Store,
+                    )],
+                    expressions::name(lifted, ExprContext::Load),
+                )
+            })
+            .collect()
+    }
+
+    /// Synchronize lifted pattern captures before truth-testing a guard.
+    fn lifted_global_attr_guard(
+        module_name: &str,
+        captures: &FxIndexMap<String, String>,
+        guard: Expr,
+    ) -> Expr {
+        if captures.is_empty() {
+            return guard;
+        }
+
+        let module_var = sanitize_module_name_for_identifier(module_name);
+        let sync_calls = expressions::tuple(
+            captures
+                .iter()
+                .map(|(original, lifted)| {
+                    expressions::call(
+                        expressions::dotted_name(
+                            &["_cribo", "builtins", "setattr"],
+                            ExprContext::Load,
+                        ),
+                        vec![
+                            expressions::name(&module_var, ExprContext::Load),
+                            expressions::string_literal(original),
+                            expressions::name(lifted, ExprContext::Load),
+                        ],
+                        vec![],
+                    )
+                })
+                .collect(),
+        );
+        let evaluated_guard = expressions::call(
+            expressions::dotted_name(&["_cribo", "builtins", "bool"], ExprContext::Load),
+            vec![guard],
+            vec![],
+        );
+        expressions::subscript(
+            expressions::tuple(vec![sync_calls, evaluated_guard]),
+            expressions::integer_literal(1),
+            ExprContext::Load,
+        )
+    }
+
     /// Synchronize assignment expressions in the immediately evaluated portions of a statement.
     ///
     /// Compound-statement bodies are processed recursively, while function and lambda bodies are
@@ -1333,36 +1396,21 @@ impl Bundler<'_> {
                 .collect()
         });
 
-        for stmt in &func_def.body {
-            if let Stmt::Global(global_stmt) = stmt {
-                for name in &global_stmt.names {
-                    let var_name = name.to_string();
-
-                    // The global statement might have already been rewritten to use lifted names
-                    // (e.g., "_cribo_httpx__transports_default_HTTPCORE_EXC_MAP")
-                    // We need to check both the lifted name AND the original name
-
-                    // First check if this is directly a global declaration
-                    if global_declarations.contains_key(&var_name) {
-                        global_vars.insert(var_name.clone());
-                    }
-
-                    // Also check if this is a lifted name via reverse lookup
-                    if let Some(rev) = &lifted_to_original
-                        && let Some(original_name) = rev.get(var_name.as_str())
-                    {
-                        // Exclude both original and lifted names from transformation
-                        global_vars.insert(original_name.clone());
-                        global_vars.insert(var_name.clone());
-                    }
-                }
-            } else if let Stmt::Nonlocal(nonlocal_stmt) = stmt {
-                // Nonlocals are not module-level; exclude them from module attribute rewrites
-                for name in &nonlocal_stmt.names {
-                    global_vars.insert(name.to_string());
-                }
+        let declarations =
+            crate::visitors::VariableCollector::collect_function_scope_declarations(&func_def.body);
+        for var_name in declarations.globals {
+            // The declaration might have already been rewritten to use a lifted name.
+            if global_declarations.contains_key(&var_name) {
+                global_vars.insert(var_name.clone());
+            }
+            if let Some(rev) = &lifted_to_original
+                && let Some(original_name) = rev.get(var_name.as_str())
+            {
+                global_vars.insert(original_name.clone());
+                global_vars.insert(var_name);
             }
         }
+        global_vars.extend(declarations.nonlocals);
 
         // Now transform the function, but skip variables that are declared as global
         // Create a modified set of module_level_vars that excludes the global vars
@@ -1386,15 +1434,10 @@ impl Bundler<'_> {
         module_level_vars: &FxIndexSet<String>,
         module_var_name: &str,
     ) {
-        // First, collect all global declarations in this function
-        let mut global_vars = FxIndexSet::default();
-        for stmt in &func_def.body {
-            if let Stmt::Global(global_stmt) = stmt {
-                for name in &global_stmt.names {
-                    global_vars.insert(name.to_string());
-                }
-            }
-        }
+        let declarations =
+            crate::visitors::VariableCollector::collect_function_scope_declarations(&func_def.body);
+        let mut global_vars = declarations.globals;
+        global_vars.extend(declarations.nonlocals);
 
         // Collect local variables defined in this function
         let mut local_vars = FxIndexSet::default();
@@ -2304,9 +2347,10 @@ impl Bundler<'_> {
                 {
                     // This function directly uses globals — rewrite its body
                     let function_globals =
-                        crate::visitors::VariableCollector::collect_function_globals(
+                        crate::visitors::VariableCollector::collect_function_scope_declarations(
                             &func_def.body,
-                        );
+                        )
+                        .globals;
                     let params = TransformFunctionParams {
                         lifted_names,
                         global_info,
@@ -2650,15 +2694,29 @@ impl Bundler<'_> {
                     current_function_globals,
                 );
                 for case in &mut match_stmt.cases {
-                    patterns::transform_runtime_exprs(&mut case.pattern, &mut |expr| {
-                        expression_handlers::transform_expr_for_lifted_globals(
-                            self,
-                            expr,
-                            lifted_names,
-                            global_info,
-                            current_function_globals,
-                        );
-                    });
+                    let mut captured_globals = FxIndexMap::default();
+                    patterns::transform_runtime_exprs_and_bindings(
+                        &mut case.pattern,
+                        &mut |expr| {
+                            expression_handlers::transform_expr_for_lifted_globals(
+                                self,
+                                expr,
+                                lifted_names,
+                                global_info,
+                                current_function_globals,
+                            );
+                        },
+                        &mut |name| {
+                            let original = name.as_str().to_owned();
+                            if current_function_globals
+                                .is_some_and(|globals| globals.contains(&original))
+                                && let Some(lifted) = lifted_names.get(&original)
+                            {
+                                captured_globals.insert(original, lifted.clone());
+                                *name = other::identifier(lifted);
+                            }
+                        },
+                    );
                     if let Some(guard) = &mut case.guard {
                         expression_handlers::transform_expr_for_lifted_globals(
                             self,
@@ -2667,6 +2725,13 @@ impl Bundler<'_> {
                             global_info,
                             current_function_globals,
                         );
+                        if let Some(module_name) = module_name {
+                            **guard = Self::lifted_global_attr_guard(
+                                module_name,
+                                &captured_globals,
+                                guard.as_ref().clone(),
+                            );
+                        }
                     }
                     for stmt in &mut case.body {
                         self.transform_stmt_for_lifted_globals(
@@ -2676,6 +2741,14 @@ impl Bundler<'_> {
                             current_function_globals,
                             module_name,
                         );
+                    }
+                    if case.guard.is_none()
+                        && let Some(module_name) = module_name
+                    {
+                        let mut body =
+                            Self::lifted_global_attr_assignments(module_name, &captured_globals);
+                        body.extend(std::mem::take(&mut case.body));
+                        case.body = body.into();
                     }
                 }
             }
