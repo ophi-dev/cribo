@@ -11,7 +11,7 @@ use ruff_python_ast::{
     },
 };
 
-use crate::types::FxIndexSet;
+use crate::{types::FxIndexSet, visitors::patterns};
 
 /// Visitor that collects local variable names at module level,
 /// excluding names declared as `global`, and treating `nonlocal` names as locals
@@ -113,6 +113,13 @@ impl<'a> SourceOrderVisitor<'a> for LocalVarCollector<'a> {
                     if let Some(ref optional_vars) = item.optional_vars {
                         self.collect_from_target(optional_vars);
                     }
+                }
+            }
+            Stmt::Match(match_stmt) => {
+                for case in &match_stmt.cases {
+                    patterns::visit_binding_names(&case.pattern, &mut |name| {
+                        self.insert_if_not_global(name);
+                    });
                 }
             }
             Stmt::Nonlocal(nonlocal_stmt) => {
@@ -251,6 +258,30 @@ with open('file') as f:
 
         assert!(local_vars.contains("f"));
         assert!(local_vars.contains("content"));
+    }
+
+    #[test]
+    fn test_match_pattern_bindings() {
+        let source = r#"
+match subject:
+    case {"kind": [first, *rest], **remaining}:
+        pass
+    case Item(second) as whole:
+        pass
+"#;
+        let module = parse_test_module(source);
+        let mut local_vars = FxIndexSet::default();
+        let mut global_vars = FxIndexSet::default();
+        global_vars.insert("whole".to_owned());
+
+        let mut collector = LocalVarCollector::new(&mut local_vars, &global_vars);
+        collector.collect_from_stmts(&module.body);
+
+        assert!(local_vars.contains("first"));
+        assert!(local_vars.contains("rest"));
+        assert!(local_vars.contains("remaining"));
+        assert!(local_vars.contains("second"));
+        assert!(!local_vars.contains("whole"));
     }
 
     #[test]

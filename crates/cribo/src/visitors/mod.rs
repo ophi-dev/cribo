@@ -6,6 +6,7 @@
 mod export_collector;
 mod import_discovery;
 mod local_var_collector;
+pub(crate) mod patterns;
 mod side_effect_detector;
 pub(crate) mod symbol_collector;
 mod symbol_usage_visitor;
