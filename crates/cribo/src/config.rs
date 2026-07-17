@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
-use indexmap::IndexSet;
+use indexmap::{IndexMap, IndexSet};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -38,6 +38,20 @@ pub struct Config {
 
     /// Whether to enable tree-shaking to remove unused code
     pub tree_shake: bool,
+
+    /// Configuration for mapping imports to installable requirements
+    pub requirements: RequirementsConfig,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RequirementsConfig {
+    /// Python interpreter whose environment supplies distribution metadata
+    pub python: Option<PathBuf>,
+
+    /// Explicit import-prefix to PEP 508 requirement mappings
+    #[serde(rename = "module-map")]
+    pub module_map: IndexMap<String, String>,
 }
 
 impl Default for Config {
@@ -50,6 +64,7 @@ impl Default for Config {
             preserve_type_hints: true,
             target_version: "py310".to_owned(),
             tree_shake: true, // Tree-shaking enabled by default
+            requirements: RequirementsConfig::default(),
         }
     }
 }
@@ -79,6 +94,14 @@ impl Combine for Config {
             preserve_type_hints: self.preserve_type_hints,
             target_version: self.target_version,
             tree_shake: self.tree_shake,
+            requirements: RequirementsConfig {
+                python: self.requirements.python.or(other.requirements.python),
+                module_map: if self.requirements.module_map.is_empty() {
+                    other.requirements.module_map
+                } else {
+                    self.requirements.module_map
+                },
+            },
         }
     }
 }
@@ -93,6 +116,7 @@ pub(crate) struct EnvConfig {
     pub preserve_type_hints: Option<bool>,
     pub target_version: Option<String>,
     pub tree_shake: Option<bool>,
+    pub python: Option<PathBuf>,
 }
 
 impl EnvConfig {
@@ -159,6 +183,10 @@ impl EnvConfig {
             config.tree_shake = parse_bool(&tree_shake_str);
         }
 
+        if let Ok(python) = env::var("CRIBO_PYTHON") {
+            config.python = Some(PathBuf::from(python));
+        }
+
         config
     }
 
@@ -184,6 +212,9 @@ impl EnvConfig {
         }
         if let Some(tree_shake) = self.tree_shake {
             config.tree_shake = tree_shake;
+        }
+        if let Some(python) = self.python {
+            config.requirements.python = Some(python);
         }
         config
     }
@@ -389,6 +420,10 @@ mod tests {
 target-version = "py312"
 preserve_comments = false
 src = ["src", "lib"]
+
+[requirements]
+python = ".venv/bin/python"
+module-map = { sklearn = "scikit-learn", "google.cloud.storage" = "google-cloud-storage>=2" }
         "#;
 
         let mut temp_file =
@@ -407,6 +442,18 @@ src = ["src", "lib"]
             12
         );
         assert!(!config.preserve_comments);
+        assert_eq!(
+            config.requirements.python,
+            Some(PathBuf::from(".venv/bin/python"))
+        );
+        assert_eq!(
+            config.requirements.module_map.get("sklearn"),
+            Some(&"scikit-learn".to_owned())
+        );
+        assert_eq!(
+            config.requirements.module_map.get("google.cloud.storage"),
+            Some(&"google-cloud-storage>=2".to_owned())
+        );
     }
 
     #[test]

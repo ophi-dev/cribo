@@ -22,3 +22,10 @@ preserve_comments = true
 
 # Whether to preserve type hints in the bundled output
 preserve_type_hints = true
+
+[requirements]
+# Python interpreter used to map imports to installed distributions
+# python = ".venv/bin/python"
+
+# Explicit import-prefix to PEP 508 requirement mappings
+module-map = {}

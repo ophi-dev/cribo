@@ -1,0 +1,4 @@
+import shared
+
+
+print(shared)
