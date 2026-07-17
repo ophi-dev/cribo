@@ -184,7 +184,7 @@ impl EnvConfig {
         }
 
         if let Ok(python) = env::var("CRIBO_PYTHON") {
-            config.python = Some(PathBuf::from(python));
+            config.python = parse_env_path(&python);
         }
 
         config
@@ -227,6 +227,14 @@ fn parse_bool(value: &str) -> Option<bool> {
         "true" | "1" | "yes" | "on" => Some(true),
         "false" | "0" | "no" | "off" => Some(false),
         _ => None,
+    }
+}
+
+fn parse_env_path(value: &str) -> Option<PathBuf> {
+    if value.is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(value))
     }
 }
 
@@ -354,6 +362,15 @@ mod tests {
     use tempfile::NamedTempFile;
 
     use super::*;
+
+    #[test]
+    fn test_empty_environment_path_is_ignored() {
+        assert_eq!(parse_env_path(""), None);
+        assert_eq!(
+            parse_env_path(".venv/bin/python"),
+            Some(PathBuf::from(".venv/bin/python"))
+        );
+    }
 
     #[test]
     fn test_target_version_configuration() {

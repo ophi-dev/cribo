@@ -12,7 +12,7 @@ use log::{debug, warn};
 use pep508_rs::{PackageName, Requirement, VerbatimUrl};
 use serde::{Deserialize, Serialize};
 
-use crate::config::RequirementsConfig;
+use crate::{config::RequirementsConfig, resolver::AUTO_DETECTED_VIRTUALENV_NAMES};
 
 const METADATA_QUERY: &str = include_str!("requirement_resolver.py");
 
@@ -241,13 +241,8 @@ impl<'a> RequirementResolver<'a> {
             }
         }
 
-        if let Some(first_path) = self.metadata_paths.first() {
-            for ancestor in first_path.ancestors() {
-                let candidate = Self::environment_python(&ancestor.join(".venv"));
-                if candidate.is_file() {
-                    return Ok(candidate);
-                }
-            }
+        if let Some(candidate) = self.auto_detected_python() {
+            return Ok(candidate);
         }
 
         for command in ["python3", "python"] {
@@ -266,6 +261,19 @@ impl<'a> RequirementResolver<'a> {
         ))
     }
 
+    fn auto_detected_python(&self) -> Option<PathBuf> {
+        let first_path = self.metadata_paths.first()?;
+        for ancestor in first_path.ancestors() {
+            for environment_name in AUTO_DETECTED_VIRTUALENV_NAMES {
+                let candidate = Self::environment_python(&ancestor.join(environment_name));
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+        None
+    }
+
     fn environment_python(environment: &Path) -> PathBuf {
         if cfg!(windows) {
             environment.join("Scripts").join("python.exe")
@@ -277,6 +285,10 @@ impl<'a> RequirementResolver<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use tempfile::TempDir;
+
     use super::*;
 
     #[test]
@@ -328,5 +340,102 @@ mod tests {
     #[test]
     fn invalid_import_name_has_no_fallback_requirement() {
         assert_eq!(RequirementResolver::fallback_requirement("_typeshed"), None);
+    }
+
+    #[test]
+    fn every_virtualenv_name_is_auto_detected() -> Result<()> {
+        for environment_name in AUTO_DETECTED_VIRTUALENV_NAMES {
+            let temp_dir = TempDir::new()?;
+            let project_dir = temp_dir.path().join("project");
+            let metadata_path = project_dir.join("src");
+            fs::create_dir_all(&metadata_path)?;
+
+            let environment = project_dir.join(environment_name);
+            let expected_python = RequirementResolver::environment_python(&environment);
+            let python_dir = expected_python
+                .parent()
+                .context("virtualenv Python path should have a parent")?;
+            fs::create_dir_all(python_dir)?;
+            fs::write(&expected_python, b"")?;
+
+            let config = RequirementsConfig::default();
+            let resolver = RequirementResolver::new(&config, vec![metadata_path]);
+            assert_eq!(resolver.auto_detected_python(), Some(expected_python));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn python_helper_handles_absolute_paths_and_broken_metadata() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let helper_path = temp_dir.path().join("requirement_resolver.py");
+        fs::write(&helper_path, METADATA_QUERY)?;
+
+        let config = RequirementsConfig::default();
+        let resolver = RequirementResolver::new(&config, Vec::new());
+        let python = resolver.python_executable()?;
+        let test_script = r#"
+import runpy
+import sys
+
+namespace = runpy.run_path(sys.argv[1], run_name="requirement_resolver_test")
+file_score = namespace["file_score"]
+distribution_candidates = namespace["distribution_candidates"]
+
+assert file_score(
+    "shared.beta",
+    "/editable/src/shared/beta/__init__.py",
+    ["/editable/src"],
+) == (4002, "installed file")
+assert file_score(
+    "polars",
+    "/site-packages/pandera/api/polars/__init__.py",
+    ["/site-packages"],
+) is None
+
+class BrokenMetadata:
+    def get(self, key):
+        return "Broken-Distribution" if key == "Name" else None
+
+    def get_all(self, key):
+        return ()
+
+class BrokenDistribution:
+    metadata = BrokenMetadata()
+
+    @property
+    def files(self):
+        raise RuntimeError("malformed files metadata")
+
+    def read_text(self, filename):
+        raise RuntimeError("malformed top-level metadata")
+
+assert distribution_candidates("broken", [BrokenDistribution()]) == []
+"#;
+        let output = Command::new(python)
+            .args(["-I", "-c", test_script])
+            .arg(helper_path)
+            .output()
+            .context("failed to run requirement resolver Python helper test")?;
+
+        assert!(
+            output.status.success(),
+            "Python helper test failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn metadata_query_uses_utf8_protocol() -> Result<()> {
+        let config = RequirementsConfig::default();
+        let resolver = RequirementResolver::new(&config, Vec::new());
+        let python = resolver.python_executable()?;
+        let import_name = "m\u{00f3}dulo".to_owned();
+
+        let response = resolver.query_metadata(&python, vec![import_name.clone()])?;
+
+        assert!(response.resolutions.contains_key(&import_name));
+        Ok(())
     }
 }

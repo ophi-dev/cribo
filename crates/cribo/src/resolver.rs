@@ -18,6 +18,9 @@ use crate::{
     types::{FxIndexMap, FxIndexSet},
 };
 
+pub(crate) const AUTO_DETECTED_VIRTUALENV_NAMES: [&str; 5] =
+    [".venv", "venv", "env", ".virtualenv", "virtualenv"];
+
 /// Unique identifier for a module in the dependency graph
 /// The entry module ALWAYS has ID 0 - this is a fundamental invariant
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -961,10 +964,12 @@ impl ModuleResolver {
     ) -> ImportClassification {
         let explicit_first_party = self.config.known_first_party.contains(module_name);
         let explicit_third_party = self.config.known_third_party.contains(module_name);
-        let has_distribution = self.distribution_owns_import(search_root, module_name);
         let origin = if explicit_first_party {
             ImportOrigin::FirstParty
-        } else if explicit_third_party || has_distribution {
+        } else if explicit_third_party
+            || default_origin == ImportOrigin::ThirdParty
+            || self.distribution_owns_import(search_root, module_name)
+        {
             ImportOrigin::ThirdParty
         } else {
             default_origin
@@ -1170,10 +1175,9 @@ impl ModuleResolver {
             return Vec::new();
         };
 
-        let common_venv_names = [".venv", "venv", "env", ".virtualenv", "virtualenv"];
         let mut venv_paths = Vec::new();
 
-        for venv_name in &common_venv_names {
+        for venv_name in AUTO_DETECTED_VIRTUALENV_NAMES {
             let venv_path = current_dir.join(venv_name);
             if venv_path.is_dir() {
                 // Check if it looks like a virtual environment
@@ -1320,10 +1324,12 @@ impl ModuleResolver {
 
     fn metadata_declares_import(metadata: &str, import_name: &str) -> bool {
         metadata.lines().any(|line| {
-            ["Import-Name:", "Import-Namespace:"]
-                .iter()
-                .find_map(|header| line.strip_prefix(header))
-                .map(str::trim)
+            line.split_once(':')
+                .filter(|(header, _)| {
+                    header.eq_ignore_ascii_case("Import-Name")
+                        || header.eq_ignore_ascii_case("Import-Namespace")
+                })
+                .map(|(_, value)| value.trim())
                 .and_then(|value| value.split(';').next())
                 .is_some_and(|prefix| {
                     !prefix.is_empty()
@@ -1900,6 +1906,28 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn test_distribution_metadata_import_headers_are_case_insensitive() {
+        let metadata = "\
+Metadata-Version: 2.5
+import-name: lower_case.module
+IMPORT-NAMESPACE: UPPER_CASE
+";
+
+        assert!(ModuleResolver::metadata_declares_import(
+            metadata,
+            "lower_case.module.child"
+        ));
+        assert!(ModuleResolver::metadata_declares_import(
+            metadata,
+            "UPPER_CASE.child"
+        ));
+        assert!(!ModuleResolver::metadata_declares_import(
+            metadata,
+            "unrelated"
+        ));
     }
 
     #[test]

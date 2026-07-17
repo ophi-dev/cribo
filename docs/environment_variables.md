@@ -111,7 +111,8 @@ requirements.
 
 This is equivalent to `--python` and `[requirements].python` in `cribo.toml`.
 When omitted, Cribo uses `VIRTUAL_ENV`, `CONDA_PREFIX`, a project-local
-`.venv`, or a Python interpreter on `PATH`, in that order.
+virtual environment named `.venv`, `venv`, `env`, `.virtualenv`, or
+`virtualenv`, or a Python interpreter on `PATH`, in that order.
 
 ```bash
 CRIBO_PYTHON=.venv/bin/python \

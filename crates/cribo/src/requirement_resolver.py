@@ -1,6 +1,7 @@
 import importlib.machinery
 import importlib.metadata
 import json
+import os
 import sys
 
 
@@ -13,7 +14,16 @@ def is_import_prefix(prefix, import_name):
 
 
 def normalized_path(path):
-    return str(path).replace("\\", "/")
+    return os.path.normcase(str(path)).replace("\\", "/")
+
+
+def import_relative_path(path, import_roots):
+    path = normalized_path(path)
+    for root in import_roots:
+        root_prefix = normalized_path(root).rstrip("/") + "/"
+        if path.startswith(root_prefix):
+            return path[len(root_prefix) :]
+    return path
 
 
 def is_importable_file(path):
@@ -22,11 +32,12 @@ def is_importable_file(path):
     return any(path.endswith(suffix) for suffix in importlib.machinery.EXTENSION_SUFFIXES)
 
 
-def file_score(import_name, path):
+def file_score(import_name, path, import_roots=()):
+    path = import_relative_path(path, import_roots)
     if not is_importable_file(path):
         return None
 
-    prefix = import_name.replace(".", "/")
+    prefix = normalized_path(import_name.replace(".", "/"))
     depth = import_name.count(".") + 1
     if path == prefix + ".py" or path == prefix + "/__init__.py":
         return 4000 + depth, "installed file"
@@ -51,7 +62,7 @@ def add_candidate(candidates, distribution, score, evidence):
         }
 
 
-def distribution_candidates(import_name, distributions):
+def distribution_candidates(import_name, distributions, import_roots=()):
     candidates = {}
     for distribution in distributions:
         project_name = distribution.metadata.get("Name")
@@ -82,17 +93,17 @@ def distribution_candidates(import_name, distributions):
 
         try:
             files = distribution.files or ()
-        except (OSError, ValueError):
+        except Exception:
             files = ()
         for package_path in files:
-            evidence = file_score(import_name, normalized_path(package_path))
+            evidence = file_score(import_name, package_path, import_roots)
             if evidence is not None:
                 score, description = evidence
                 add_candidate(candidates, project_name, score, description)
 
         try:
             top_level = distribution.read_text("top_level.txt") or ""
-        except (OSError, ValueError):
+        except Exception:
             top_level = ""
         root_import = import_name.split(".", 1)[0]
         if root_import in top_level.split():
@@ -102,18 +113,27 @@ def distribution_candidates(import_name, distributions):
 
 
 def main():
-    request = json.load(sys.stdin)
+    request = json.loads(sys.stdin.buffer.read().decode("utf-8"))
     search_paths = []
     for path in request["metadata_paths"] + sys.path:
         if path and path not in search_paths:
             search_paths.append(path)
+    import_roots = sorted(
+        {
+            normalized_path(os.path.abspath(path)).rstrip("/")
+            for path in search_paths
+        },
+        key=len,
+        reverse=True,
+    )
 
     distributions = list(importlib.metadata.distributions(path=search_paths))
     resolutions = {
-        import_name: distribution_candidates(import_name, distributions)
+        import_name: distribution_candidates(import_name, distributions, import_roots)
         for import_name in sorted(request["imports"])
     }
-    json.dump({"resolutions": resolutions}, sys.stdout, sort_keys=True)
+    response = json.dumps({"resolutions": resolutions}, sort_keys=True)
+    sys.stdout.buffer.write(response.encode("utf-8"))
 
 
 if __name__ == "__main__":
