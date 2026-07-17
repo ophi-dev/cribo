@@ -327,7 +327,7 @@ impl BundleOrchestrator {
 
         // CRITICAL: Register the entry module FIRST to guarantee it gets ID 0
         // This is a fundamental invariant of our architecture
-        let entry_id = resolver.register_module(&entry_module_name, entry_path);
+        let entry_id = resolver.register_module(&entry_module_name, entry_path)?;
         assert_eq!(
             entry_id,
             ModuleId::ENTRY,
@@ -1178,7 +1178,7 @@ impl BundleOrchestrator {
         import: &str,
         import_path: PathBuf,
         discovery_params: &mut DiscoveryParams<'_>,
-    ) {
+    ) -> Result<()> {
         // For first-party modules, derive the actual module name from the path
         // This is critical for relative imports where the import string might be incomplete
         // For example, "jupyter" might actually be "rich.jupyter"
@@ -1279,7 +1279,7 @@ impl BundleOrchestrator {
         // it returns the existing ID
         let module_id = discovery_params
             .resolver
-            .register_module(&actual_module_name, &import_path);
+            .register_module(&actual_module_name, &import_path)?;
 
         if !discovery_params.processed_modules.contains(&module_id)
             && !discovery_params.queued_modules.contains(&module_id)
@@ -1302,18 +1302,24 @@ impl BundleOrchestrator {
                 import
             );
         }
+        Ok(())
     }
 
     /// Add parent packages to discovery queue to ensure __init__.py files are included
     /// For example, if importing "greetings.irrelevant", also add "greetings"
-    fn add_parent_packages_to_discovery(&self, import: &str, params: &mut DiscoveryParams<'_>) {
+    fn add_parent_packages_to_discovery(
+        &self,
+        import: &str,
+        params: &mut DiscoveryParams<'_>,
+    ) -> Result<()> {
         let parts: Vec<&str> = import.split('.').collect();
 
         // For each parent package level, try to add it to discovery
         for i in 1..parts.len() {
             let parent_module = parts[..i].join(".");
-            self.try_add_parent_package_to_discovery(&parent_module, import, params);
+            self.try_add_parent_package_to_discovery(&parent_module, import, params)?;
         }
+        Ok(())
     }
 
     /// Try to add a single parent package to discovery if it's first-party
@@ -1322,7 +1328,7 @@ impl BundleOrchestrator {
         parent_module: &str,
         import: &str,
         params: &mut DiscoveryParams<'_>,
-    ) {
+    ) -> Result<()> {
         if params
             .resolver
             .classify_import(parent_module)
@@ -1333,11 +1339,12 @@ impl BundleOrchestrator {
                     "Adding parent package '{parent_module}' to discovery queue for import \
                      '{import}'"
                 );
-                self.add_to_discovery_queue_if_new(parent_module, parent_path, params);
+                self.add_to_discovery_queue_if_new(parent_module, parent_path, params)?;
             }
         } else {
             // Parent is not first-party, processing stops here
         }
+        Ok(())
     }
 
     /// Process an import during discovery phase with error handling context
@@ -1363,7 +1370,7 @@ impl BundleOrchestrator {
                     import_path.display()
                 );
                 // Use the resolved name instead of the original import
-                self.add_to_discovery_queue_if_new(&resolved_name, import_path, params);
+                self.add_to_discovery_queue_if_new(&resolved_name, import_path, params)?;
             } else {
                 // Try normal resolution in case it's a valid Python identifier
                 let classification = params.resolver.classify_import(import);
@@ -1373,7 +1380,7 @@ impl BundleOrchestrator {
                             "Resolved ImportlibStatic '{import}' to path: {}",
                             import_path.display()
                         );
-                        self.add_to_discovery_queue_if_new(import, import_path, params);
+                        self.add_to_discovery_queue_if_new(import, import_path, params)?;
                     } else if !is_in_error_handler {
                         return Err(anyhow!(
                             "Failed to resolve ImportlibStatic module '{import}'. \nThis import \
@@ -1395,12 +1402,12 @@ impl BundleOrchestrator {
                 );
                 if let Ok(Some(import_path)) = params.resolver.resolve_module_path(import) {
                     debug!("Resolved '{import}' to path: {}", import_path.display());
-                    self.add_to_discovery_queue_if_new(import, import_path, params);
+                    self.add_to_discovery_queue_if_new(import, import_path, params)?;
 
                     // Also add parent packages for submodules to ensure __init__.py files are
                     // included For example, if importing
                     // "greetings.irrelevant", also add "greetings"
-                    self.add_parent_packages_to_discovery(import, params);
+                    self.add_parent_packages_to_discovery(import, params)?;
                 } else {
                     // If the import is not in an error handler, this is a fatal error
                     if is_in_error_handler {

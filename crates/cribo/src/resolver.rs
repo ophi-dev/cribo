@@ -108,33 +108,29 @@ impl ModuleRegistry {
         }
     }
 
-    fn register(&mut self, name: String, path: &Path) -> ModuleId {
+    fn register(&mut self, name: String, path: &Path) -> Result<ModuleId> {
         // `path` is expected to be canonicalized by the caller
         let canonical_path = path.to_owned();
 
-        // Check for duplicates
-        if let Some(&id) = self.by_name.get(&name)
-            && self.by_id[&id].canonical_path == canonical_path
-        {
-            return id;
+        if let Some(&id) = self.by_name.get(&name) {
+            let existing = self
+                .by_id
+                .get(&id)
+                .expect("Module name must reference registered metadata");
+            if existing.canonical_path == canonical_path {
+                return Ok(id);
+            }
+            return Err(anyhow!(
+                "Import name '{}' resolves to conflicting files: '{}' and '{}'",
+                name,
+                existing.canonical_path.display(),
+                canonical_path.display()
+            ));
         }
 
         if let Some(&id) = self.by_path.get(&canonical_path) {
-            // Only update by_name if the name isn't already taken
-            // This prevents overwriting the entry module's name when __init__.py is found later
-            match self.by_name.get(&name) {
-                None => {
-                    self.by_name.insert(name, id);
-                }
-                Some(existing) if *existing != id => {
-                    log::warn!(
-                        "register(): name '{name}' already mapped to {existing:?}, but path maps \
-                         to {id:?}; keeping existing name mapping"
-                    );
-                }
-                _ => {}
-            }
-            return id;
+            self.by_name.insert(name, id);
+            return Ok(id);
         }
 
         // Allocate ID - entry gets 0, others get sequential IDs
@@ -189,23 +185,10 @@ impl ModuleRegistry {
         };
 
         self.by_id.insert(id, metadata);
-        // Only insert the name if it's not already taken
-        // This prevents __init__.py from overwriting __main__.py's name when both exist
-        match self.by_name.get(&name) {
-            None => {
-                self.by_name.insert(name, id);
-            }
-            Some(existing) if *existing != id => {
-                log::warn!(
-                    "register(): name '{name}' already mapped to {existing:?}, but newly \
-                     registered id is {id:?}; keeping existing name mapping"
-                );
-            }
-            _ => {}
-        }
+        self.by_name.insert(name, id);
         self.by_path.insert(canonical_path, id);
 
-        id
+        Ok(id)
     }
 
     fn get_metadata(&self, id: ModuleId) -> Option<&ModuleMetadata> {
@@ -1607,13 +1590,16 @@ impl ModuleResolver {
         Some(parts)
     }
 
-    /// Register a module - entry gets 0, others get sequential IDs
-    pub fn register_module(&self, name: &str, path: &Path) -> ModuleId {
+    /// Register a module, rejecting names that resolve to a different canonical file.
+    ///
+    /// The entry module gets ID 0 and later modules receive sequential IDs. Registering another
+    /// name for an existing canonical path creates an alias for the existing module.
+    pub fn register_module(&self, name: &str, path: &Path) -> Result<ModuleId> {
         let canonical = self.canonicalize_path(path.to_path_buf());
         let id = {
             let mut registry = self.registry.lock().expect("Module registry lock poisoned");
             registry.register(name.to_owned(), &canonical)
-        };
+        }?;
         let is_package = {
             let registry = self.registry.lock().expect("Module registry lock poisoned");
             registry.get_metadata(id).is_some_and(|m| m.is_package)
@@ -1630,7 +1616,7 @@ impl ModuleResolver {
             );
         }
 
-        id
+        Ok(id)
     }
 }
 
@@ -1684,8 +1670,8 @@ mod tests {
         create_test_file(&module_path, "")?;
         let resolver = ModuleResolver::new(Config::default())?;
 
-        let primary_id = resolver.register_module("utils", &module_path);
-        let alias_id = resolver.register_module("src.utils", &module_path);
+        let primary_id = resolver.register_module("utils", &module_path)?;
+        let alias_id = resolver.register_module("src.utils", &module_path)?;
 
         assert_eq!(primary_id, alias_id);
         assert_eq!(resolver.get_module_id_by_name("utils"), Some(primary_id));
@@ -1696,6 +1682,34 @@ mod tests {
         assert_eq!(
             resolver.get_module_id_by_path(&module_path),
             Some(primary_id)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_registry_rejects_conflicting_module_name_paths() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let first_path = temp_dir.path().join("first/shared.py");
+        let second_path = temp_dir.path().join("second/shared.py");
+        create_test_file(&first_path, "SOURCE = 'first'")?;
+        create_test_file(&second_path, "SOURCE = 'second'")?;
+        let resolver = ModuleResolver::new(Config::default())?;
+
+        let first_id = resolver.register_module("shared", &first_path)?;
+        let error = resolver
+            .register_module("shared", &second_path)
+            .expect_err("one import name must not resolve to multiple files");
+
+        assert_eq!(resolver.get_module_id_by_name("shared"), Some(first_id));
+        assert_eq!(resolver.get_module_id_by_path(&first_path), Some(first_id));
+        assert_eq!(resolver.get_module_id_by_path(&second_path), None);
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Import name 'shared' resolves to conflicting files: '{}' and '{}'",
+                first_path.canonicalize()?.display(),
+                second_path.canonicalize()?.display()
+            )
         );
         Ok(())
     }
