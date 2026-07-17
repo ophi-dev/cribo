@@ -1768,8 +1768,10 @@ impl BundleOrchestrator {
             }
         }
 
-        let requirement_resolver =
-            RequirementResolver::new(&self.config.requirements, resolver.get_search_directories());
+        let requirement_resolver = RequirementResolver::new(
+            &self.config.requirements,
+            resolver.get_distribution_metadata_search_directories(),
+        );
         let resolved_requirements = requirement_resolver.resolve(&requirement_imports)?;
         let mut requirements: Vec<String> = resolved_requirements.into_iter().collect();
         requirements.sort();

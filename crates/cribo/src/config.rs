@@ -1,5 +1,5 @@
 use std::{
-    env,
+    env, fmt,
     path::{Path, PathBuf},
 };
 
@@ -43,7 +43,7 @@ pub struct Config {
     pub requirements: RequirementsConfig,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RequirementsConfig {
     /// Python interpreter whose environment supplies distribution metadata
@@ -52,6 +52,24 @@ pub struct RequirementsConfig {
     /// Explicit import-prefix to PEP 508 requirement mappings
     #[serde(rename = "module-map")]
     pub module_map: IndexMap<String, String>,
+}
+
+struct RedactedModuleMap(usize);
+
+impl fmt::Debug for RedactedModuleMap {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "<redacted: {} entries>", self.0)
+    }
+}
+
+impl fmt::Debug for RequirementsConfig {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RequirementsConfig")
+            .field("python", &self.python)
+            .field("module_map", &RedactedModuleMap(self.module_map.len()))
+            .finish()
+    }
 }
 
 impl Default for Config {
@@ -230,6 +248,7 @@ fn parse_bool(value: &str) -> Option<bool> {
     }
 }
 
+/// Parse a non-empty environment value as a filesystem path.
 fn parse_env_path(value: &str) -> Option<PathBuf> {
     if value.is_empty() {
         None
@@ -370,6 +389,27 @@ mod tests {
             parse_env_path(".venv/bin/python"),
             Some(PathBuf::from(".venv/bin/python"))
         );
+    }
+
+    #[test]
+    fn test_requirements_debug_redacts_module_map() {
+        let config = Config {
+            requirements: RequirementsConfig {
+                python: Some(PathBuf::from(".venv/bin/python")),
+                module_map: IndexMap::from([(
+                    "private_module".to_owned(),
+                    "private-package @ https://user:secret-token@example.com/package.whl"
+                        .to_owned(),
+                )]),
+            },
+            ..Config::default()
+        };
+
+        let debug_output = format!("{config:?}");
+        assert!(debug_output.contains(".venv/bin/python"));
+        assert!(debug_output.contains("<redacted: 1 entries>"));
+        assert!(!debug_output.contains("private_module"));
+        assert!(!debug_output.contains("secret-token"));
     }
 
     #[test]

@@ -14,7 +14,8 @@ def main() -> None:
     """Main entry point that delegates to the cribo binary."""
     try:
         env = os.environ.copy()
-        env.setdefault("CRIBO_PYTHON", sys.executable)
+        if not env.get("CRIBO_PYTHON"):
+            env["CRIBO_PYTHON"] = sys.executable
         # Call the cribo binary with the same arguments
         result = subprocess.run(["cribo"] + sys.argv[1:], check=False, env=env)
         sys.exit(result.returncode)

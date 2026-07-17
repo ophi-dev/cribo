@@ -1,8 +1,11 @@
 #![expect(clippy::disallowed_methods)] // insta macros use unwrap internally
 
-use std::{env, process::Command};
+mod common;
+
+use std::{env, fs, process::Command};
 
 use insta::{assert_snapshot, with_settings};
+use tempfile::TempDir;
 
 /// Helper function to get the path to a fixture file
 fn get_fixture_path(relative_path: &str) -> String {
@@ -194,6 +197,85 @@ fn test_stdout_with_requirements() {
         assert_snapshot!("stdout_requirements_output", stdout);
         assert_snapshot!("stdout_requirements_stderr", stderr);
     });
+}
+
+#[test]
+fn test_requirements_use_cwd_fallback_virtualenv_for_external_entry() {
+    let sandbox = TempDir::new().expect("Failed to create temporary directory");
+    let launch_dir = sandbox.path().join("launch");
+    let entry_dir = sandbox.path().join("external");
+    let output_dir = sandbox.path().join("output");
+    fs::create_dir_all(&launch_dir).expect("Failed to create launch directory");
+    fs::create_dir_all(&entry_dir).expect("Failed to create entry directory");
+    fs::create_dir_all(&output_dir).expect("Failed to create output directory");
+
+    let environment = launch_dir.join(".venv");
+    let site_packages = if cfg!(windows) {
+        environment.join("Lib").join("site-packages")
+    } else {
+        environment
+            .join("lib")
+            .join("python3.12")
+            .join("site-packages")
+    };
+    fs::create_dir_all(site_packages.join("cwd_only_module"))
+        .expect("Failed to create virtualenv package");
+    fs::create_dir_all(environment.join(if cfg!(windows) { "Scripts" } else { "bin" }))
+        .expect("Failed to create virtualenv executable directory");
+    fs::write(
+        site_packages.join("cwd_only_module").join("__init__.py"),
+        "",
+    )
+    .expect("Failed to write virtualenv package");
+
+    let distribution_metadata = site_packages.join("cwd_only_distribution-1.0.dist-info");
+    fs::create_dir_all(&distribution_metadata).expect("Failed to create distribution metadata");
+    fs::write(
+        distribution_metadata.join("METADATA"),
+        "Metadata-Version: 2.5\n\
+         Name: cwd-only-distribution\n\
+         Version: 1.0\n\
+         Import-Name: cwd_only_module\n",
+    )
+    .expect("Failed to write distribution metadata");
+
+    let entry_path = entry_dir.join("main.py");
+    fs::write(
+        &entry_path,
+        "import cwd_only_module\nprint(cwd_only_module.__name__)\n",
+    )
+    .expect("Failed to write entry module");
+    let output_path = output_dir.join("bundle.py");
+    let python = common::get_python_executable();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_cribo"))
+        .arg("--entry")
+        .arg(&entry_path)
+        .arg("--output")
+        .arg(&output_path)
+        .arg("--emit-requirements")
+        .arg("--python")
+        .arg(python)
+        .current_dir(&launch_dir)
+        .env_remove("VIRTUAL_ENV")
+        .env_remove("CONDA_PREFIX")
+        .env_remove("PYTHONPATH")
+        .env("RUST_LOG", "off")
+        .env("CARGO_TERM_COLOR", "never")
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("Failed to execute cribo");
+
+    assert!(
+        output.status.success(),
+        "Cribo failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(output_dir.join("requirements.txt"))
+            .expect("Failed to read requirements"),
+        "cwd-only-distribution"
+    );
 }
 
 #[test]

@@ -41,6 +41,7 @@ pub(crate) struct RequirementResolver<'a> {
 }
 
 impl<'a> RequirementResolver<'a> {
+    /// Create a resolver backed by the configured interpreter and metadata search paths.
     pub(crate) const fn new(config: &'a RequirementsConfig, metadata_paths: Vec<PathBuf>) -> Self {
         Self {
             config,
@@ -48,6 +49,7 @@ impl<'a> RequirementResolver<'a> {
         }
     }
 
+    /// Resolve imported module names to normalized PEP 508 requirements.
     pub(crate) fn resolve(&self, imports: &IndexSet<String>) -> Result<IndexSet<String>> {
         let mut requirements = IndexSet::new();
         let mut pending = Vec::new();
@@ -98,6 +100,7 @@ impl<'a> RequirementResolver<'a> {
         Ok(requirements)
     }
 
+    /// Return the longest matching explicit module-map override.
     fn override_for(&self, import_name: &str) -> Result<Option<String>> {
         let mapping = self
             .config
@@ -118,6 +121,7 @@ impl<'a> RequirementResolver<'a> {
         Ok(Some(parsed.to_string()))
     }
 
+    /// Return whether an import is equal to or nested below a configured prefix.
     fn matches_prefix(prefix: &str, import_name: &str) -> bool {
         import_name == prefix
             || import_name
@@ -125,6 +129,7 @@ impl<'a> RequirementResolver<'a> {
                 .is_some_and(|suffix| suffix.starts_with('.'))
     }
 
+    /// Query distribution ownership through the bundled Python metadata helper.
     fn query_metadata(&self, python: &Path, imports: Vec<String>) -> Result<MetadataResponse> {
         let metadata_paths = self
             .metadata_paths
@@ -184,6 +189,7 @@ impl<'a> RequirementResolver<'a> {
         })
     }
 
+    /// Select the strongest unambiguous distribution candidate for an import.
     fn select_candidate(
         import_name: &str,
         candidates: &[DistributionCandidate],
@@ -220,6 +226,7 @@ impl<'a> RequirementResolver<'a> {
         Ok(Some(package_name.to_string()))
     }
 
+    /// Convert an import root into a fallback package name when it is PEP 508-compatible.
     fn fallback_requirement(import_name: &str) -> Option<String> {
         let root_import = import_name.split('.').next().unwrap_or(import_name);
         PackageName::new(root_import.to_owned())
@@ -227,6 +234,7 @@ impl<'a> RequirementResolver<'a> {
             .map(|package_name| package_name.to_string())
     }
 
+    /// Select the Python interpreter used to inspect distribution metadata.
     fn python_executable(&self) -> Result<PathBuf> {
         if let Some(python) = &self.config.python {
             return Ok(python.clone());
@@ -261,6 +269,7 @@ impl<'a> RequirementResolver<'a> {
         ))
     }
 
+    /// Find a conventional virtualenv interpreter above the primary metadata path.
     fn auto_detected_python(&self) -> Option<PathBuf> {
         let first_path = self.metadata_paths.first()?;
         for ancestor in first_path.ancestors() {
@@ -274,6 +283,7 @@ impl<'a> RequirementResolver<'a> {
         None
     }
 
+    /// Return the platform-specific Python executable path inside an environment.
     fn environment_python(environment: &Path) -> PathBuf {
         if cfg!(windows) {
             environment.join("Scripts").join("python.exe")
@@ -379,6 +389,7 @@ import runpy
 import sys
 
 namespace = runpy.run_path(sys.argv[1], run_name="requirement_resolver_test")
+build_distribution_index = namespace["build_distribution_index"]
 file_score = namespace["file_score"]
 distribution_candidates = namespace["distribution_candidates"]
 
@@ -410,7 +421,53 @@ class BrokenDistribution:
     def read_text(self, filename):
         raise RuntimeError("malformed top-level metadata")
 
-assert distribution_candidates("broken", [BrokenDistribution()]) == []
+broken_index = build_distribution_index([BrokenDistribution()])
+assert distribution_candidates("broken", broken_index) == []
+
+class UnreadableDistribution:
+    @property
+    def metadata(self):
+        raise RuntimeError("malformed distribution metadata")
+
+assert build_distribution_index([UnreadableDistribution()]) == {
+    "prefix": {},
+    "exact": {},
+}
+
+class CountingMetadata:
+    def get(self, key):
+        return "Counting-Distribution" if key == "Name" else None
+
+    def get_all(self, key):
+        return ["counted"] if key == "Import-Name" else ()
+
+class CountingDistribution:
+    def __init__(self):
+        self.metadata_reads = 0
+        self.files_reads = 0
+        self.top_level_reads = 0
+
+    @property
+    def metadata(self):
+        self.metadata_reads += 1
+        return CountingMetadata()
+
+    @property
+    def files(self):
+        self.files_reads += 1
+        return ()
+
+    def read_text(self, filename):
+        self.top_level_reads += 1
+        return ""
+
+counting_distribution = CountingDistribution()
+counting_index = build_distribution_index([counting_distribution])
+assert distribution_candidates("counted", counting_index)
+assert distribution_candidates("counted.child", counting_index)
+assert counting_distribution.metadata_reads == 1
+assert counting_distribution.files_reads == 1
+assert counting_distribution.top_level_reads == 1
 "#;
         let output = Command::new(python)
             .args(["-I", "-c", test_script])
@@ -422,6 +479,35 @@ assert distribution_candidates("broken", [BrokenDistribution()]) == []
             output.status.success(),
             "Python helper test failed: {}",
             String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn metadata_query_rejects_conflicting_import_declarations() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let metadata_dir = temp_dir.path().join("conflicting-1.0.dist-info");
+        fs::create_dir_all(&metadata_dir)?;
+        fs::write(
+            metadata_dir.join("METADATA"),
+            "Metadata-Version: 2.5\n\
+             Name: conflicting\n\
+             Version: 1.0\n\
+             Import-Name: shared\n\
+             Import-Namespace: shared\n",
+        )?;
+
+        let config = RequirementsConfig::default();
+        let resolver = RequirementResolver::new(&config, vec![temp_dir.path().to_path_buf()]);
+        let python = resolver.python_executable()?;
+        let error = resolver
+            .query_metadata(&python, vec!["shared".to_owned()])
+            .expect_err("conflicting Core Metadata declarations should fail");
+
+        assert!(
+            error
+                .to_string()
+                .contains("declares shared in both Import-Name and Import-Namespace")
         );
         Ok(())
     }

@@ -300,6 +300,7 @@ pub struct ImportClassification {
 }
 
 impl ImportClassification {
+    /// Construct an import classification from its independent resolution facts.
     const fn new(origin: ImportOrigin, source: ImportSource, bundle: BundleDisposition) -> Self {
         Self {
             origin,
@@ -308,6 +309,7 @@ impl ImportClassification {
         }
     }
 
+    /// Whether the bundler should include the module's Python source.
     pub const fn should_bundle(&self) -> bool {
         matches!(self.bundle, BundleDisposition::Include)
     }
@@ -368,6 +370,25 @@ impl ImportModuleDescriptor {
     }
 }
 
+#[derive(Debug, Default)]
+struct DistributionOwnershipIndex {
+    declared_prefixes: IndexSet<String>,
+    record_imports: IndexSet<String>,
+}
+
+impl DistributionOwnershipIndex {
+    /// Return whether indexed metadata or installed files claim an import.
+    fn owns_import(&self, import_name: &str) -> bool {
+        self.record_imports.contains(import_name)
+            || self.declared_prefixes.iter().any(|prefix| {
+                import_name == prefix
+                    || import_name
+                        .strip_prefix(prefix)
+                        .is_some_and(|suffix| suffix.starts_with('.'))
+            })
+    }
+}
+
 #[derive(Debug)]
 pub struct ModuleResolver {
     config: Config,
@@ -379,6 +400,8 @@ pub struct ModuleResolver {
     classification_cache: RefCell<IndexMap<String, ImportClassification>>,
     /// Cache of virtual environment packages to avoid repeated filesystem scans
     virtualenv_packages_cache: RefCell<Option<IndexSet<String>>>,
+    /// Distribution ownership indexed once for each searched filesystem root
+    distribution_ownership_cache: RefCell<IndexMap<PathBuf, DistributionOwnershipIndex>>,
     /// Entry file's directory (first in search path)
     entry_dir: Option<PathBuf>,
     /// Python version for stdlib classification
@@ -423,6 +446,7 @@ impl ModuleResolver {
             module_cache: RefCell::new(IndexMap::new()),
             classification_cache: RefCell::new(IndexMap::new()),
             virtualenv_packages_cache: RefCell::new(None),
+            distribution_ownership_cache: RefCell::new(IndexMap::new()),
             entry_dir: None,
             python_version,
             pythonpath_override: pythonpath_override.map(str::to_owned),
@@ -551,6 +575,14 @@ impl ModuleResolver {
         let pythonpath = self.pythonpath_override.as_deref();
         let virtualenv = self.virtualenv_override.as_deref();
         self.get_search_directories_with_overrides(pythonpath, virtualenv)
+    }
+
+    /// Get import roots and the selected virtual environments' distribution metadata roots.
+    pub(crate) fn get_distribution_metadata_search_directories(&self) -> Vec<PathBuf> {
+        let mut unique_dirs: IndexSet<PathBuf> =
+            self.get_search_directories().into_iter().collect();
+        unique_dirs.extend(self.get_virtualenv_site_packages_search_directories(None));
+        unique_dirs.into_iter().collect()
     }
 
     /// Get all directories to search for modules with optional PYTHONPATH override
@@ -1275,9 +1307,29 @@ impl ModuleResolver {
 
     /// Return whether installed distribution metadata claims an import.
     fn distribution_owns_import(&self, site_packages_dir: &Path, import_name: &str) -> bool {
-        let import_path = import_name.cow_replace('.', "/").into_owned();
+        let search_root = self.canonicalize_path(site_packages_dir.to_path_buf());
+        if let Some(owns_import) = self
+            .distribution_ownership_cache
+            .borrow()
+            .get(&search_root)
+            .map(|index| index.owns_import(import_name))
+        {
+            return owns_import;
+        }
+
+        let index = Self::build_distribution_ownership_index(&search_root);
+        let owns_import = index.owns_import(import_name);
+        self.distribution_ownership_cache
+            .borrow_mut()
+            .insert(search_root, index);
+        owns_import
+    }
+
+    /// Build distribution ownership data for one search root.
+    fn build_distribution_ownership_index(site_packages_dir: &Path) -> DistributionOwnershipIndex {
+        let mut index = DistributionOwnershipIndex::default();
         let Ok(entries) = std::fs::read_dir(site_packages_dir) else {
-            return false;
+            return index;
         };
 
         for entry in entries.flatten() {
@@ -1294,10 +1346,8 @@ impl ModuleResolver {
             }
 
             let metadata_file = path.join("METADATA");
-            if let Ok(metadata) = std::fs::read_to_string(metadata_file)
-                && Self::metadata_declares_import(&metadata, import_name)
-            {
-                return true;
+            if let Ok(metadata) = std::fs::read_to_string(metadata_file) {
+                Self::index_distribution_metadata(&metadata, &mut index);
             }
 
             let record_file = path.join("RECORD");
@@ -1307,38 +1357,67 @@ impl ModuleResolver {
                 let reader = BufReader::new(file);
                 for line in reader.lines().map_while(Result::ok) {
                     let path_part = line.split(',').next().unwrap_or("");
-                    let path_norm = path_part.cow_replace('\\', "/").into_owned();
-                    if path_norm == format!("{import_path}.py")
-                        || path_norm.starts_with(&format!("{import_path}/"))
-                        || (path_norm.starts_with(&format!("{import_path}."))
-                            && !path_norm[import_path.len() + 1..].contains('/'))
-                    {
-                        return true;
-                    }
+                    Self::index_record_path(path_part, &mut index);
                 }
             }
         }
 
-        false
+        index
     }
 
-    fn metadata_declares_import(metadata: &str, import_name: &str) -> bool {
-        metadata.lines().any(|line| {
-            line.split_once(':')
-                .filter(|(header, _)| {
-                    header.eq_ignore_ascii_case("Import-Name")
-                        || header.eq_ignore_ascii_case("Import-Namespace")
-                })
-                .map(|(_, value)| value.trim())
-                .and_then(|value| value.split(';').next())
-                .is_some_and(|prefix| {
-                    !prefix.is_empty()
-                        && (import_name == prefix
-                            || import_name
-                                .strip_prefix(prefix)
-                                .is_some_and(|suffix| suffix.starts_with('.')))
-                })
-        })
+    /// Add Core Metadata import declarations to an ownership index.
+    fn index_distribution_metadata(metadata: &str, index: &mut DistributionOwnershipIndex) {
+        for line in metadata.lines() {
+            let Some((header, value)) = line.split_once(':') else {
+                continue;
+            };
+            if !header.eq_ignore_ascii_case("Import-Name")
+                && !header.eq_ignore_ascii_case("Import-Namespace")
+            {
+                continue;
+            }
+            let prefix = value.split(';').next().unwrap_or("").trim();
+            if !prefix.is_empty() {
+                index.declared_prefixes.insert(prefix.to_owned());
+            }
+        }
+    }
+
+    /// Add import paths implied by one installed distribution `RECORD` entry.
+    fn index_record_path(record_path: &str, index: &mut DistributionOwnershipIndex) {
+        let normalized = record_path.cow_replace('\\', "/");
+        if normalized.starts_with('/')
+            || normalized
+                .as_bytes()
+                .get(1)
+                .is_some_and(|byte| *byte == b':')
+        {
+            return;
+        }
+
+        let mut components: Vec<&str> = normalized.split('/').collect();
+        if components.is_empty()
+            || components
+                .iter()
+                .any(|component| component.is_empty() || matches!(*component, "." | ".."))
+        {
+            return;
+        }
+        let file_name = components
+            .pop()
+            .expect("non-empty record path should contain a file name");
+        let mut import_parts = Vec::new();
+        for directory in components {
+            import_parts.push(directory);
+            index.record_imports.insert(import_parts.join("."));
+        }
+
+        if let Some((module_name, _)) = file_name.split_once('.')
+            && !module_name.is_empty()
+        {
+            import_parts.push(module_name);
+            index.record_imports.insert(import_parts.join("."));
+        }
     }
 
     /// Resolves a relative import to an absolute module name.
@@ -1916,18 +1995,27 @@ import-name: lower_case.module
 IMPORT-NAMESPACE: UPPER_CASE
 ";
 
-        assert!(ModuleResolver::metadata_declares_import(
-            metadata,
-            "lower_case.module.child"
-        ));
-        assert!(ModuleResolver::metadata_declares_import(
-            metadata,
-            "UPPER_CASE.child"
-        ));
-        assert!(!ModuleResolver::metadata_declares_import(
-            metadata,
-            "unrelated"
-        ));
+        let mut index = DistributionOwnershipIndex::default();
+        ModuleResolver::index_distribution_metadata(metadata, &mut index);
+
+        assert!(index.owns_import("lower_case.module.child"));
+        assert!(index.owns_import("UPPER_CASE.child"));
+        assert!(!index.owns_import("unrelated"));
+    }
+
+    #[test]
+    fn test_distribution_ownership_is_cached_by_search_root() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let site_packages = temp_dir.path().join("site-packages");
+        create_mixed_distribution(&site_packages)?;
+        let resolver = ModuleResolver::new(Config::default())?;
+
+        assert!(resolver.distribution_owns_import(&site_packages, "mixed_package.core"));
+        fs::remove_dir_all(site_packages.join("mixed_package-1.0.dist-info"))?;
+        assert!(resolver.distribution_owns_import(&site_packages, "mixed_package._native"));
+        assert_eq!(resolver.distribution_ownership_cache.borrow().len(), 1);
+
+        Ok(())
     }
 
     #[test]
