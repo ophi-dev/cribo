@@ -15,7 +15,7 @@ use crate::{
     ast_builder,
     code_generator::{
         bundler::Bundler, context::ModuleTransformContext, expression_handlers,
-        import_deduplicator, module_registry::sanitize_module_name_for_identifier,
+        import_deduplicator, module_registry::sanitize_module_name_for_identifier, patterns,
     },
     types::{FxIndexMap, FxIndexSet},
 };
@@ -1402,9 +1402,15 @@ fn transform_stmt_for_module_vars(
                 module_var_name,
                 python_version,
             );
-            // Match cases have complex patterns that may need specialized handling
-            // For now, we'll focus on transforming the guard expressions and bodies
             for case in &mut match_stmt.cases {
+                patterns::transform_runtime_exprs(&mut case.pattern, &mut |expr| {
+                    transform_expr_for_module_vars(
+                        expr,
+                        module_level_vars,
+                        module_var_name,
+                        python_version,
+                    );
+                });
                 if let Some(ref mut guard) = case.guard {
                     transform_expr_for_module_vars(
                         guard,
@@ -1814,6 +1820,44 @@ fn transform_stmt_for_module_vars_with_locals(
                     module_var_name,
                     python_version,
                 );
+            }
+        }
+        Stmt::Match(match_stmt) => {
+            transform_expr_for_module_vars_with_locals(
+                &mut match_stmt.subject,
+                module_level_vars,
+                local_vars,
+                module_var_name,
+                python_version,
+            );
+            for case in &mut match_stmt.cases {
+                patterns::transform_runtime_exprs(&mut case.pattern, &mut |expr| {
+                    transform_expr_for_module_vars_with_locals(
+                        expr,
+                        module_level_vars,
+                        local_vars,
+                        module_var_name,
+                        python_version,
+                    );
+                });
+                if let Some(guard) = &mut case.guard {
+                    transform_expr_for_module_vars_with_locals(
+                        guard,
+                        module_level_vars,
+                        local_vars,
+                        module_var_name,
+                        python_version,
+                    );
+                }
+                for stmt in &mut case.body {
+                    transform_stmt_for_module_vars_with_locals(
+                        stmt,
+                        module_level_vars,
+                        local_vars,
+                        module_var_name,
+                        python_version,
+                    );
+                }
             }
         }
         _ => {

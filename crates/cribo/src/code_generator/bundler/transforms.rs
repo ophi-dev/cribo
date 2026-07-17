@@ -12,6 +12,7 @@ use crate::{
     code_generator::{
         expression_handlers,
         module_registry::{generate_unique_name, sanitize_module_name_for_identifier},
+        patterns,
     },
     types::{FxIndexMap, FxIndexSet},
     visitors::LocalVarCollector,
@@ -507,6 +508,7 @@ impl Bundler<'_> {
             Stmt::Match(match_stmt) => {
                 transformer.visit_expr(&mut match_stmt.subject);
                 for case in &mut match_stmt.cases {
+                    transformer.visit_pattern(&mut case.pattern);
                     if let Some(guard) = &mut case.guard {
                         transformer.visit_expr(guard);
                     }
@@ -1767,6 +1769,14 @@ impl Bundler<'_> {
                     module_var_name,
                 );
                 for case in &mut match_stmt.cases {
+                    patterns::transform_runtime_exprs(&mut case.pattern, &mut |expr| {
+                        Self::transform_expr_for_module_vars_with_locals(
+                            expr,
+                            module_level_vars,
+                            local_vars,
+                            module_var_name,
+                        );
+                    });
                     if let Some(guard) = &mut case.guard {
                         Self::transform_expr_for_module_vars_with_locals(
                             guard,
@@ -2685,6 +2695,15 @@ impl Bundler<'_> {
                     current_function_globals,
                 );
                 for case in &mut match_stmt.cases {
+                    patterns::transform_runtime_exprs(&mut case.pattern, &mut |expr| {
+                        expression_handlers::transform_expr_for_lifted_globals(
+                            self,
+                            expr,
+                            lifted_names,
+                            global_info,
+                            current_function_globals,
+                        );
+                    });
                     if let Some(guard) = &mut case.guard {
                         expression_handlers::transform_expr_for_lifted_globals(
                             self,

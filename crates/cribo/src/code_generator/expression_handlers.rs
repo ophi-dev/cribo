@@ -13,6 +13,7 @@ use ruff_text_size::TextRange;
 use super::bundler::Bundler;
 use crate::{
     ast_builder::expressions,
+    code_generator::patterns,
     types::{FxIndexMap, FxIndexSet},
 };
 
@@ -865,6 +866,20 @@ pub(crate) fn rewrite_aliases_in_stmt(
                 rewrite_aliases_in_stmt(stmt, alias_to_canonical);
             }
         }
+        Stmt::Match(match_stmt) => {
+            rewrite_aliases_in_expr(&mut match_stmt.subject, alias_to_canonical);
+            for case in &mut match_stmt.cases {
+                patterns::transform_runtime_exprs(&mut case.pattern, &mut |expr| {
+                    rewrite_aliases_in_expr(expr, alias_to_canonical);
+                });
+                if let Some(guard) = &mut case.guard {
+                    rewrite_aliases_in_expr(guard, alias_to_canonical);
+                }
+                for stmt in &mut case.body {
+                    rewrite_aliases_in_stmt(stmt, alias_to_canonical);
+                }
+            }
+        }
         Stmt::AugAssign(aug_assign) => {
             rewrite_aliases_in_expr(&mut aug_assign.target, alias_to_canonical);
             rewrite_aliases_in_expr(&mut aug_assign.value, alias_to_canonical);
@@ -1059,6 +1074,13 @@ fn rewrite_global_statements_only(
             }
             for stmt in &mut try_stmt.finalbody {
                 rewrite_global_statements_only(stmt, alias_to_canonical);
+            }
+        }
+        Stmt::Match(match_stmt) => {
+            for case in &mut match_stmt.cases {
+                for stmt in &mut case.body {
+                    rewrite_global_statements_only(stmt, alias_to_canonical);
+                }
             }
         }
         _ => {}

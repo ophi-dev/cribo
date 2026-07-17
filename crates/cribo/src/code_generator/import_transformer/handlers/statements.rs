@@ -199,6 +199,10 @@ impl StatementsHandler {
     ) {
         t.transform_expr(&mut s.subject);
         for case in &mut s.cases {
+            crate::code_generator::patterns::transform_runtime_exprs(
+                &mut case.pattern,
+                &mut |expr| t.transform_expr(expr),
+            );
             if let Some(guard) = &mut case.guard {
                 t.transform_expr(guard);
             }
