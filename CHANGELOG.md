@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.8.2](https://github.com/ophi-dev/cribo/compare/v0.8.1...v0.8.2) (2026-07-19)
+
+
+### Features
+
+* unify bundling and tree-shaking analysis facts ([#468](https://github.com/ophi-dev/cribo/issues/468)) ([21b9cb3](https://github.com/ophi-dev/cribo/commit/21b9cb37bee6a89065a5175322f1d868afc4f659))
+
+
+### Bug Fixes
+
+* add certifi to typos allow list ([#456](https://github.com/ophi-dev/cribo/issues/456)) ([9f425ea](https://github.com/ophi-dev/cribo/commit/9f425ea7b07ba9280efb438e9191062697bff8f7))
+* **ci:** work around maturin 1.11+ bin bindings regression ([#453](https://github.com/ophi-dev/cribo/issues/453)) ([349ad62](https://github.com/ophi-dev/cribo/commit/349ad6290f06e8f3bb066bbfb485cb74dfe8e5de))
+* **deps:** update env_logger to 0.11.10 to deduplicate anstream ([#454](https://github.com/ophi-dev/cribo/issues/454)) ([9ef981c](https://github.com/ophi-dev/cribo/commit/9ef981c48b524a817cb1f03cdc8b1c08056cbfea))
+* remove bin from platform specific npm packages ([1aa8c90](https://github.com/ophi-dev/cribo/commit/1aa8c90119cd5bebc8550ff339efc9631f32711e))
+* repack aarch64 wheel before TestPyPI ([33e9e04](https://github.com/ophi-dev/cribo/commit/33e9e04f08431cbec20a79367c9d687c772bfcc1))
+* skip corrupt aarch64 manylinux wheel ([3535ab4](https://github.com/ophi-dev/cribo/commit/3535ab47f6d9cac795672a7777c81c5f608f0b9d))
+* split bundler.rs into directory module ([#461](https://github.com/ophi-dev/cribo/issues/461)) ([5d7c6e1](https://github.com/ophi-dev/cribo/commit/5d7c6e163e2653a407a68eea0945c7af3e596bf8))
+
+
+### Performance Improvements
+
+* use `Arc<ModModule>` in module AST maps to avoid cloning all ASTs in `prepare_modules` ([#465](https://github.com/ophi-dev/cribo/issues/465)) ([ce6b414](https://github.com/ophi-dev/cribo/commit/ce6b41421b8daa44f848a9faf632589bd7e9430f))
+
 ## [0.8.1](https://github.com/ophi-dev/cribo/compare/v0.8.0...v0.8.1) (2026-07-19)
 
 
