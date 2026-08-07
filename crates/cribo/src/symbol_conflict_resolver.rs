@@ -14,7 +14,6 @@ use ruff_python_ast::{
 use ruff_python_semantic::{
     BindingFlags, BindingId, BindingKind, Module, ModuleKind, ModuleSource, SemanticModel,
 };
-use ruff_python_stdlib::builtins::{MAGIC_GLOBALS, python_builtins};
 use ruff_text_size::{Ranged, TextRange};
 
 use crate::{
@@ -99,19 +98,9 @@ impl<'a> SemanticModelBuilder<'a> {
             semantic,
             from_imports: Vec::new(),
         };
-        builder.bind_builtins();
         builder.traverse_and_bind(&ast.body);
 
         (builder.semantic, builder.from_imports)
-    }
-
-    /// Bind builtin symbols to the semantic model
-    fn bind_builtins(&mut self) {
-        for builtin in python_builtins(u8::MAX, false).chain(MAGIC_GLOBALS.iter().copied()) {
-            let binding_id = self.semantic.push_builtin();
-            let scope = self.semantic.global_scope_mut();
-            scope.add(builtin, binding_id);
-        }
     }
 
     /// Traverse AST and create bindings for module-level definitions

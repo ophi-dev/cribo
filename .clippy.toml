@@ -130,6 +130,8 @@ allowed-duplicate-crates = [
     "foldhash",
     # itertools: pep508_rs uses 0.13, ruff crates use 0.14 (breaking changes in 0.14)
     "itertools",
+    # syn: ruff crates use syn 3.0 while attribute-derive (via get-size2) uses syn 2.0
+    "syn",
     # thiserror: pep508_rs uses 1.0, ruff crates use 2.0 (breaking changes in 2.0)
     "thiserror",
     "thiserror-impl",
