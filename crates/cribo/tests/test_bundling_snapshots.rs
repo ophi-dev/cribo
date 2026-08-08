@@ -342,12 +342,28 @@ fn test_bundling_fixtures() {
         };
 
         // Validate Python syntax of the bundled output before execution.
-        // Note: `py_compile` cannot read from stdin (`-` is treated as a literal
-        // filename), so compile the bundled file on disk instead.
+        // Use compile() with the source piped via stdin: unlike `py_compile
+        // <file>` this writes no `__pycache__` bytecode into temp_dir (which is
+        // later the working directory for bundle execution and must stay
+        // pristine), and unlike `py_compile -` it actually reads source from
+        // stdin. compile() performs full syntax and semantic compilation
+        // checks, matching what execution would do.
         let syntax_check = Command::new(&python_cmd)
-            .args(["-m", "py_compile", bundle_path.to_str().unwrap()])
-            .output()
-            .expect("Failed to run python -m py_compile on bundled output");
+            .args([
+                "-c",
+                "import sys; compile(sys.stdin.buffer.read(), '<bundled>', 'exec')",
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                if let Some(mut stdin) = child.stdin.take() {
+                    stdin.write_all(bundled_code.as_bytes())?;
+                }
+                child.wait_with_output()
+            })
+            .expect("Failed to run Python syntax validation on bundled output");
 
         // The bundler must never emit syntactically invalid Python, regardless of
         // fixture type (xfail_/pyfail_ cover bundling/runtime failures, not
