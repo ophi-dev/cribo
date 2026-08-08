@@ -341,26 +341,23 @@ fn test_bundling_fixtures() {
             }
         };
 
-        // Optionally validate Python syntax before execution
+        // Validate Python syntax of the bundled output before execution.
+        // Note: `py_compile` cannot read from stdin (`-` is treated as a literal
+        // filename), so compile the bundled file on disk instead.
         let syntax_check = Command::new(&python_cmd)
-            .args(["-m", "py_compile", "-"])
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn();
+            .args(["-m", "py_compile", bundle_path.to_str().unwrap()])
+            .output()
+            .expect("Failed to run python -m py_compile on bundled output");
 
-        if let Ok(mut child) = syntax_check {
-            if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(bundled_code.as_bytes());
-            }
-            if let Ok(output) = child.wait_with_output()
-                && !output.status.success()
-                && env::var("RUST_TEST_VERBOSE").is_ok()
-            {
-                eprintln!("Warning: Bundled code has syntax errors for fixture {fixture_name}");
-                eprintln!("Stderr: {}", String::from_utf8_lossy(&output.stderr));
-            }
-        }
+        // The bundler must never emit syntactically invalid Python, regardless of
+        // fixture type (xfail_/pyfail_ cover bundling/runtime failures, not
+        // malformed generated code), so this is a hard failure for all fixtures.
+        assert!(
+            syntax_check.status.success(),
+            "Bundled code has invalid Python syntax for fixture '{}':\n{}",
+            fixture_name,
+            String::from_utf8_lossy(&syntax_check.stderr).trim()
+        );
 
         // Run ruff linting for cross-validation
         let ruff_results = run_ruff_lint_on_bundle(&bundled_code);

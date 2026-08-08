@@ -263,8 +263,8 @@ The `--stdout` flag is particularly useful for debugging and development workflo
 # Quick inspection of bundled output without creating files
 cribo --entry main.py --stdout
 
-# Pipe to tools for analysis
-cribo --entry main.py --stdout | python -m py_compile -
+# Pipe to tools for syntax validation (py_compile cannot read source from stdin)
+cribo --entry main.py --stdout | python -c "import sys, ast; ast.parse(sys.stdin.read())"
 
 # Combine with verbose logging (logs go to stderr, code to stdout)
 cribo --entry main.py --stdout -vv
