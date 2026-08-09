@@ -377,11 +377,19 @@ fn create_virtualenv_skeleton(environment: &Path) -> std::path::PathBuf {
     site_packages
 }
 
-/// End-to-end: with `--bundle-third-party`, a pure-Python site-packages dependency
-/// (including a submodule reached via a relative import) is inlined into the bundle,
-/// omitted from requirements.txt, and the bundle runs without the dependency installed.
-#[test]
-fn test_bundle_third_party_inlines_pure_dependency() {
+/// Sandbox for third-party bundling end-to-end tests: a project directory, an output
+/// directory, and a fake virtualenv with a site-packages directory.
+struct BundleThirdPartySandbox {
+    _sandbox: TempDir,
+    entry_path: std::path::PathBuf,
+    output_dir: std::path::PathBuf,
+    output_path: std::path::PathBuf,
+    environment: std::path::PathBuf,
+    site_packages: std::path::PathBuf,
+}
+
+/// Create the sandbox layout and write the entry module with the given source.
+fn create_bundle_third_party_sandbox(entry_source: &str) -> BundleThirdPartySandbox {
     let sandbox = TempDir::new().expect("Failed to create temporary directory");
     let entry_dir = sandbox.path().join("project");
     let output_dir = sandbox.path().join("output");
@@ -390,36 +398,34 @@ fn test_bundle_third_party_inlines_pure_dependency() {
 
     let environment = sandbox.path().join(".venv");
     let site_packages = create_virtualenv_skeleton(&environment);
-    write_test_distribution(
-        &site_packages,
-        "pure_helper",
-        "pure-helper",
-        "from .messages import GREETING\n",
-    );
-    fs::write(
-        site_packages.join("pure_helper").join("messages.py"),
-        "GREETING = 'hello from pure_helper'\n",
-    )
-    .expect("Failed to write dependency submodule");
 
     let entry_path = entry_dir.join("main.py");
-    fs::write(
-        &entry_path,
-        "import pure_helper\nprint(pure_helper.GREETING)\n",
-    )
-    .expect("Failed to write entry module");
+    fs::write(&entry_path, entry_source).expect("Failed to write entry module");
     let output_path = output_dir.join("bundle.py");
 
+    BundleThirdPartySandbox {
+        _sandbox: sandbox,
+        entry_path,
+        output_dir,
+        output_path,
+        environment,
+        site_packages,
+    }
+}
+
+/// Run cribo with `--bundle-third-party --emit-requirements` against the sandbox's
+/// virtualenv and assert that bundling succeeded.
+fn run_bundle_third_party_cribo(sandbox: &BundleThirdPartySandbox) -> Output {
     let output = cribo_command()
         .arg("--entry")
-        .arg(&entry_path)
+        .arg(&sandbox.entry_path)
         .arg("--output")
-        .arg(&output_path)
+        .arg(&sandbox.output_path)
         .arg("--bundle-third-party")
         .arg("--emit-requirements")
         .arg("--python")
         .arg(common::get_python_executable())
-        .env("VIRTUAL_ENV", &environment)
+        .env("VIRTUAL_ENV", &sandbox.environment)
         .env_remove("PYTHONPATH")
         .env_remove("CONDA_PREFIX")
         .output()
@@ -429,9 +435,35 @@ fn test_bundle_third_party_inlines_pure_dependency() {
         "Cribo failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    output
+}
+
+/// End-to-end: with `--bundle-third-party`, a pure-Python site-packages dependency
+/// (including a submodule reached via a relative import) is inlined into the bundle,
+/// omitted from requirements.txt, and the bundle runs without the dependency installed.
+#[test]
+fn test_bundle_third_party_inlines_pure_dependency() {
+    let sandbox =
+        create_bundle_third_party_sandbox("import pure_helper\nprint(pure_helper.GREETING)\n");
+    write_test_distribution(
+        &sandbox.site_packages,
+        "pure_helper",
+        "pure-helper",
+        "from .messages import GREETING\n",
+    );
+    fs::write(
+        sandbox
+            .site_packages
+            .join("pure_helper")
+            .join("messages.py"),
+        "GREETING = 'hello from pure_helper'\n",
+    )
+    .expect("Failed to write dependency submodule");
+
+    run_bundle_third_party_cribo(&sandbox);
 
     // The pure dependency is bundled, so no requirements file is needed
-    let requirements_path = output_dir.join("requirements.txt");
+    let requirements_path = sandbox.output_dir.join("requirements.txt");
     let requirements = fs::read_to_string(&requirements_path).unwrap_or_default();
     assert_eq!(
         requirements.trim(),
@@ -441,8 +473,8 @@ fn test_bundle_third_party_inlines_pure_dependency() {
 
     // The bundle must run without the dependency being importable
     let bundle_output = Command::new(common::get_python_executable())
-        .arg(&output_path)
-        .current_dir(&output_dir)
+        .arg(&sandbox.output_path)
+        .current_dir(&sandbox.output_dir)
         .env_remove("VIRTUAL_ENV")
         .env_remove("PYTHONPATH")
         .output()
@@ -463,28 +495,27 @@ fn test_bundle_third_party_inlines_pure_dependency() {
 /// distribution appears in requirements.txt, while pure dependencies are inlined.
 #[test]
 fn test_bundle_third_party_keeps_native_dependency_external() {
-    let sandbox = TempDir::new().expect("Failed to create temporary directory");
-    let entry_dir = sandbox.path().join("project");
-    let output_dir = sandbox.path().join("output");
-    fs::create_dir_all(&entry_dir).expect("Failed to create entry directory");
-    fs::create_dir_all(&output_dir).expect("Failed to create output directory");
-
-    let environment = sandbox.path().join(".venv");
-    let site_packages = create_virtualenv_skeleton(&environment);
+    let sandbox = create_bundle_third_party_sandbox(
+        "import native_helper\nimport pure_helper\nprint(pure_helper.GREETING, \
+         native_helper.VALUE)\n",
+    );
     write_test_distribution(
-        &site_packages,
+        &sandbox.site_packages,
         "pure_helper",
         "pure-helper",
         "GREETING = 'hello from pure_helper'\n",
     );
     write_test_distribution(
-        &site_packages,
+        &sandbox.site_packages,
         "native_helper",
         "native-helper",
         "VALUE = 'native'\n",
     );
     // A native artifact anywhere inside the package keeps the whole package external
-    let native_subdir = site_packages.join("native_helper").join("_speedups");
+    let native_subdir = sandbox
+        .site_packages
+        .join("native_helper")
+        .join("_speedups");
     fs::create_dir_all(&native_subdir).expect("Failed to create native subdirectory");
     fs::write(
         native_subdir.join("accel.cpython-312-x86_64-linux-gnu.so"),
@@ -492,40 +523,13 @@ fn test_bundle_third_party_keeps_native_dependency_external() {
     )
     .expect("Failed to write native artifact");
 
-    let entry_path = entry_dir.join("main.py");
-    fs::write(
-        &entry_path,
-        "import native_helper\nimport pure_helper\nprint(pure_helper.GREETING, \
-         native_helper.VALUE)\n",
-    )
-    .expect("Failed to write entry module");
-    let output_path = output_dir.join("bundle.py");
-
-    let output = cribo_command()
-        .arg("--entry")
-        .arg(&entry_path)
-        .arg("--output")
-        .arg(&output_path)
-        .arg("--bundle-third-party")
-        .arg("--emit-requirements")
-        .arg("--python")
-        .arg(common::get_python_executable())
-        .env("VIRTUAL_ENV", &environment)
-        .env_remove("PYTHONPATH")
-        .env_remove("CONDA_PREFIX")
-        .output()
-        .expect("Failed to execute cribo");
-    assert!(
-        output.status.success(),
-        "Cribo failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    let output = run_bundle_third_party_cribo(&sandbox);
 
     // Only the native-extension distribution stays in requirements.txt
-    assert_requirement_output(&output, &output_dir, "native-helper");
+    assert_requirement_output(&output, &sandbox.output_dir, "native-helper");
 
     // The bundle inlines the pure dependency and preserves the native import
-    let bundle = fs::read_to_string(&output_path).expect("Failed to read bundle");
+    let bundle = fs::read_to_string(&sandbox.output_path).expect("Failed to read bundle");
     assert!(
         bundle.contains("hello from pure_helper"),
         "pure dependency source must be inlined into the bundle"
