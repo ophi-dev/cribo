@@ -59,6 +59,8 @@ fn fake_venv_site_packages(venv: &Path) -> Vec<std::path::PathBuf> {
             }
         }
     }
+    // read_dir order is unspecified; sort for deterministic PYTHONPATH ordering
+    site_packages.sort();
     let windows_layout = venv.join("Lib").join("site-packages");
     if windows_layout.is_dir() {
         site_packages.push(windows_layout);

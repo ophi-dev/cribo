@@ -1798,9 +1798,18 @@ impl BundleOrchestrator {
         let mut requirements: Vec<String> = resolved_requirements.into_iter().collect();
 
         // Carry over Requires-Dist constraints declared by bundled distributions for
-        // their external (or dynamically imported) dependencies
+        // their external (or dynamically imported) dependencies. Deduplicate by
+        // distribution name: pip rejects requirements files naming one distribution
+        // twice ("Double requirement given")
+        let existing_names: crate::types::FxIndexSet<String> = requirements
+            .iter()
+            .filter_map(|entry| ModuleResolver::requirement_distribution_name(entry))
+            .collect();
         for declared in resolver.bundled_distribution_requirements(&bundled_third_party_imports) {
-            if !requirements.contains(&declared) {
+            let already_present = ModuleResolver::requirement_distribution_name(&declared)
+                .is_some_and(|name| existing_names.contains(&name))
+                || requirements.contains(&declared);
+            if !already_present {
                 requirements.push(declared);
             }
         }
