@@ -370,20 +370,26 @@ impl ImportModuleDescriptor {
     }
 }
 
-/// AST visitor detecting imports of runtime distribution-metadata APIs
-/// (`importlib.metadata`, `importlib_metadata`, `pkg_resources`).
+/// AST visitor detecting imports of runtime package-data and metadata APIs that
+/// require an installed distribution on disk (`importlib.metadata`,
+/// `importlib_metadata`, `pkg_resources`, `importlib.resources`).
 #[derive(Default)]
 struct DistributionMetadataImportDetector {
     found: bool,
 }
 
 impl DistributionMetadataImportDetector {
-    const METADATA_MODULES: [&'static str; 3] =
-        ["importlib.metadata", "importlib_metadata", "pkg_resources"];
+    const INSTALLED_PACKAGE_APIS: [&'static str; 4] = [
+        "importlib.metadata",
+        "importlib_metadata",
+        "pkg_resources",
+        "importlib.resources",
+    ];
 
-    /// Return whether an imported module name is (or is inside) a metadata API module.
+    /// Return whether an imported module name is (or is inside) an API module that
+    /// requires an installed distribution.
     fn module_is_metadata_api(module_name: &str) -> bool {
-        Self::METADATA_MODULES.iter().any(|api| {
+        Self::INSTALLED_PACKAGE_APIS.iter().any(|api| {
             module_name == *api
                 || module_name
                     .strip_prefix(api)
@@ -413,10 +419,9 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for DistributionMetadataImportDet
                 if let Some(module) = import_from.module.as_deref()
                     && (Self::module_is_metadata_api(module)
                         || (module == "importlib"
-                            && import_from
-                                .names
-                                .iter()
-                                .any(|alias| alias.name.as_str() == "metadata")))
+                            && import_from.names.iter().any(|alias| {
+                                matches!(alias.name.as_str(), "metadata" | "resources")
+                            })))
                 {
                     self.found = true;
                     return;
@@ -460,6 +465,8 @@ pub struct ModuleResolver {
     virtualenv_packages_cache: RefCell<Option<IndexSet<String>>>,
     /// Cache of "must this site-packages package stay external?" scan results
     external_packages_cache: RefCell<IndexMap<PathBuf, bool>>,
+    /// Cache of resolved environment site-packages roots (hot path for resolution)
+    site_packages_dirs_cache: RefCell<Option<Vec<PathBuf>>>,
     /// Distribution ownership indexed once for each searched filesystem root
     distribution_ownership_cache: RefCell<IndexMap<PathBuf, DistributionOwnershipIndex>>,
     /// Entry file's directory (first in search path)
@@ -507,6 +514,7 @@ impl ModuleResolver {
             classification_cache: RefCell::new(IndexMap::new()),
             virtualenv_packages_cache: RefCell::new(None),
             external_packages_cache: RefCell::new(IndexMap::new()),
+            site_packages_dirs_cache: RefCell::new(None),
             distribution_ownership_cache: RefCell::new(IndexMap::new()),
             entry_dir: None,
             python_version,
@@ -1371,9 +1379,9 @@ impl ModuleResolver {
         }
     }
 
-    /// Return whether a Python source file references runtime distribution-metadata
-    /// APIs that require an installed distribution (`importlib.metadata`,
-    /// `importlib_metadata`, `pkg_resources`).
+    /// Return whether a Python source file references runtime package-data or
+    /// metadata APIs that require an installed distribution (`importlib.metadata`,
+    /// `importlib_metadata`, `pkg_resources`, `importlib.resources`).
     fn python_file_requires_distribution(path: &Path) -> bool {
         let Ok(source) = std::fs::read_to_string(path) else {
             // Conservative: an unreadable source file keeps the package external
@@ -1382,7 +1390,7 @@ impl ModuleResolver {
         Self::python_source_requires_distribution(&source)
     }
 
-    /// Return whether Python source imports a runtime distribution-metadata API.
+    /// Return whether Python source imports a runtime package-data or metadata API.
     ///
     /// Detection is AST-based so any valid formatting (aliases, parenthesized or
     /// multiline import lists) is recognized, while comments and docstrings that merely
@@ -1408,13 +1416,29 @@ impl ModuleResolver {
         &self,
         virtualenv_override: Option<&str>,
     ) -> Vec<PathBuf> {
+        // The environment does not change during a bundling run; cache the resolved
+        // roots because this sits on the per-import resolution hot path
+        if virtualenv_override.is_none()
+            && let Ok(cache) = self.site_packages_dirs_cache.try_borrow()
+            && let Some(cached_dirs) = cache.as_ref()
+        {
+            return cached_dirs.clone();
+        }
+
         let mut site_packages_dirs = IndexSet::new();
         for virtualenv_path in self.resolve_virtualenv_paths(virtualenv_override) {
             for directory in self.get_virtualenv_site_packages_directories(&virtualenv_path) {
                 site_packages_dirs.insert(self.canonicalize_path(directory));
             }
         }
-        site_packages_dirs.into_iter().collect()
+        let directories: Vec<PathBuf> = site_packages_dirs.into_iter().collect();
+
+        if virtualenv_override.is_none()
+            && let Ok(mut cache) = self.site_packages_dirs_cache.try_borrow_mut()
+        {
+            *cache = Some(directories.clone());
+        }
+        directories
     }
 
     fn resolve_virtualenv_paths(&self, virtualenv_override: Option<&str>) -> Vec<PathBuf> {
@@ -3075,37 +3099,41 @@ IMPORT-NAMESPACE: UPPER_CASE
         Ok(())
     }
 
-    /// The distribution-metadata import detector recognizes all valid import forms and
+    /// The installed-package API import detector recognizes all valid import forms and
     /// ignores non-import mentions of the API names.
     #[test]
     fn test_distribution_metadata_import_detection() {
-        // Positive: every import form that makes dist-info metadata a runtime dependency
+        // Positive: every import form that makes the installed distribution a runtime
+        // dependency (dist-info metadata or adjacent package data files)
         for source in [
             "import importlib.metadata\n",
             "import importlib.metadata as ilm\n",
             "from importlib import metadata\n",
             "from importlib import (\n    metadata,\n)\n",
-            "from importlib import resources, metadata\n",
+            "from importlib import util, metadata\n",
             "from importlib.metadata import version\n",
             "import importlib_metadata\n",
             "import pkg_resources\n",
             "from pkg_resources import get_distribution\n",
+            "import importlib.resources\n",
+            "from importlib import resources\n",
+            "from importlib.resources import files\n",
             "def lazy():\n    from importlib import metadata\n    return metadata\n",
         ] {
             assert!(
                 ModuleResolver::python_source_requires_distribution(source),
-                "should detect metadata dependency in: {source:?}"
+                "should detect installed-package dependency in: {source:?}"
             );
         }
 
-        // Negative: importlib usage that does not touch distribution metadata
+        // Negative: importlib usage that does not touch installed-package data
         for source in [
             "import importlib\nimportlib.import_module('json')\n",
-            "from importlib import resources\n",
             "from importlib import util\n",
             "'''docstring mentioning importlib.metadata and pkg_resources'''\n",
             "# comment: importlib.metadata\nVALUE = 1\n",
             "from .metadata import local_helper\n",
+            "from .resources import local_data\n",
             "VALUE = 1\n",
         ] {
             assert!(

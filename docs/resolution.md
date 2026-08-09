@@ -213,9 +213,14 @@ Behavior in this mode:
 - Any package that ships native extension artifacts (`.so`/`.pyd`) anywhere inside its top-level
   package directory is automatically kept external as a whole and still emitted into
   `requirements.txt` — the automatic equivalent of esbuild's `external` option.
-- Packages that read their own installed distribution metadata at runtime (via
-  `importlib.metadata`, `importlib_metadata`, or `pkg_resources`) are also kept external, because
-  that metadata is unavailable once the source is inlined into a bundle.
+- Packages that read their own installed distribution data at runtime — via
+  `importlib.metadata`, `importlib_metadata`, `pkg_resources`, or `importlib.resources` — are
+  also kept external, because that metadata and package data are unavailable once the source is
+  inlined into a bundle.
+- Known limitation: packages that read adjacent data files through untyped filesystem access
+  (e.g. `open(os.path.join(os.path.dirname(__file__), "data.json"))`) cannot be detected
+  statically and may fail at runtime when inlined. Add such packages to `known_third_party` to
+  keep them external.
 - Package inspection is conservative: unreadable entries or directory symlinks inside a package
   keep it external rather than risking an incomplete scan or a symlink cycle.
 - `known_third_party` entries act as a manual escape hatch: listed packages — including their
