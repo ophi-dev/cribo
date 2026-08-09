@@ -370,6 +370,64 @@ impl ImportModuleDescriptor {
     }
 }
 
+/// AST visitor detecting imports of runtime distribution-metadata APIs
+/// (`importlib.metadata`, `importlib_metadata`, `pkg_resources`).
+#[derive(Default)]
+struct DistributionMetadataImportDetector {
+    found: bool,
+}
+
+impl DistributionMetadataImportDetector {
+    const METADATA_MODULES: [&'static str; 3] =
+        ["importlib.metadata", "importlib_metadata", "pkg_resources"];
+
+    /// Return whether an imported module name is (or is inside) a metadata API module.
+    fn module_is_metadata_api(module_name: &str) -> bool {
+        Self::METADATA_MODULES.iter().any(|api| {
+            module_name == *api
+                || module_name
+                    .strip_prefix(api)
+                    .is_some_and(|rest| rest.starts_with('.'))
+        })
+    }
+}
+
+impl<'a> ruff_python_ast::visitor::Visitor<'a> for DistributionMetadataImportDetector {
+    fn visit_stmt(&mut self, stmt: &'a ruff_python_ast::Stmt) {
+        use ruff_python_ast::Stmt;
+        if self.found {
+            return;
+        }
+        match stmt {
+            Stmt::Import(import_stmt) => {
+                if import_stmt
+                    .names
+                    .iter()
+                    .any(|alias| Self::module_is_metadata_api(alias.name.as_str()))
+                {
+                    self.found = true;
+                    return;
+                }
+            }
+            Stmt::ImportFrom(import_from) if import_from.level == 0 => {
+                if let Some(module) = import_from.module.as_deref()
+                    && (Self::module_is_metadata_api(module)
+                        || (module == "importlib"
+                            && import_from
+                                .names
+                                .iter()
+                                .any(|alias| alias.name.as_str() == "metadata")))
+                {
+                    self.found = true;
+                    return;
+                }
+            }
+            _ => {}
+        }
+        ruff_python_ast::visitor::walk_stmt(self, stmt);
+    }
+}
+
 #[derive(Debug, Default)]
 struct DistributionOwnershipIndex {
     declared_prefixes: IndexSet<String>,
@@ -889,6 +947,16 @@ impl ModuleResolver {
             }
         }
 
+        // Opt-in third-party bundling: static importlib imports inside bundled
+        // dependencies resolve against site-packages as well
+        if let Some(bundle_path) = self.resolve_in_site_packages_for_bundling(&resolved_name) {
+            debug!(
+                "Found ImportlibStatic module in site-packages at: {}",
+                bundle_path.display()
+            );
+            return Some((resolved_name, bundle_path));
+        }
+
         // Not found
         None
     }
@@ -1307,19 +1375,33 @@ impl ModuleResolver {
     /// APIs that require an installed distribution (`importlib.metadata`,
     /// `importlib_metadata`, `pkg_resources`).
     fn python_file_requires_distribution(path: &Path) -> bool {
-        const DISTRIBUTION_METADATA_MARKERS: [&str; 4] = [
-            "importlib.metadata",
-            "importlib_metadata",
-            "pkg_resources",
-            "from importlib import metadata",
-        ];
         let Ok(source) = std::fs::read_to_string(path) else {
             // Conservative: an unreadable source file keeps the package external
             return true;
         };
-        DISTRIBUTION_METADATA_MARKERS
-            .iter()
-            .any(|marker| source.contains(marker))
+        Self::python_source_requires_distribution(&source)
+    }
+
+    /// Return whether Python source imports a runtime distribution-metadata API.
+    ///
+    /// Detection is AST-based so any valid formatting (aliases, parenthesized or
+    /// multiline import lists) is recognized, while comments and docstrings that merely
+    /// mention the APIs are not.
+    fn python_source_requires_distribution(source: &str) -> bool {
+        // Cheap pre-filter: skip parsing sources that cannot reference the APIs
+        if !source.contains("importlib") && !source.contains("pkg_resources") {
+            return false;
+        }
+        let Ok(parsed) = ruff_python_parser::parse_module(source) else {
+            // Conservative: unparseable source keeps the package external
+            return true;
+        };
+        use ruff_python_ast::visitor::Visitor as _;
+        let mut detector = DistributionMetadataImportDetector::default();
+        for stmt in &parsed.syntax().body {
+            detector.visit_stmt(stmt);
+        }
+        detector.found
     }
 
     fn get_virtualenv_site_packages_search_directories(
@@ -2971,13 +3053,14 @@ IMPORT-NAMESPACE: UPPER_CASE
         let temp_dir = TempDir::new()?;
         let virtualenv = temp_dir.path().join("venv");
         let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        // Parenthesized multiline import form: detection must be AST-based
         create_test_file(
             &site_packages.join(format!(
                 "metadata_package/{}",
                 crate::python::constants::INIT_FILE
             )),
-            "from importlib.metadata import version\n__version__ = \
-             version('metadata-package')\n",
+            "from importlib import (\n    metadata,\n)\n__version__ = \
+             metadata.version('metadata-package')\n",
         )?;
         let resolver = bundle_third_party_resolver(&virtualenv)?;
 
@@ -2987,6 +3070,69 @@ IMPORT-NAMESPACE: UPPER_CASE
         assert!(
             resolver.resolve_module_path("metadata_package")?.is_none(),
             "metadata-dependent packages must not be inlined"
+        );
+
+        Ok(())
+    }
+
+    /// The distribution-metadata import detector recognizes all valid import forms and
+    /// ignores non-import mentions of the API names.
+    #[test]
+    fn test_distribution_metadata_import_detection() {
+        // Positive: every import form that makes dist-info metadata a runtime dependency
+        for source in [
+            "import importlib.metadata\n",
+            "import importlib.metadata as ilm\n",
+            "from importlib import metadata\n",
+            "from importlib import (\n    metadata,\n)\n",
+            "from importlib import resources, metadata\n",
+            "from importlib.metadata import version\n",
+            "import importlib_metadata\n",
+            "import pkg_resources\n",
+            "from pkg_resources import get_distribution\n",
+            "def lazy():\n    from importlib import metadata\n    return metadata\n",
+        ] {
+            assert!(
+                ModuleResolver::python_source_requires_distribution(source),
+                "should detect metadata dependency in: {source:?}"
+            );
+        }
+
+        // Negative: importlib usage that does not touch distribution metadata
+        for source in [
+            "import importlib\nimportlib.import_module('json')\n",
+            "from importlib import resources\n",
+            "from importlib import util\n",
+            "'''docstring mentioning importlib.metadata and pkg_resources'''\n",
+            "# comment: importlib.metadata\nVALUE = 1\n",
+            "from .metadata import local_helper\n",
+            "VALUE = 1\n",
+        ] {
+            assert!(
+                !ModuleResolver::python_source_requires_distribution(source),
+                "should not flag: {source:?}"
+            );
+        }
+    }
+
+    /// Static `importlib.import_module` relative imports inside bundled site-packages
+    /// dependencies resolve through the site-packages fallback.
+    #[test]
+    fn test_bundle_third_party_resolves_importlib_static_relative_import() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = create_bundle_third_party_virtualenv(&virtualenv)?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let (resolved_name, resolved_path) = resolver
+            .resolve_importlib_static_with_context(".helpers", Some("pure_package"))
+            .expect("importlib static relative import must resolve for bundled packages");
+        assert_eq!(resolved_name, "pure_package.helpers");
+        assert_eq!(
+            resolved_path,
+            site_packages
+                .join("pure_package/helpers.py")
+                .canonicalize()?
         );
 
         Ok(())
