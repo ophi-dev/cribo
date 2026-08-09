@@ -405,18 +405,35 @@ impl UnbundlablePatternDetector {
         })
     }
 
-    /// Return whether a call expression invokes a dynamic-import function.
-    fn is_dynamic_import_callee(&self, callee: &ruff_python_ast::Expr) -> bool {
+    /// Return how a call expression relates to dynamic importing, if at all.
+    fn dynamic_import_kind(&self, callee: &ruff_python_ast::Expr) -> Option<DynamicImportKind> {
         use ruff_python_ast::Expr;
         match callee {
-            Expr::Attribute(attribute) => attribute.attr.as_str() == "import_module",
-            Expr::Name(name) => {
-                matches!(name.id.as_str(), "import_module" | "__import__")
-                    || self.dynamic_import_aliases.contains(name.id.as_str())
+            Expr::Attribute(attribute) if attribute.attr.as_str() == "import_module" => {
+                Some(DynamicImportKind::ImportModule)
             }
-            _ => false,
+            Expr::Name(name) if name.id.as_str() == "__import__" => {
+                Some(DynamicImportKind::DunderImport)
+            }
+            Expr::Name(name)
+                if name.id.as_str() == "import_module"
+                    || self.dynamic_import_aliases.contains(name.id.as_str()) =>
+            {
+                Some(DynamicImportKind::ImportModule)
+            }
+            _ => None,
         }
     }
+}
+
+/// The dynamic-import mechanism used by a call expression.
+enum DynamicImportKind {
+    /// `importlib.import_module(...)` (possibly aliased); literal arguments are
+    /// statically discovered, so only non-literal ones block bundling
+    ImportModule,
+    /// `__import__(...)`; import discovery never resolves these, so any call blocks
+    /// bundling
+    DunderImport,
 }
 
 impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
@@ -472,19 +489,27 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
         if self.found {
             return;
         }
-        // Dynamic imports with non-literal names (e.g.
-        // `importlib.import_module(f".{backend}", __package__)`) cannot be discovered
-        // statically, so the modules they load would be missing from the bundle
-        if let Expr::Call(call) = expr
-            && self.is_dynamic_import_callee(&call.func)
-            && call
-                .arguments
-                .args
-                .first()
-                .is_some_and(|argument| !matches!(argument, Expr::StringLiteral(_)))
-        {
-            self.found = true;
-            return;
+        // Dynamic imports whose targets are not statically discovered would be missing
+        // from the bundle: non-literal `import_module` names cannot be resolved, and
+        // `__import__` calls are never handled by import discovery at all
+        if let Expr::Call(call) = expr {
+            match self.dynamic_import_kind(&call.func) {
+                Some(DynamicImportKind::DunderImport) => {
+                    self.found = true;
+                    return;
+                }
+                Some(DynamicImportKind::ImportModule)
+                    if call
+                        .arguments
+                        .args
+                        .first()
+                        .is_some_and(|argument| !matches!(argument, Expr::StringLiteral(_))) =>
+                {
+                    self.found = true;
+                    return;
+                }
+                _ => {}
+            }
         }
         ruff_python_ast::visitor::walk_expr(self, expr);
     }
@@ -3822,6 +3847,8 @@ Import-Name: injected_module
             "from importlib import import_module as load\nload(f'.{name}', __package__)\n",
             "from importlib import (\n    import_module as _load,\n)\n_load(module_variable)\n",
             "__import__(module_variable)\n",
+            "__import__('json')\n",
+            "backend = __import__('pkg.backend', fromlist=['KIND'])\n",
         ] {
             assert!(
                 ModuleResolver::python_source_blocks_bundling(source),
@@ -3833,7 +3860,6 @@ Import-Name: injected_module
             "import importlib\nimportlib.import_module('json')\n",
             "import importlib\nimportlib.import_module('.helper', 'pkg')\n",
             "from importlib import import_module as load\nload('.helper', 'pkg')\n",
-            "__import__('json')\n",
         ] {
             assert!(
                 !ModuleResolver::python_source_blocks_bundling(source),

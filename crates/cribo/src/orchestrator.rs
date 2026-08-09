@@ -1795,24 +1795,42 @@ impl BundleOrchestrator {
             resolver.get_distribution_metadata_search_directories(),
         );
         let resolved_requirements = requirement_resolver.resolve(&requirement_imports)?;
-        let mut requirements: Vec<String> = resolved_requirements.into_iter().collect();
+        let requirements: Vec<String> = resolved_requirements.into_iter().collect();
 
         // Carry over Requires-Dist constraints declared by bundled distributions for
-        // their external (or dynamically imported) dependencies. Deduplicate by
-        // distribution name: pip rejects requirements files naming one distribution
-        // twice ("Double requirement given")
-        let existing_names: crate::types::FxIndexSet<String> = requirements
-            .iter()
-            .filter_map(|entry| ModuleResolver::requirement_distribution_name(entry))
-            .collect();
-        for declared in resolver.bundled_distribution_requirements(&bundled_third_party_imports) {
-            let already_present = ModuleResolver::requirement_distribution_name(&declared)
-                .is_some_and(|name| existing_names.contains(&name))
-                || requirements.contains(&declared);
-            if !already_present {
-                requirements.push(declared);
+        // their external (or dynamically imported) dependencies. requirements files
+        // must name a distribution once, so entries are merged by normalized name,
+        // preferring a constrained declaration over a bare resolved name
+        let mut entries_by_name: IndexMap<String, String> = IndexMap::new();
+        let mut unnamed_entries: Vec<String> = Vec::new();
+        for entry in requirements {
+            match ModuleResolver::requirement_distribution_name(&entry) {
+                Some(name) => {
+                    entries_by_name.insert(name, entry);
+                }
+                None => unnamed_entries.push(entry),
             }
         }
+        for declared in resolver.bundled_distribution_requirements(&bundled_third_party_imports) {
+            let Some(name) = ModuleResolver::requirement_distribution_name(&declared) else {
+                if !unnamed_entries.contains(&declared) {
+                    unnamed_entries.push(declared);
+                }
+                continue;
+            };
+            match entries_by_name.get(&name) {
+                // A bare resolved name carries no constraints; the declared entry does
+                Some(existing) if *existing == name && declared != name => {
+                    entries_by_name.insert(name, declared);
+                }
+                Some(_) => {}
+                None => {
+                    entries_by_name.insert(name, declared);
+                }
+            }
+        }
+        let mut requirements: Vec<String> = entries_by_name.into_values().collect();
+        requirements.extend(unnamed_entries);
         requirements.sort();
 
         Ok(requirements.join("\n"))
