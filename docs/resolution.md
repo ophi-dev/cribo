@@ -217,6 +217,14 @@ Behavior in this mode:
   `importlib.metadata`, `importlib_metadata`, `pkg_resources`, or `importlib.resources` — are
   also kept external, because that metadata and package data are unavailable once the source is
   inlined into a bundle.
+- Packages performing dynamic imports with non-literal module names (e.g.
+  `importlib.import_module(f".{backend}", __package__)`) are kept external, because the modules
+  they load cannot be discovered statically.
+- Distributions whose `Requires-Python` is incompatible with the configured `target-version`
+  are kept external so installers can reject the mismatch instead of shipping unsupported code.
+- `Requires-Dist` constraints declared by bundled distributions are carried into
+  `requirements.txt` for their external dependencies (entries satisfied by other bundled
+  distributions or conditioned on extras are dropped).
 - Known limitation: packages that read adjacent data files through untyped filesystem access
   (e.g. `open(os.path.join(os.path.dirname(__file__), "data.json"))`) cannot be detected
   statically and may fail at runtime when inlined. Add such packages to `known_third_party` to

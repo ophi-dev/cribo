@@ -432,54 +432,90 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for DistributionMetadataImportDet
         }
         ruff_python_ast::visitor::walk_stmt(self, stmt);
     }
+
+    fn visit_expr(&mut self, expr: &'a ruff_python_ast::Expr) {
+        use ruff_python_ast::Expr;
+        if self.found {
+            return;
+        }
+        // Dynamic imports with non-literal names (e.g.
+        // `importlib.import_module(f".{backend}", __package__)`) cannot be discovered
+        // statically, so the modules they load would be missing from the bundle
+        if let Expr::Call(call) = expr {
+            let is_dynamic_import_callee = match &*call.func {
+                Expr::Attribute(attribute) => attribute.attr.as_str() == "import_module",
+                Expr::Name(name) => matches!(name.id.as_str(), "import_module" | "__import__"),
+                _ => false,
+            };
+            if is_dynamic_import_callee
+                && call
+                    .arguments
+                    .args
+                    .first()
+                    .is_some_and(|argument| !matches!(argument, Expr::StringLiteral(_)))
+            {
+                self.found = true;
+                return;
+            }
+        }
+        ruff_python_ast::visitor::walk_expr(self, expr);
+    }
 }
 
+/// Ownership and policy facts for one installed distribution (a `.dist-info` entry).
+#[derive(Debug, Default)]
+struct DistributionInfo {
+    /// Distribution name from `METADATA` (e.g. "pure-helper")
+    name: String,
+    /// Raw `Requires-Python` specifier, when declared
+    requires_python: Option<String>,
+    /// Raw `Requires-Dist` entries, when declared
+    requires_dist: Vec<String>,
+    /// Whether the distribution installs native artifacts (`.so`/`.pyd`) per `RECORD`
+    ships_native_artifacts: bool,
+    /// Import prefixes declared via `Import-Name`/`Import-Namespace`
+    declared_prefixes: IndexSet<String>,
+    /// Import names implied by installed `RECORD` files
+    record_imports: IndexSet<String>,
+}
+
+impl DistributionInfo {
+    /// Return whether this distribution's metadata or installed files claim an import.
+    fn owns_import(&self, import_name: &str) -> bool {
+        self.record_imports.contains(import_name)
+            || self.declared_prefixes.iter().any(|prefix| {
+                import_name == prefix
+                    || import_name
+                        .strip_prefix(prefix.as_str())
+                        .is_some_and(|suffix| suffix.starts_with('.'))
+            })
+    }
+}
+
+/// All installed distributions discovered under one search root.
 #[derive(Debug, Default)]
 struct DistributionOwnershipIndex {
-    declared_prefixes: IndexSet<String>,
-    record_imports: IndexSet<String>,
-    /// Import prefixes declared by distributions that ship native artifacts
-    native_declared_prefixes: IndexSet<String>,
-    /// Import names installed by distributions that ship native artifacts
-    native_record_imports: IndexSet<String>,
+    distributions: Vec<DistributionInfo>,
 }
 
 impl DistributionOwnershipIndex {
-    /// Return whether any prefix in the set covers an import name.
-    fn prefixes_cover_import(prefixes: &IndexSet<String>, import_name: &str) -> bool {
-        prefixes.iter().any(|prefix| {
-            import_name == prefix
-                || import_name
-                    .strip_prefix(prefix.as_str())
-                    .is_some_and(|suffix| suffix.starts_with('.'))
-        })
+    /// Return the first distribution claiming an import, if any.
+    fn distribution_for_import(&self, import_name: &str) -> Option<&DistributionInfo> {
+        self.distributions
+            .iter()
+            .find(|distribution| distribution.owns_import(import_name))
     }
 
     /// Return whether indexed metadata or installed files claim an import.
     fn owns_import(&self, import_name: &str) -> bool {
-        self.record_imports.contains(import_name)
-            || Self::prefixes_cover_import(&self.declared_prefixes, import_name)
+        self.distribution_for_import(import_name).is_some()
     }
 
     /// Return whether the distribution claiming an import ships native artifacts
     /// anywhere in its installed files (e.g. a sibling `_backend.so` module).
     fn native_distribution_owns_import(&self, import_name: &str) -> bool {
-        self.native_record_imports.contains(import_name)
-            || Self::prefixes_cover_import(&self.native_declared_prefixes, import_name)
-    }
-
-    /// Merge one distribution's ownership facts, tagging them as native-shipping
-    /// when the distribution installs native artifacts.
-    fn absorb_distribution(&mut self, distribution: Self, ships_native_artifacts: bool) {
-        if ships_native_artifacts {
-            self.native_declared_prefixes
-                .extend(distribution.declared_prefixes.iter().cloned());
-            self.native_record_imports
-                .extend(distribution.record_imports.iter().cloned());
-        }
-        self.declared_prefixes
-            .extend(distribution.declared_prefixes);
-        self.record_imports.extend(distribution.record_imports);
+        self.distribution_for_import(import_name)
+            .is_some_and(|distribution| distribution.ships_native_artifacts)
     }
 }
 
@@ -1345,6 +1381,16 @@ impl ModuleResolver {
             return true;
         }
 
+        // A distribution targeting a newer Python than the bundle's target version may
+        // use unsupported syntax or APIs; leave it external so installers can reject it
+        if self.distribution_requires_incompatible_python(search_root, module_name) {
+            debug!(
+                "Import '{module_name}' is owned by a distribution whose Requires-Python is \
+                 incompatible with the target version; keeping it external"
+            );
+            return true;
+        }
+
         let top_level = module_name.split('.').next().unwrap_or(module_name);
         let package_dir = search_root.join(top_level);
         if !package_dir.is_dir() {
@@ -1444,7 +1490,10 @@ impl ModuleResolver {
     /// mention the APIs are not.
     fn python_source_requires_distribution(source: &str) -> bool {
         // Cheap pre-filter: skip parsing sources that cannot reference the APIs
-        if !source.contains("importlib") && !source.contains("pkg_resources") {
+        if !source.contains("importlib")
+            && !source.contains("pkg_resources")
+            && !source.contains("__import__")
+        {
             return false;
         }
         let Ok(parsed) = ruff_python_parser::parse_module(source) else {
@@ -1679,6 +1728,96 @@ impl ModuleResolver {
         })
     }
 
+    /// Return whether the distribution claiming an import declares a `Requires-Python`
+    /// specifier that the configured target version does not satisfy.
+    fn distribution_requires_incompatible_python(
+        &self,
+        site_packages_dir: &Path,
+        import_name: &str,
+    ) -> bool {
+        self.with_distribution_ownership_index(site_packages_dir, |index| {
+            index
+                .distribution_for_import(import_name)
+                .and_then(|distribution| distribution.requires_python.as_deref())
+                .is_some_and(|specifiers| !self.target_python_satisfies(specifiers))
+        })
+    }
+
+    /// Return whether the configured target Python version satisfies a PEP 440
+    /// specifier set. Unparsable specifiers conservatively report as unsatisfied.
+    fn target_python_satisfies(&self, specifiers: &str) -> bool {
+        use std::str::FromStr;
+        let Ok(specifiers) = pep508_rs::pep440_rs::VersionSpecifiers::from_str(specifiers) else {
+            warn!("Ignoring unparsable Requires-Python specifier: {specifiers}");
+            return false;
+        };
+        let target = pep508_rs::pep440_rs::Version::new([3, u64::from(self.python_version)]);
+        specifiers.contains(&target)
+    }
+
+    /// Collect the PEP 508 `Requires-Dist` entries of the distributions owning the
+    /// given bundled imports, excluding requirements that are themselves bundled and
+    /// extras-conditioned requirements.
+    ///
+    /// Inlining a distribution removes it from `requirements.txt`, so its declared
+    /// dependency constraints must be carried over for the external dependencies it
+    /// pulls in (including dynamically or conditionally imported ones).
+    pub(crate) fn bundled_distribution_requirements(
+        &self,
+        bundled_imports: &FxIndexSet<String>,
+    ) -> Vec<String> {
+        let mut bundled_distribution_names: IndexSet<String> = IndexSet::new();
+        let mut declared_requirements: IndexSet<String> = IndexSet::new();
+
+        let virtualenv_dirs = self.get_virtualenv_site_packages_search_directories(None);
+        for import_name in bundled_imports {
+            for site_packages_dir in &virtualenv_dirs {
+                let found = self.with_distribution_ownership_index(site_packages_dir, |index| {
+                    index
+                        .distribution_for_import(import_name)
+                        .map(|dist| (dist.name.clone(), dist.requires_dist.clone()))
+                });
+                if let Some((name, requires_dist)) = found {
+                    if !name.is_empty() {
+                        bundled_distribution_names.insert(Self::normalize_distribution_name(&name));
+                    }
+                    declared_requirements.extend(requires_dist);
+                    break;
+                }
+            }
+        }
+
+        let mut requirements: Vec<String> = declared_requirements
+            .into_iter()
+            .filter(|entry| {
+                // Extras-conditioned requirements only apply when the extra is requested
+                let marker = entry.split_once(';').map(|(_, marker)| marker);
+                if marker.is_some_and(|marker| marker.contains("extra")) {
+                    return false;
+                }
+                // Requirements satisfied by other bundled distributions are not needed
+                Self::requirement_distribution_name(entry)
+                    .is_none_or(|name| !bundled_distribution_names.contains(&name))
+            })
+            .collect();
+        requirements.sort();
+        requirements
+    }
+
+    /// Extract the normalized distribution name of a PEP 508 requirement string.
+    fn requirement_distribution_name(requirement: &str) -> Option<String> {
+        use std::str::FromStr;
+        pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(requirement)
+            .ok()
+            .map(|parsed| parsed.name.to_string())
+    }
+
+    /// Normalize a distribution name per PEP 503 for set comparisons.
+    fn normalize_distribution_name(name: &str) -> String {
+        pep508_rs::PackageName::new(name.to_owned())
+            .map_or_else(|_| name.to_owned(), |package| package.to_string())
+    }
+
     /// Run a query against the (lazily built, cached) ownership index of a search root.
     fn with_distribution_ownership_index<R>(
         &self,
@@ -1718,10 +1857,9 @@ impl ModuleResolver {
                 continue;
             }
 
-            // Index each distribution separately so ownership facts can be tagged with
-            // whether that distribution ships native artifacts
-            let mut distribution = DistributionOwnershipIndex::default();
-            let mut ships_native_artifacts = false;
+            // Index each distribution separately so ownership facts carry the
+            // distribution's own policy metadata (native artifacts, requirements)
+            let mut distribution = DistributionInfo::default();
 
             let metadata_file = path.join("METADATA");
             if let Ok(metadata) = std::fs::read_to_string(metadata_file) {
@@ -1741,12 +1879,12 @@ impl ModuleResolver {
                         .and_then(OsStr::to_str)
                         .is_some_and(|extension| matches!(extension, "so" | "pyd"))
                     {
-                        ships_native_artifacts = true;
+                        distribution.ships_native_artifacts = true;
                     }
                 }
             }
 
-            index.absorb_distribution(distribution, ships_native_artifacts);
+            index.distributions.push(distribution);
         }
 
         index
@@ -1777,26 +1915,38 @@ impl ModuleResolver {
         field
     }
 
-    /// Add Core Metadata import declarations to an ownership index.
-    fn index_distribution_metadata(metadata: &str, index: &mut DistributionOwnershipIndex) {
+    /// Add Core Metadata declarations (import names, distribution name, requirement
+    /// specifiers) to a distribution's ownership record.
+    fn index_distribution_metadata(metadata: &str, distribution: &mut DistributionInfo) {
         for line in metadata.lines() {
             let Some((header, value)) = line.split_once(':') else {
                 continue;
             };
-            if !header.eq_ignore_ascii_case("Import-Name")
-                && !header.eq_ignore_ascii_case("Import-Namespace")
+            if header.eq_ignore_ascii_case("Name") {
+                value.trim().clone_into(&mut distribution.name);
+            } else if header.eq_ignore_ascii_case("Requires-Python") {
+                let specifier = value.trim();
+                if !specifier.is_empty() {
+                    distribution.requires_python = Some(specifier.to_owned());
+                }
+            } else if header.eq_ignore_ascii_case("Requires-Dist") {
+                let requirement = value.trim();
+                if !requirement.is_empty() {
+                    distribution.requires_dist.push(requirement.to_owned());
+                }
+            } else if header.eq_ignore_ascii_case("Import-Name")
+                || header.eq_ignore_ascii_case("Import-Namespace")
             {
-                continue;
-            }
-            let prefix = value.split(';').next().unwrap_or("").trim();
-            if !prefix.is_empty() {
-                index.declared_prefixes.insert(prefix.to_owned());
+                let prefix = value.split(';').next().unwrap_or("").trim();
+                if !prefix.is_empty() {
+                    distribution.declared_prefixes.insert(prefix.to_owned());
+                }
             }
         }
     }
 
     /// Add import paths implied by one installed distribution `RECORD` entry.
-    fn index_record_path(record_path: &str, index: &mut DistributionOwnershipIndex) {
+    fn index_record_path(record_path: &str, distribution: &mut DistributionInfo) {
         let normalized = record_path.cow_replace('\\', "/");
         if normalized.starts_with('/')
             || normalized
@@ -1821,14 +1971,14 @@ impl ModuleResolver {
         let mut import_parts = Vec::new();
         for directory in components {
             import_parts.push(directory);
-            index.record_imports.insert(import_parts.join("."));
+            distribution.record_imports.insert(import_parts.join("."));
         }
 
         if let Some((module_name, _)) = file_name.split_once('.')
             && !module_name.is_empty()
         {
             import_parts.push(module_name);
-            index.record_imports.insert(import_parts.join("."));
+            distribution.record_imports.insert(import_parts.join("."));
         }
     }
 
@@ -2411,16 +2561,22 @@ mod tests {
     fn test_distribution_metadata_import_headers_are_case_insensitive() {
         let metadata = "\
 Metadata-Version: 2.5
+name: mixed-case-distribution
 import-name: lower_case.module
 IMPORT-NAMESPACE: UPPER_CASE
+requires-python: >=3.8
+requires-dist: helper-dependency>=1
 ";
 
-        let mut index = DistributionOwnershipIndex::default();
-        ModuleResolver::index_distribution_metadata(metadata, &mut index);
+        let mut distribution = DistributionInfo::default();
+        ModuleResolver::index_distribution_metadata(metadata, &mut distribution);
 
-        assert!(index.owns_import("lower_case.module.child"));
-        assert!(index.owns_import("UPPER_CASE.child"));
-        assert!(!index.owns_import("unrelated"));
+        assert!(distribution.owns_import("lower_case.module.child"));
+        assert!(distribution.owns_import("UPPER_CASE.child"));
+        assert!(!distribution.owns_import("unrelated"));
+        assert_eq!(distribution.name, "mixed-case-distribution");
+        assert_eq!(distribution.requires_python.as_deref(), Some(">=3.8"));
+        assert_eq!(distribution.requires_dist, vec!["helper-dependency>=1"]);
     }
 
     #[test]
@@ -3427,6 +3583,152 @@ IMPORT-NAMESPACE: UPPER_CASE
             classification.bundle,
             BundleDisposition::External,
             "native artifacts in quoted RECORD paths must keep the distribution external"
+        );
+
+        Ok(())
+    }
+
+    /// A distribution whose `Requires-Python` is incompatible with the configured
+    /// target version stays external so installers can reject the mismatch.
+    #[test]
+    fn test_bundle_third_party_enforces_requires_python() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        for (package, requires_python) in [("strict_pkg", ">=3.13"), ("relaxed_pkg", ">=3.8")] {
+            create_test_file(
+                &site_packages.join(format!("{package}/{}", crate::python::constants::INIT_FILE)),
+                "VALUE = 1\n",
+            )?;
+            create_test_file(
+                &site_packages.join(format!("{package}-1.0.dist-info/METADATA")),
+                &format!(
+                    "Metadata-Version: 2.5\nName: {package}\nVersion: 1.0\nRequires-Python: \
+                     {requires_python}\nImport-Name: {package}\n"
+                ),
+            )?;
+        }
+        // Default target version is py310
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let strict = resolver.classify_import("strict_pkg");
+        assert_eq!(
+            strict.bundle,
+            BundleDisposition::External,
+            "Requires-Python >=3.13 must keep the distribution external for a py310 target"
+        );
+        assert!(resolver.resolve_module_path("strict_pkg")?.is_none());
+
+        let relaxed = resolver.classify_import("relaxed_pkg");
+        assert_eq!(
+            relaxed.bundle,
+            BundleDisposition::Include,
+            "compatible Requires-Python must not prevent bundling"
+        );
+
+        Ok(())
+    }
+
+    /// Packages using dynamic imports with non-literal module names stay external
+    /// because their dynamically loaded submodules cannot be discovered statically.
+    #[test]
+    fn test_bundle_third_party_keeps_dynamic_import_distribution_external() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!(
+                "dynamic_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "import importlib\nbackend = 'json_backend'\nimpl = \
+             importlib.import_module(f'.{backend}', __package__)\n",
+        )?;
+        create_test_file(&site_packages.join("dynamic_pkg/json_backend.py"), "")?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let classification = resolver.classify_import("dynamic_pkg");
+        assert_eq!(
+            classification.bundle,
+            BundleDisposition::External,
+            "distributions with unresolved dynamic imports must stay external"
+        );
+        assert!(resolver.resolve_module_path("dynamic_pkg")?.is_none());
+
+        Ok(())
+    }
+
+    /// The dynamic-import detector flags non-literal module names but leaves literal
+    /// (statically resolvable) dynamic imports alone.
+    #[test]
+    fn test_dynamic_import_detection() {
+        for source in [
+            "import importlib\nimportlib.import_module(f'.{name}', __package__)\n",
+            "import importlib\nimportlib.import_module(module_variable)\n",
+            "from importlib import import_module\nimport_module(module_variable)\n",
+            "__import__(module_variable)\n",
+        ] {
+            assert!(
+                ModuleResolver::python_source_requires_distribution(source),
+                "should flag non-literal dynamic import in: {source:?}"
+            );
+        }
+
+        for source in [
+            "import importlib\nimportlib.import_module('json')\n",
+            "import importlib\nimportlib.import_module('.helper', 'pkg')\n",
+            "__import__('json')\n",
+        ] {
+            assert!(
+                !ModuleResolver::python_source_requires_distribution(source),
+                "literal dynamic imports are statically resolvable and must not be flagged: \
+                 {source:?}"
+            );
+        }
+    }
+
+    /// `Requires-Dist` entries of bundled distributions are carried over, except those
+    /// satisfied by other bundled distributions or conditioned on extras.
+    #[test]
+    fn test_bundled_distribution_requirements_propagation() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!(
+                "pure_parent/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "import pure_child\n",
+        )?;
+        create_test_file(
+            &site_packages.join("pure_parent-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: Pure_Parent\nVersion: 1.0\nImport-Name: \
+             pure_parent\nRequires-Dist: lazy-extra<2\nRequires-Dist: pure-child>=1\nRequires-Dist: \
+             docs-tool; extra == \"docs\"\n",
+        )?;
+        create_test_file(
+            &site_packages.join(format!(
+                "pure_child/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("pure_child-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: pure-child\nVersion: 1.0\nImport-Name: pure_child\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let mut bundled_imports = FxIndexSet::default();
+        bundled_imports.insert("pure_parent".to_owned());
+        bundled_imports.insert("pure_child".to_owned());
+
+        let requirements = resolver.bundled_distribution_requirements(&bundled_imports);
+        assert_eq!(
+            requirements,
+            vec!["lazy-extra<2".to_owned()],
+            "constraints for external deps are kept; bundled deps and extras are dropped"
         );
 
         Ok(())

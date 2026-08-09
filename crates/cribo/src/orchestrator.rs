@@ -1755,6 +1755,8 @@ impl BundleOrchestrator {
         graph: &DependencyGraph,
     ) -> Result<String> {
         let mut requirement_imports = IndexMap::new();
+        let mut bundled_third_party_imports: crate::types::FxIndexSet<String> =
+            crate::types::FxIndexSet::default();
 
         // TODO: Use TYPE_CHECKING information from the dependency graph to filter out
         // dependencies that are only used for type checking. These could be placed
@@ -1768,9 +1770,12 @@ impl BundleOrchestrator {
                     debug!("Checking import '{import}' for requirements");
                     let classification = resolver.classify_import(import);
                     // Under --bundle-third-party, imports whose source is inlined into
-                    // the bundle need no requirement entry; only external dependencies
-                    // (e.g. native-extension packages) are emitted
+                    // the bundle need no requirement entry, but their distributions'
+                    // declared dependencies must still be carried over below
                     if self.config.bundle_third_party() && classification.should_bundle() {
+                        if matches!(classification.origin, ImportOrigin::ThirdParty) {
+                            bundled_third_party_imports.insert(import.clone());
+                        }
                         continue;
                     }
                     if matches!(
@@ -1791,6 +1796,14 @@ impl BundleOrchestrator {
         );
         let resolved_requirements = requirement_resolver.resolve(&requirement_imports)?;
         let mut requirements: Vec<String> = resolved_requirements.into_iter().collect();
+
+        // Carry over Requires-Dist constraints declared by bundled distributions for
+        // their external (or dynamically imported) dependencies
+        for declared in resolver.bundled_distribution_requirements(&bundled_third_party_imports) {
+            if !requirements.contains(&declared) {
+                requirements.push(declared);
+            }
+        }
         requirements.sort();
 
         Ok(requirements.join("\n"))
