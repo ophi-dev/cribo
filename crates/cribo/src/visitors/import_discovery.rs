@@ -423,13 +423,28 @@ impl<'a> ImportDiscoveryVisitor<'a> {
     }
 
     fn extract_package_context(&self, call: &ExprCall) -> Option<String> {
-        // Extract the second argument if it exists (package context for relative imports)
+        // Extract the second positional argument if it exists (package context for
+        // relative imports)
         if call.arguments.args.len() >= 2
             && let Expr::StringLiteral(ExprStringLiteral { value, .. }) = &call.arguments.args[1]
         {
             return Some(value.to_str().to_owned());
         }
-        None
+        // Also accept the keyword form: importlib.import_module(".helper", package="pkg")
+        call.arguments.keywords.iter().find_map(|keyword| {
+            let is_package_keyword = keyword
+                .arg
+                .as_ref()
+                .is_some_and(|name| name.as_str() == "package");
+            if !is_package_keyword {
+                return None;
+            }
+            if let Expr::StringLiteral(ExprStringLiteral { value, .. }) = &keyword.value {
+                Some(value.to_str().to_owned())
+            } else {
+                None
+            }
+        })
     }
 
     /// Record an import statement
@@ -1036,5 +1051,43 @@ from ...package import sibling
             imports[2].import_type,
             ImportType::Relative { level: 3 }
         ));
+    }
+
+    /// The package context of static `importlib.import_module` relative imports is
+    /// captured from both the positional and the keyword `package=` argument forms.
+    #[test]
+    fn test_importlib_static_package_context_positional_and_keyword() {
+        let source = "\
+import importlib
+importlib.import_module('.positional', 'pkg_positional')
+importlib.import_module('.keyword', package='pkg_keyword')
+";
+        let parsed = parse_module(source).expect("Failed to parse test module");
+        let mut visitor = ImportDiscoveryVisitor::new();
+        for stmt in &parsed.syntax().body {
+            visitor.visit_stmt(stmt);
+        }
+        let imports = visitor.into_imports();
+
+        let static_imports: Vec<_> = imports
+            .iter()
+            .filter(|import| matches!(import.import_type, ImportType::ImportlibStatic))
+            .collect();
+        assert_eq!(static_imports.len(), 2);
+
+        assert_eq!(
+            static_imports[0].module_name.as_deref(),
+            Some(".positional")
+        );
+        assert_eq!(
+            static_imports[0].package_context.as_deref(),
+            Some("pkg_positional")
+        );
+
+        assert_eq!(static_imports[1].module_name.as_deref(), Some(".keyword"));
+        assert_eq!(
+            static_imports[1].package_context.as_deref(),
+            Some("pkg_keyword")
+        );
     }
 }
