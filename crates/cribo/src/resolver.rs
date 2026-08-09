@@ -1393,7 +1393,7 @@ impl ModuleResolver {
             return false;
         }
         let Ok(parsed) = ruff_python_parser::parse_module(source) else {
-            // Conservative: unparseable source keeps the package external
+            // Conservative: unparsable source keeps the package external
             return true;
         };
         use ruff_python_ast::visitor::Visitor as _;
