@@ -1,0 +1,9 @@
+---
+source: crates/cribo/tests/test_bundling_snapshots.rs
+input_file: crates/cribo/tests/fixtures/bundle_third_party_pure_dependency/main.py
+---
+ExecutionResults {
+    status: Success,
+    stdout: "Hello from pure_helper, bundler!",
+    stderr: "",
+}

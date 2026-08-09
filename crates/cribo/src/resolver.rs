@@ -1734,9 +1734,9 @@ impl ModuleResolver {
             {
                 let reader = BufReader::new(file);
                 for line in reader.lines().map_while(Result::ok) {
-                    let path_part = line.split(',').next().unwrap_or("");
-                    Self::index_record_path(path_part, &mut distribution);
-                    if Path::new(path_part)
+                    let path_part = Self::record_line_first_field(&line);
+                    Self::index_record_path(&path_part, &mut distribution);
+                    if Path::new(path_part.as_str())
                         .extension()
                         .and_then(OsStr::to_str)
                         .is_some_and(|extension| matches!(extension, "so" | "pyd"))
@@ -1750,6 +1750,31 @@ impl ModuleResolver {
         }
 
         index
+    }
+
+    /// Extract the first CSV field of an installed-files `RECORD` line.
+    ///
+    /// PEP 376 `RECORD` files are CSV: paths containing commas are double-quoted with
+    /// `""` escapes, so a plain `split(',')` would truncate them.
+    fn record_line_first_field(line: &str) -> String {
+        if !line.starts_with('"') {
+            return line.split(',').next().unwrap_or("").to_owned();
+        }
+        let mut field = String::new();
+        let mut chars = line[1..].chars();
+        while let Some(character) = chars.next() {
+            if character == '"' {
+                match chars.next() {
+                    // An escaped quote ("") inside a quoted field
+                    Some('"') => field.push('"'),
+                    // The closing quote: the field ends here
+                    _ => break,
+                }
+            } else {
+                field.push(character);
+            }
+        }
+        field
     }
 
     /// Add Core Metadata import declarations to an ownership index.
@@ -1947,13 +1972,16 @@ impl ModuleResolver {
             self.canonicalize_path(joined)
         };
 
-        // Find which search directory (entry dir, PYTHONPATH, or src) contains this file.
-        // Under third-party bundling, site-packages roots participate as well so relative
-        // imports inside bundled dependencies resolve to absolute module names.
-        let mut search_dirs = self.get_search_directories();
+        // Find which root contains this file. Under third-party bundling, site-packages
+        // roots participate as well so relative imports inside bundled dependencies
+        // resolve to absolute module names; they are consulted first because they may be
+        // nested inside a search directory (e.g. a virtualenv beside the entry file),
+        // whose prefix would otherwise win and yield a mangled module name.
+        let mut search_dirs = Vec::new();
         if self.config.bundle_third_party() {
             search_dirs.extend(self.get_virtualenv_site_packages_search_directories(None));
         }
+        search_dirs.extend(self.get_search_directories());
         log::trace!(
             "path_to_module_parts: absolute_file_path={}, search_dirs={:?}",
             absolute_file_path.display(),
@@ -3343,6 +3371,63 @@ IMPORT-NAMESPACE: UPPER_CASE
             "imports owned by native-shipping distributions must stay external"
         );
         assert!(resolver.resolve_module_path("frontend")?.is_none());
+
+        Ok(())
+    }
+
+    /// `RECORD` files are CSV: quoted paths with embedded commas (and `""` escapes)
+    /// must be parsed whole so native artifacts inside them are still detected.
+    #[test]
+    fn test_record_line_first_field_handles_csv_quoting() {
+        assert_eq!(
+            ModuleResolver::record_line_first_field("frontend/__init__.py,,"),
+            "frontend/__init__.py"
+        );
+        assert_eq!(
+            ModuleResolver::record_line_first_field(
+                "\"weird,dir/_backend.cpython-312-test.so\",sha256=abc,123"
+            ),
+            "weird,dir/_backend.cpython-312-test.so"
+        );
+        assert_eq!(
+            ModuleResolver::record_line_first_field("\"quo\"\"ted\"\"/module.py\",,"),
+            "quo\"ted\"/module.py"
+        );
+        assert_eq!(ModuleResolver::record_line_first_field(""), "");
+    }
+
+    /// A native artifact whose RECORD path is CSV-quoted (contains a comma) still
+    /// marks the distribution as native-shipping.
+    #[test]
+    fn test_bundle_third_party_detects_native_artifact_in_quoted_record_path() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!(
+                "quoted_frontend/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 'frontend'\n",
+        )?;
+        create_test_file(
+            &site_packages.join("quoted_distribution-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: quoted-distribution\nVersion: 1.0\nImport-Name: \
+             quoted_frontend\n",
+        )?;
+        create_test_file(
+            &site_packages.join("quoted_distribution-1.0.dist-info/RECORD"),
+            "quoted_frontend/__init__.py,,\n\"data,dir/_accel.cpython-312-test.so\",sha256=abc,\
+             123\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let classification = resolver.classify_import("quoted_frontend");
+        assert_eq!(
+            classification.bundle,
+            BundleDisposition::External,
+            "native artifacts in quoted RECORD paths must keep the distribution external"
+        );
 
         Ok(())
     }

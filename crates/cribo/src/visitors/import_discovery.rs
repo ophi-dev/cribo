@@ -422,6 +422,10 @@ impl<'a> ImportDiscoveryVisitor<'a> {
         None
     }
 
+    /// Extract the package context of a static `importlib.import_module` call.
+    ///
+    /// Only string-literal contexts are recognized, supplied either as the second
+    /// positional argument or as the `package=` keyword argument.
     fn extract_package_context(&self, call: &ExprCall) -> Option<String> {
         // Extract the second positional argument if it exists (package context for
         // relative imports)
