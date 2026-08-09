@@ -39,6 +39,12 @@ pub struct Config {
     /// Whether to enable tree-shaking to remove unused code
     pub tree_shake: bool,
 
+    /// Whether to bundle third-party (site-packages) dependencies into the output.
+    /// Packages that contain native extensions (.so/.pyd) are automatically kept
+    /// external and emitted into requirements.txt instead.
+    #[serde(rename = "bundle-third-party", alias = "bundle_third_party")]
+    pub bundle_third_party: bool,
+
     /// Configuration for mapping imports to installable requirements
     pub requirements: RequirementsConfig,
 }
@@ -82,6 +88,7 @@ impl Default for Config {
             preserve_type_hints: true,
             target_version: "py310".to_owned(),
             tree_shake: true, // Tree-shaking enabled by default
+            bundle_third_party: false, // Opt-in: third-party deps stay external by default
             requirements: RequirementsConfig::default(),
         }
     }
@@ -112,6 +119,7 @@ impl Combine for Config {
             preserve_type_hints: self.preserve_type_hints,
             target_version: self.target_version,
             tree_shake: self.tree_shake,
+            bundle_third_party: self.bundle_third_party,
             requirements: RequirementsConfig {
                 python: self.requirements.python.or(other.requirements.python),
                 module_map: if self.requirements.module_map.is_empty() {
@@ -134,6 +142,7 @@ pub(crate) struct EnvConfig {
     pub preserve_type_hints: Option<bool>,
     pub target_version: Option<String>,
     pub tree_shake: Option<bool>,
+    pub bundle_third_party: Option<bool>,
     pub python: Option<PathBuf>,
 }
 
@@ -201,6 +210,11 @@ impl EnvConfig {
             config.tree_shake = parse_bool(&tree_shake_str);
         }
 
+        // CRIBO_BUNDLE_THIRD_PARTY - boolean flag
+        if let Ok(bundle_third_party_str) = env::var("CRIBO_BUNDLE_THIRD_PARTY") {
+            config.bundle_third_party = parse_bool(&bundle_third_party_str);
+        }
+
         if let Ok(python) = env::var("CRIBO_PYTHON") {
             config.python = parse_env_path(&python);
         }
@@ -230,6 +244,9 @@ impl EnvConfig {
         }
         if let Some(tree_shake) = self.tree_shake {
             config.tree_shake = tree_shake;
+        }
+        if let Some(bundle_third_party) = self.bundle_third_party {
+            config.bundle_third_party = bundle_third_party;
         }
         if let Some(python) = self.python {
             config.requirements.python = Some(python);
@@ -468,6 +485,25 @@ mod tests {
         assert!(Config::parse_target_version("py37").is_err()); // too old
         assert!(Config::parse_target_version("py314").is_err()); // too new
         assert!(Config::parse_target_version("3.10").is_err()); // wrong format
+    }
+
+    #[test]
+    fn test_bundle_third_party_config() {
+        // Disabled by default (opt-in)
+        assert!(!Config::default().bundle_third_party);
+
+        // Loadable from TOML
+        let toml_content = r#"
+bundle-third-party = true
+        "#;
+        let mut temp_file =
+            NamedTempFile::new().expect("should be able to create temp file for test");
+        temp_file
+            .write_all(toml_content.as_bytes())
+            .expect("should be able to write test config to temp file");
+        let config = Config::load(Some(temp_file.path()))
+            .expect("should be able to load valid config from temp file");
+        assert!(config.bundle_third_party);
     }
 
     #[test]

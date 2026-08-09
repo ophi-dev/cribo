@@ -1759,6 +1759,12 @@ impl BundleOrchestrator {
                 for import in &imports {
                     debug!("Checking import '{import}' for requirements");
                     let classification = resolver.classify_import(import);
+                    // Under --bundle-third-party, imports whose source is inlined into
+                    // the bundle need no requirement entry; only external dependencies
+                    // (e.g. native-extension packages) are emitted
+                    if self.config.bundle_third_party && classification.should_bundle() {
+                        continue;
+                    }
                     if matches!(
                         classification.origin,
                         ImportOrigin::ThirdParty | ImportOrigin::Unknown

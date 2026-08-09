@@ -361,6 +361,174 @@ fn test_requirements_follow_pythonpath_precedence() {
     assert_requirement_output(&output, &output_dir, "first-distribution");
 }
 
+/// Create a fake virtualenv and return its site-packages directory.
+fn create_virtualenv_skeleton(environment: &Path) -> std::path::PathBuf {
+    let site_packages = if cfg!(windows) {
+        environment.join("Lib").join("site-packages")
+    } else {
+        environment
+            .join("lib")
+            .join("python3.12")
+            .join("site-packages")
+    };
+    fs::create_dir_all(&site_packages).expect("Failed to create site-packages");
+    fs::create_dir_all(environment.join(if cfg!(windows) { "Scripts" } else { "bin" }))
+        .expect("Failed to create virtualenv executable directory");
+    site_packages
+}
+
+#[test]
+fn test_bundle_third_party_inlines_pure_dependency() {
+    let sandbox = TempDir::new().expect("Failed to create temporary directory");
+    let entry_dir = sandbox.path().join("project");
+    let output_dir = sandbox.path().join("output");
+    fs::create_dir_all(&entry_dir).expect("Failed to create entry directory");
+    fs::create_dir_all(&output_dir).expect("Failed to create output directory");
+
+    let environment = sandbox.path().join(".venv");
+    let site_packages = create_virtualenv_skeleton(&environment);
+    write_test_distribution(
+        &site_packages,
+        "pure_helper",
+        "pure-helper",
+        "GREETING = 'hello from pure_helper'\n",
+    );
+
+    let entry_path = entry_dir.join("main.py");
+    fs::write(
+        &entry_path,
+        "import pure_helper\nprint(pure_helper.GREETING)\n",
+    )
+    .expect("Failed to write entry module");
+    let output_path = output_dir.join("bundle.py");
+
+    let output = cribo_command()
+        .arg("--entry")
+        .arg(&entry_path)
+        .arg("--output")
+        .arg(&output_path)
+        .arg("--bundle-third-party")
+        .arg("--emit-requirements")
+        .arg("--python")
+        .arg(common::get_python_executable())
+        .env("VIRTUAL_ENV", &environment)
+        .env_remove("PYTHONPATH")
+        .env_remove("CONDA_PREFIX")
+        .output()
+        .expect("Failed to execute cribo");
+    assert!(
+        output.status.success(),
+        "Cribo failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // The pure dependency is bundled, so no requirements file is needed
+    let requirements_path = output_dir.join("requirements.txt");
+    let requirements = fs::read_to_string(&requirements_path).unwrap_or_default();
+    assert_eq!(
+        requirements.trim(),
+        "",
+        "bundled pure-Python dependencies must not appear in requirements.txt"
+    );
+
+    // The bundle must run without the dependency being importable
+    let bundle_output = Command::new(common::get_python_executable())
+        .arg(&output_path)
+        .current_dir(&output_dir)
+        .env_remove("VIRTUAL_ENV")
+        .env_remove("PYTHONPATH")
+        .output()
+        .expect("Failed to execute bundled output");
+    assert!(
+        bundle_output.status.success(),
+        "Bundled output failed: {}",
+        String::from_utf8_lossy(&bundle_output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&bundle_output.stdout).trim(),
+        "hello from pure_helper"
+    );
+}
+
+#[test]
+fn test_bundle_third_party_keeps_native_dependency_external() {
+    let sandbox = TempDir::new().expect("Failed to create temporary directory");
+    let entry_dir = sandbox.path().join("project");
+    let output_dir = sandbox.path().join("output");
+    fs::create_dir_all(&entry_dir).expect("Failed to create entry directory");
+    fs::create_dir_all(&output_dir).expect("Failed to create output directory");
+
+    let environment = sandbox.path().join(".venv");
+    let site_packages = create_virtualenv_skeleton(&environment);
+    write_test_distribution(
+        &site_packages,
+        "pure_helper",
+        "pure-helper",
+        "GREETING = 'hello from pure_helper'\n",
+    );
+    write_test_distribution(
+        &site_packages,
+        "native_helper",
+        "native-helper",
+        "VALUE = 'native'\n",
+    );
+    // A native artifact anywhere inside the package keeps the whole package external
+    let native_subdir = site_packages.join("native_helper").join("_speedups");
+    fs::create_dir_all(&native_subdir).expect("Failed to create native subdirectory");
+    fs::write(
+        native_subdir.join("accel.cpython-312-x86_64-linux-gnu.so"),
+        "",
+    )
+    .expect("Failed to write native artifact");
+
+    let entry_path = entry_dir.join("main.py");
+    fs::write(
+        &entry_path,
+        "import native_helper\nimport pure_helper\nprint(pure_helper.GREETING, \
+         native_helper.VALUE)\n",
+    )
+    .expect("Failed to write entry module");
+    let output_path = output_dir.join("bundle.py");
+
+    let output = cribo_command()
+        .arg("--entry")
+        .arg(&entry_path)
+        .arg("--output")
+        .arg(&output_path)
+        .arg("--bundle-third-party")
+        .arg("--emit-requirements")
+        .arg("--python")
+        .arg(common::get_python_executable())
+        .env("VIRTUAL_ENV", &environment)
+        .env_remove("PYTHONPATH")
+        .env_remove("CONDA_PREFIX")
+        .output()
+        .expect("Failed to execute cribo");
+    assert!(
+        output.status.success(),
+        "Cribo failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Only the native-extension distribution stays in requirements.txt
+    assert_requirement_output(&output, &output_dir, "native-helper");
+
+    // The bundle inlines the pure dependency and preserves the native import
+    let bundle = fs::read_to_string(&output_path).expect("Failed to read bundle");
+    assert!(
+        bundle.contains("hello from pure_helper"),
+        "pure dependency source must be inlined into the bundle"
+    );
+    assert!(
+        bundle.contains("import native_helper"),
+        "native dependency import must be preserved as external"
+    );
+    assert!(
+        !bundle.contains("'native'"),
+        "native dependency source must not be inlined into the bundle"
+    );
+}
+
 #[test]
 fn test_stdout_mode_preserves_bundled_structure() {
     let (stdout, _, exit_code) = run_cribo(&[

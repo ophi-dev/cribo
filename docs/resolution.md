@@ -139,7 +139,10 @@ After locating a module, Cribo derives each classification fact independently:
 3. **Bundle disposition**
    - Python source and namespace packages found through bundle search paths are included unless
      explicitly configured as third-party.
-   - Modules found only through a virtual environment remain external.
+   - Modules found only through a virtual environment remain external by default. With the opt-in
+     `bundle-third-party` mode enabled, pure-Python distributions found in a virtual environment
+     are included, while any package that ships native extension artifacts (`.so`/`.pyd` anywhere
+     inside its top-level package directory) remains external as a whole.
    - Native extensions remain external.
    - Unresolved imports remain external unless explicitly first-party, in which case bundling
      reports the missing source.
@@ -184,11 +187,41 @@ python = ".venv/bin/python"
 module-map = { sklearn = "scikit-learn" }
 ```
 
+### Third-Party Bundling (Opt-In)
+
+By default, third-party dependencies stay external and are listed in `requirements.txt` (with
+`--emit-requirements`). The opt-in `bundle-third-party` mode inlines pure-Python third-party
+dependencies into the bundle, similar to how JavaScript bundlers such as esbuild handle
+`node_modules`:
+
+```toml
+# cribo.toml
+bundle-third-party = true
+```
+
+Or via CLI / environment variable:
+
+```bash
+cribo --entry main.py --output bundle.py --bundle-third-party
+CRIBO_BUNDLE_THIRD_PARTY=1 cribo --entry main.py --output bundle.py
+```
+
+Behavior in this mode:
+
+- Pure-Python distributions found in the virtual environment are bundled and omitted from
+  `requirements.txt`.
+- Any package that ships native extension artifacts (`.so`/`.pyd`) anywhere inside its top-level
+  package directory is automatically kept external as a whole and still emitted into
+  `requirements.txt` — the automatic equivalent of esbuild's `external` option.
+- `known_third_party` entries act as a manual escape hatch: listed packages always stay external,
+  even when they are pure Python.
+
 ### Environment Variables
 
 - `PYTHONPATH`: Additional directories to search for first-party modules
 - `CRIBO_SRC`: Override source directories (comma-separated)
 - `CRIBO_PYTHON`: Interpreter used to inspect installed distribution metadata
+- `CRIBO_BUNDLE_THIRD_PARTY`: Enable opt-in third-party bundling (`true`/`1`)
 
 ## Examples
 
