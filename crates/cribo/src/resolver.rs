@@ -379,11 +379,12 @@ struct DistributionMetadataImportDetector {
 }
 
 impl DistributionMetadataImportDetector {
-    const INSTALLED_PACKAGE_APIS: [&'static str; 4] = [
+    const INSTALLED_PACKAGE_APIS: [&'static str; 5] = [
         "importlib.metadata",
         "importlib_metadata",
         "pkg_resources",
         "importlib.resources",
+        "importlib_resources",
     ];
 
     /// Return whether an imported module name is (or is inside) an API module that
@@ -437,18 +438,48 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for DistributionMetadataImportDet
 struct DistributionOwnershipIndex {
     declared_prefixes: IndexSet<String>,
     record_imports: IndexSet<String>,
+    /// Import prefixes declared by distributions that ship native artifacts
+    native_declared_prefixes: IndexSet<String>,
+    /// Import names installed by distributions that ship native artifacts
+    native_record_imports: IndexSet<String>,
 }
 
 impl DistributionOwnershipIndex {
+    /// Return whether any prefix in the set covers an import name.
+    fn prefixes_cover_import(prefixes: &IndexSet<String>, import_name: &str) -> bool {
+        prefixes.iter().any(|prefix| {
+            import_name == prefix
+                || import_name
+                    .strip_prefix(prefix.as_str())
+                    .is_some_and(|suffix| suffix.starts_with('.'))
+        })
+    }
+
     /// Return whether indexed metadata or installed files claim an import.
     fn owns_import(&self, import_name: &str) -> bool {
         self.record_imports.contains(import_name)
-            || self.declared_prefixes.iter().any(|prefix| {
-                import_name == prefix
-                    || import_name
-                        .strip_prefix(prefix)
-                        .is_some_and(|suffix| suffix.starts_with('.'))
-            })
+            || Self::prefixes_cover_import(&self.declared_prefixes, import_name)
+    }
+
+    /// Return whether the distribution claiming an import ships native artifacts
+    /// anywhere in its installed files (e.g. a sibling `_backend.so` module).
+    fn native_distribution_owns_import(&self, import_name: &str) -> bool {
+        self.native_record_imports.contains(import_name)
+            || Self::prefixes_cover_import(&self.native_declared_prefixes, import_name)
+    }
+
+    /// Merge one distribution's ownership facts, tagging them as native-shipping
+    /// when the distribution installs native artifacts.
+    fn absorb_distribution(&mut self, distribution: Self, ships_native_artifacts: bool) {
+        if ships_native_artifacts {
+            self.native_declared_prefixes
+                .extend(distribution.declared_prefixes.iter().cloned());
+            self.native_record_imports
+                .extend(distribution.record_imports.iter().cloned());
+        }
+        self.declared_prefixes
+            .extend(distribution.declared_prefixes);
+        self.record_imports.extend(distribution.record_imports);
     }
 }
 
@@ -526,6 +557,11 @@ impl ModuleResolver {
     /// Set the entry file for the resolver
     /// This establishes the first search path directory
     pub fn set_entry_file(&mut self, entry_path: &Path, original_entry_path: &Path) {
+        // The entry directory participates in fallback virtualenv discovery, so any
+        // environment-derived caches computed before this point are stale
+        self.site_packages_dirs_cache.borrow_mut().take();
+        self.virtualenv_packages_cache.borrow_mut().take();
+
         debug!(
             "set_entry_file: entry_path={}, original_entry_path={}, is_dir={}",
             entry_path.display(),
@@ -1298,6 +1334,17 @@ impl ModuleResolver {
     /// distribution metadata at runtime (`importlib.metadata`, `pkg_resources`), which is
     /// unavailable once the source is inlined into a bundle.
     fn package_must_stay_external(&self, search_root: &Path, module_name: &str) -> bool {
+        // A distribution may install native artifacts outside the import's own package
+        // directory (e.g. a pure `frontend` package plus a sibling `_backend.so`);
+        // consult its RECORD before scanning the package directory itself
+        if self.native_distribution_owns_import(search_root, module_name) {
+            debug!(
+                "Import '{module_name}' is owned by a distribution shipping native artifacts; \
+                 keeping it external"
+            );
+            return true;
+        }
+
         let top_level = module_name.split('.').next().unwrap_or(module_name);
         let package_dir = search_root.join(top_level);
         if !package_dir.is_dir() {
@@ -1503,23 +1550,32 @@ impl ModuleResolver {
         packages
     }
 
-    /// Detect common virtual environment directory names
+    /// Detect common virtual environment directory names beside the working
+    /// directory and beside the entry file's project directory
     fn detect_fallback_virtualenv_paths(&self) -> Vec<PathBuf> {
-        let Ok(current_dir) = std::env::current_dir() else {
-            return Vec::new();
-        };
+        let mut candidate_roots: IndexSet<PathBuf> = IndexSet::new();
+        if let Ok(current_dir) = std::env::current_dir() {
+            candidate_roots.insert(current_dir);
+        }
+        // A project's virtualenv commonly lives next to its entry point; include it so
+        // invoking Cribo from outside the project (e.g. a monorepo root) still works
+        if let Some(entry_dir) = &self.entry_dir {
+            candidate_roots.insert(self.canonicalize_path(entry_dir.clone()));
+        }
 
         let mut venv_paths = Vec::new();
+        for candidate_root in candidate_roots {
+            for venv_name in AUTO_DETECTED_VIRTUALENV_NAMES {
+                let venv_path = candidate_root.join(venv_name);
+                if venv_path.is_dir() {
+                    // Check if it looks like a virtual environment
+                    let has_bin =
+                        venv_path.join("bin").is_dir() || venv_path.join("Scripts").is_dir();
+                    let has_lib = venv_path.join("lib").is_dir();
 
-        for venv_name in AUTO_DETECTED_VIRTUALENV_NAMES {
-            let venv_path = current_dir.join(venv_name);
-            if venv_path.is_dir() {
-                // Check if it looks like a virtual environment
-                let has_bin = venv_path.join("bin").is_dir() || venv_path.join("Scripts").is_dir();
-                let has_lib = venv_path.join("lib").is_dir();
-
-                if has_bin || has_lib {
-                    venv_paths.push(venv_path);
+                    if has_bin || has_lib {
+                        venv_paths.push(venv_path);
+                    }
                 }
             }
         }
@@ -1609,22 +1665,37 @@ impl ModuleResolver {
 
     /// Return whether installed distribution metadata claims an import.
     fn distribution_owns_import(&self, site_packages_dir: &Path, import_name: &str) -> bool {
+        self.with_distribution_ownership_index(site_packages_dir, |index| {
+            index.owns_import(import_name)
+        })
+    }
+
+    /// Return whether the distribution claiming an import ships native artifacts
+    /// anywhere among its installed files (per its `RECORD`), even outside the
+    /// import's own package directory (e.g. a sibling `_backend.so` module).
+    fn native_distribution_owns_import(&self, site_packages_dir: &Path, import_name: &str) -> bool {
+        self.with_distribution_ownership_index(site_packages_dir, |index| {
+            index.native_distribution_owns_import(import_name)
+        })
+    }
+
+    /// Run a query against the (lazily built, cached) ownership index of a search root.
+    fn with_distribution_ownership_index<R>(
+        &self,
+        site_packages_dir: &Path,
+        query: impl FnOnce(&DistributionOwnershipIndex) -> R,
+    ) -> R {
         let search_root = self.canonicalize_path(site_packages_dir.to_path_buf());
-        if let Some(owns_import) = self
-            .distribution_ownership_cache
-            .borrow()
-            .get(&search_root)
-            .map(|index| index.owns_import(import_name))
-        {
-            return owns_import;
+        if let Some(index) = self.distribution_ownership_cache.borrow().get(&search_root) {
+            return query(index);
         }
 
         let index = Self::build_distribution_ownership_index(&search_root);
-        let owns_import = index.owns_import(import_name);
+        let result = query(&index);
         self.distribution_ownership_cache
             .borrow_mut()
             .insert(search_root, index);
-        owns_import
+        result
     }
 
     /// Build distribution ownership data for one search root.
@@ -1647,9 +1718,14 @@ impl ModuleResolver {
                 continue;
             }
 
+            // Index each distribution separately so ownership facts can be tagged with
+            // whether that distribution ships native artifacts
+            let mut distribution = DistributionOwnershipIndex::default();
+            let mut ships_native_artifacts = false;
+
             let metadata_file = path.join("METADATA");
             if let Ok(metadata) = std::fs::read_to_string(metadata_file) {
-                Self::index_distribution_metadata(&metadata, &mut index);
+                Self::index_distribution_metadata(&metadata, &mut distribution);
             }
 
             let record_file = path.join("RECORD");
@@ -1659,9 +1735,18 @@ impl ModuleResolver {
                 let reader = BufReader::new(file);
                 for line in reader.lines().map_while(Result::ok) {
                     let path_part = line.split(',').next().unwrap_or("");
-                    Self::index_record_path(path_part, &mut index);
+                    Self::index_record_path(path_part, &mut distribution);
+                    if Path::new(path_part)
+                        .extension()
+                        .and_then(OsStr::to_str)
+                        .is_some_and(|extension| matches!(extension, "so" | "pyd"))
+                    {
+                        ships_native_artifacts = true;
+                    }
                 }
             }
+
+            index.absorb_distribution(distribution, ships_native_artifacts);
         }
 
         index
@@ -3118,6 +3203,8 @@ IMPORT-NAMESPACE: UPPER_CASE
             "import importlib.resources\n",
             "from importlib import resources\n",
             "from importlib.resources import files\n",
+            "import importlib_resources\n",
+            "from importlib_resources import files\n",
             "def lazy():\n    from importlib import metadata\n    return metadata\n",
         ] {
             assert!(
@@ -3217,6 +3304,45 @@ IMPORT-NAMESPACE: UPPER_CASE
             "packages with directory symlinks must conservatively stay external"
         );
         assert!(resolver.resolve_module_path("linked_package")?.is_none());
+
+        Ok(())
+    }
+
+    /// A distribution whose RECORD lists native artifacts outside the import's own
+    /// package directory (e.g. a pure `frontend` package with a sibling `_backend.so`)
+    /// keeps every import it owns external.
+    #[test]
+    fn test_bundle_third_party_keeps_distribution_with_sibling_native_module_external() -> Result<()>
+    {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!("frontend/{}", crate::python::constants::INIT_FILE)),
+            "VALUE = 'frontend'\n",
+        )?;
+        create_test_file(&site_packages.join("_backend.cpython-312-test.so"), "")?;
+        create_test_file(
+            &site_packages.join("split_distribution-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: split-distribution\nVersion: 1.0\nImport-Name: \
+             frontend\nImport-Name: _backend\n",
+        )?;
+        create_test_file(
+            &site_packages.join("split_distribution-1.0.dist-info/RECORD"),
+            "frontend/__init__.py,,\n_backend.cpython-312-test.so,,\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        // The frontend package directory itself is pure Python, but its distribution
+        // ships a native sibling module, so the whole distribution stays external
+        let classification = resolver.classify_import("frontend");
+        assert_eq!(classification.origin, ImportOrigin::ThirdParty);
+        assert_eq!(
+            classification.bundle,
+            BundleDisposition::External,
+            "imports owned by native-shipping distributions must stay external"
+        );
+        assert!(resolver.resolve_module_path("frontend")?.is_none());
 
         Ok(())
     }

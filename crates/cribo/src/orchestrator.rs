@@ -1296,7 +1296,15 @@ impl BundleOrchestrator {
                     let import_parts = import.split('.').count();
                     let derived_parts = derived_name.split('.').count();
 
-                    if derived_parts > import_parts {
+                    // A derived name is only usable when every component is a valid
+                    // Python identifier; paths through e.g. a virtualenv inside the
+                    // entry directory (".venv/lib/python3.12/site-packages/...") must
+                    // not override the import name
+                    let derived_is_importable = derived_name
+                        .split('.')
+                        .all(ruff_python_stdlib::identifiers::is_identifier);
+
+                    if derived_parts > import_parts && derived_is_importable {
                         // The derived name has more context (e.g., "rich.jupyter" vs "jupyter")
                         log::debug!(
                             "Using derived module name '{}' instead of '{}' for path {}",

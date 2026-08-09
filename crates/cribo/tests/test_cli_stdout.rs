@@ -413,10 +413,15 @@ fn create_bundle_third_party_sandbox(entry_source: &str) -> BundleThirdPartySand
     }
 }
 
-/// Run cribo with `--bundle-third-party --emit-requirements` against the sandbox's
-/// virtualenv and assert that bundling succeeded.
-fn run_bundle_third_party_cribo(sandbox: &BundleThirdPartySandbox) -> Output {
-    let output = cribo_command()
+/// Run cribo with `--bundle-third-party --emit-requirements` against the sandbox and
+/// assert that bundling succeeded. The closure customizes the environment (e.g. which
+/// mechanism locates the virtualenv).
+fn run_bundle_third_party_cribo(
+    sandbox: &BundleThirdPartySandbox,
+    configure: impl FnOnce(&mut Command),
+) -> Output {
+    let mut command = cribo_command();
+    command
         .arg("--entry")
         .arg(&sandbox.entry_path)
         .arg("--output")
@@ -425,11 +430,11 @@ fn run_bundle_third_party_cribo(sandbox: &BundleThirdPartySandbox) -> Output {
         .arg("--emit-requirements")
         .arg("--python")
         .arg(common::get_python_executable())
-        .env("VIRTUAL_ENV", &sandbox.environment)
+        .env_remove("VIRTUAL_ENV")
         .env_remove("PYTHONPATH")
-        .env_remove("CONDA_PREFIX")
-        .output()
-        .expect("Failed to execute cribo");
+        .env_remove("CONDA_PREFIX");
+    configure(&mut command);
+    let output = command.output().expect("Failed to execute cribo");
     assert!(
         output.status.success(),
         "Cribo failed: {}",
@@ -460,7 +465,9 @@ fn test_bundle_third_party_inlines_pure_dependency() {
     )
     .expect("Failed to write dependency submodule");
 
-    run_bundle_third_party_cribo(&sandbox);
+    run_bundle_third_party_cribo(&sandbox, |command| {
+        command.env("VIRTUAL_ENV", &sandbox.environment);
+    });
 
     // The pure dependency is bundled, so no requirements file is needed
     let requirements_path = sandbox.output_dir.join("requirements.txt");
@@ -523,7 +530,9 @@ fn test_bundle_third_party_keeps_native_dependency_external() {
     )
     .expect("Failed to write native artifact");
 
-    let output = run_bundle_third_party_cribo(&sandbox);
+    let output = run_bundle_third_party_cribo(&sandbox, |command| {
+        command.env("VIRTUAL_ENV", &sandbox.environment);
+    });
 
     // Only the native-extension distribution stays in requirements.txt
     assert_requirement_output(&output, &sandbox.output_dir, "native-helper");
@@ -541,6 +550,40 @@ fn test_bundle_third_party_keeps_native_dependency_external() {
     assert!(
         !bundle.contains("'native'"),
         "native dependency source must not be inlined into the bundle"
+    );
+}
+
+/// End-to-end: without `VIRTUAL_ENV`/`CONDA_PREFIX`, a virtualenv living next to the
+/// entry file is auto-detected even when cribo runs from a different working directory
+/// (e.g. a monorepo root).
+#[test]
+fn test_bundle_third_party_detects_virtualenv_beside_entry() {
+    let sandbox =
+        create_bundle_third_party_sandbox("import pure_helper\nprint(pure_helper.GREETING)\n");
+
+    // The project's virtualenv lives beside the entry file, not beside the CWD
+    let project_dir = sandbox
+        .entry_path
+        .parent()
+        .expect("entry file must have a parent directory");
+    let project_environment = project_dir.join(".venv");
+    let project_site_packages = create_virtualenv_skeleton(&project_environment);
+    write_test_distribution(
+        &project_site_packages,
+        "pure_helper",
+        "pure-helper",
+        "GREETING = 'hello from pure_helper'\n",
+    );
+
+    run_bundle_third_party_cribo(&sandbox, |command| {
+        // Run from a directory that contains no virtualenv and rely on fallback discovery
+        command.current_dir(&sandbox.output_dir);
+    });
+
+    let bundle = fs::read_to_string(&sandbox.output_path).expect("Failed to read bundle");
+    assert!(
+        bundle.contains("hello from pure_helper"),
+        "dependency from the entry-adjacent virtualenv must be inlined"
     );
 }
 
