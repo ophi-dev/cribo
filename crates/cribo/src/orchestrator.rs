@@ -1762,7 +1762,7 @@ impl BundleOrchestrator {
                     // Under --bundle-third-party, imports whose source is inlined into
                     // the bundle need no requirement entry; only external dependencies
                     // (e.g. native-extension packages) are emitted
-                    if self.config.bundle_third_party && classification.should_bundle() {
+                    if self.config.bundle_third_party() && classification.should_bundle() {
                         continue;
                     }
                     if matches!(

@@ -42,8 +42,10 @@ pub struct Config {
     /// Whether to bundle third-party (site-packages) dependencies into the output.
     /// Packages that contain native extensions (.so/.pyd) are automatically kept
     /// external and emitted into requirements.txt instead.
+    /// Kept as `Option` so layered configs only override when the key is present;
+    /// use [`Config::bundle_third_party`] to read the effective value.
     #[serde(rename = "bundle-third-party", alias = "bundle_third_party")]
-    pub bundle_third_party: bool,
+    pub bundle_third_party: Option<bool>,
 
     /// Configuration for mapping imports to installable requirements
     pub requirements: RequirementsConfig,
@@ -87,8 +89,8 @@ impl Default for Config {
             preserve_comments: true,
             preserve_type_hints: true,
             target_version: "py310".to_owned(),
-            tree_shake: true, // Tree-shaking enabled by default
-            bundle_third_party: false, // Opt-in: third-party deps stay external by default
+            tree_shake: true,         // Tree-shaking enabled by default
+            bundle_third_party: None, // Opt-in: third-party deps stay external by default
             requirements: RequirementsConfig::default(),
         }
     }
@@ -119,7 +121,8 @@ impl Combine for Config {
             preserve_type_hints: self.preserve_type_hints,
             target_version: self.target_version,
             tree_shake: self.tree_shake,
-            bundle_third_party: self.bundle_third_party,
+            // Option scalar: absent keys in higher-precedence layers preserve lower layers
+            bundle_third_party: self.bundle_third_party.or(other.bundle_third_party),
             requirements: RequirementsConfig {
                 python: self.requirements.python.or(other.requirements.python),
                 module_map: if self.requirements.module_map.is_empty() {
@@ -246,7 +249,7 @@ impl EnvConfig {
             config.tree_shake = tree_shake;
         }
         if let Some(bundle_third_party) = self.bundle_third_party {
-            config.bundle_third_party = bundle_third_party;
+            config.bundle_third_party = Some(bundle_third_party);
         }
         if let Some(python) = self.python {
             config.requirements.python = Some(python);
@@ -275,6 +278,11 @@ fn parse_env_path(value: &str) -> Option<PathBuf> {
 }
 
 impl Config {
+    /// Effective third-party bundling policy (defaults to disabled when unset).
+    pub fn bundle_third_party(&self) -> bool {
+        self.bundle_third_party.unwrap_or(false)
+    }
+
     /// Parse a Ruff-style target version string to u8 version number
     /// Supports: "py38" -> 8, "py39" -> 9, "py310" -> 10, "py311" -> 11, "py312" -> 12, "py313" ->
     /// 13
@@ -487,10 +495,12 @@ mod tests {
         assert!(Config::parse_target_version("3.10").is_err()); // wrong format
     }
 
+    /// Verify `bundle-third-party` defaults to disabled, loads from TOML, and preserves
+    /// lower-precedence layers when a higher-precedence config omits the key.
     #[test]
     fn test_bundle_third_party_config() {
         // Disabled by default (opt-in)
-        assert!(!Config::default().bundle_third_party);
+        assert!(!Config::default().bundle_third_party());
 
         // Loadable from TOML
         let toml_content = r#"
@@ -503,7 +513,18 @@ bundle-third-party = true
             .expect("should be able to write test config to temp file");
         let config = Config::load(Some(temp_file.path()))
             .expect("should be able to load valid config from temp file");
-        assert!(config.bundle_third_party);
+        assert!(config.bundle_third_party());
+
+        // A higher-precedence layer that omits the key preserves the lower layer
+        let lower = Config {
+            bundle_third_party: Some(true),
+            ..Config::default()
+        };
+        let combined = Config::default().combine(lower);
+        assert!(
+            combined.bundle_third_party(),
+            "absent bundle-third-party key must not override lower-precedence layers"
+        );
     }
 
     #[test]

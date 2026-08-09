@@ -140,9 +140,9 @@ After locating a module, Cribo derives each classification fact independently:
    - Python source and namespace packages found through bundle search paths are included unless
      explicitly configured as third-party.
    - Modules found only through a virtual environment remain external by default. With the opt-in
-     `bundle-third-party` mode enabled, pure-Python distributions found in a virtual environment
-     are included, while any package that ships native extension artifacts (`.so`/`.pyd` anywhere
-     inside its top-level package directory) remains external as a whole.
+     `bundle-third-party` mode enabled, pure-Python distributions found in the environment are
+     included, while packages that ship native extension artifacts (`.so`/`.pyd`) or read their
+     own installed distribution metadata at runtime remain external as a whole.
    - Native extensions remain external.
    - Unresolved imports remain external unless explicitly first-party, in which case bundling
      reports the missing source.
@@ -208,13 +208,18 @@ CRIBO_BUNDLE_THIRD_PARTY=1 cribo --entry main.py --output bundle.py
 
 Behavior in this mode:
 
-- Pure-Python distributions found in the virtual environment are bundled and omitted from
-  `requirements.txt`.
+- Pure-Python distributions found in the active environment (`VIRTUAL_ENV`, `CONDA_PREFIX`, or an
+  auto-detected project virtualenv) are bundled and omitted from `requirements.txt`.
 - Any package that ships native extension artifacts (`.so`/`.pyd`) anywhere inside its top-level
   package directory is automatically kept external as a whole and still emitted into
   `requirements.txt` — the automatic equivalent of esbuild's `external` option.
-- `known_third_party` entries act as a manual escape hatch: listed packages always stay external,
-  even when they are pure Python.
+- Packages that read their own installed distribution metadata at runtime (via
+  `importlib.metadata`, `importlib_metadata`, or `pkg_resources`) are also kept external, because
+  that metadata is unavailable once the source is inlined into a bundle.
+- Package inspection is conservative: unreadable entries or directory symlinks inside a package
+  keep it external rather than risking an incomplete scan or a symlink cycle.
+- `known_third_party` entries act as a manual escape hatch: listed packages — including their
+  submodules — always stay external, even when they are pure Python.
 
 ### Environment Variables
 

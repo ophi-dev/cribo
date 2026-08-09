@@ -377,6 +377,9 @@ fn create_virtualenv_skeleton(environment: &Path) -> std::path::PathBuf {
     site_packages
 }
 
+/// End-to-end: with `--bundle-third-party`, a pure-Python site-packages dependency
+/// (including a submodule reached via a relative import) is inlined into the bundle,
+/// omitted from requirements.txt, and the bundle runs without the dependency installed.
 #[test]
 fn test_bundle_third_party_inlines_pure_dependency() {
     let sandbox = TempDir::new().expect("Failed to create temporary directory");
@@ -391,8 +394,13 @@ fn test_bundle_third_party_inlines_pure_dependency() {
         &site_packages,
         "pure_helper",
         "pure-helper",
-        "GREETING = 'hello from pure_helper'\n",
+        "from .messages import GREETING\n",
     );
+    fs::write(
+        site_packages.join("pure_helper").join("messages.py"),
+        "GREETING = 'hello from pure_helper'\n",
+    )
+    .expect("Failed to write dependency submodule");
 
     let entry_path = entry_dir.join("main.py");
     fs::write(
@@ -450,6 +458,9 @@ fn test_bundle_third_party_inlines_pure_dependency() {
     );
 }
 
+/// End-to-end: with `--bundle-third-party`, a dependency shipping native extension
+/// artifacts stays external as a whole — its import is preserved and only its
+/// distribution appears in requirements.txt, while pure dependencies are inlined.
 #[test]
 fn test_bundle_third_party_keeps_native_dependency_external() {
     let sandbox = TempDir::new().expect("Failed to create temporary directory");

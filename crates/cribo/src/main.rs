@@ -121,7 +121,7 @@ fn main() -> anyhow::Result<()> {
 
     // Enable third-party bundling from CLI (opt-in; config file/env can also enable it)
     if cli.bundle_third_party {
-        config.bundle_third_party = true;
+        config.bundle_third_party = Some(true);
     }
 
     debug!("Configuration: {config:?}");

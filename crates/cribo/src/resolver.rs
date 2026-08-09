@@ -400,8 +400,8 @@ pub struct ModuleResolver {
     classification_cache: RefCell<IndexMap<String, ImportClassification>>,
     /// Cache of virtual environment packages to avoid repeated filesystem scans
     virtualenv_packages_cache: RefCell<Option<IndexSet<String>>>,
-    /// Cache of "does this site-packages package directory ship native extensions?"
-    native_extension_packages_cache: RefCell<IndexMap<PathBuf, bool>>,
+    /// Cache of "must this site-packages package stay external?" scan results
+    external_packages_cache: RefCell<IndexMap<PathBuf, bool>>,
     /// Distribution ownership indexed once for each searched filesystem root
     distribution_ownership_cache: RefCell<IndexMap<PathBuf, DistributionOwnershipIndex>>,
     /// Entry file's directory (first in search path)
@@ -448,7 +448,7 @@ impl ModuleResolver {
             module_cache: RefCell::new(IndexMap::new()),
             classification_cache: RefCell::new(IndexMap::new()),
             virtualenv_packages_cache: RefCell::new(None),
-            native_extension_packages_cache: RefCell::new(IndexMap::new()),
+            external_packages_cache: RefCell::new(IndexMap::new()),
             distribution_ownership_cache: RefCell::new(IndexMap::new()),
             entry_dir: None,
             python_version,
@@ -794,7 +794,7 @@ impl ModuleResolver {
     /// module, so external modules (native-extension packages, `known_third_party`)
     /// never leak bundle paths into the module cache.
     fn resolve_in_site_packages_for_bundling(&self, module_name: &str) -> Option<PathBuf> {
-        if !self.config.bundle_third_party || module_name.starts_with('.') {
+        if !self.config.bundle_third_party() || module_name.starts_with('.') {
             return None;
         }
         if !self.classify_import(module_name).should_bundle() {
@@ -1052,7 +1052,7 @@ impl ModuleResolver {
         allow_bundle: bool,
     ) -> ImportClassification {
         let explicit_first_party = self.config.known_first_party.contains(module_name);
-        let explicit_third_party = self.config.known_third_party.contains(module_name);
+        let explicit_third_party = self.is_explicit_third_party(module_name);
         let origin = if explicit_first_party {
             ImportOrigin::FirstParty
         } else if explicit_third_party
@@ -1076,6 +1076,26 @@ impl ModuleResolver {
             };
 
         ImportClassification::new(origin, resolved.source, bundle)
+    }
+
+    /// Return whether a module or any of its parent packages is listed in
+    /// `known_third_party`, so configured package roots also cover their submodules.
+    fn is_explicit_third_party(&self, module_name: &str) -> bool {
+        if self.config.known_third_party.contains(module_name) {
+            return true;
+        }
+        let mut prefix_end = module_name.len();
+        while let Some(separator_index) = module_name[..prefix_end].rfind('.') {
+            if self
+                .config
+                .known_third_party
+                .contains(&module_name[..separator_index])
+            {
+                return true;
+            }
+            prefix_end = separator_index;
+        }
+        false
     }
 
     /// Classify an import without conflating its origin, source kind, bundle policy, and
@@ -1102,7 +1122,7 @@ impl ModuleResolver {
         }
 
         let explicit_first_party = self.config.known_first_party.contains(module_name);
-        let explicit_third_party = self.config.known_third_party.contains(module_name);
+        let explicit_third_party = self.is_explicit_third_party(module_name);
         if !explicit_first_party
             && !explicit_third_party
             && is_stdlib_module(module_name, self.python_version)
@@ -1157,10 +1177,10 @@ impl ModuleResolver {
             self.locate_in_directories(module_name, &virtualenv_dirs)
         {
             // Opt-in third-party bundling: pure-Python distributions are bundled, but any
-            // package shipping native extensions (.so/.pyd) stays external as a whole so
-            // its compiled submodules keep importing correctly at runtime.
-            let allow_bundle = self.config.bundle_third_party
-                && !self.package_has_native_extensions(&search_root, module_name);
+            // package shipping native extensions (.so/.pyd) or reading its own installed
+            // distribution metadata at runtime stays external as a whole.
+            let allow_bundle = self.config.bundle_third_party()
+                && !self.package_must_stay_external(&search_root, module_name);
             return self.classify_resolved_import(
                 module_name,
                 &search_root,
@@ -1194,64 +1214,112 @@ impl ModuleResolver {
     }
 
     /// Return whether the top-level package owning `module_name` under `search_root`
-    /// ships any native extension (`.so`/`.pyd`) artifacts.
+    /// must stay external under the third-party bundling policy.
     ///
-    /// Detection is per top-level package: if any native artifact exists anywhere inside
-    /// the package directory, the whole package is kept external so its compiled
-    /// submodules keep importing correctly at runtime.
-    fn package_has_native_extensions(&self, search_root: &Path, module_name: &str) -> bool {
+    /// A package stays external as a whole when it ships native extension (`.so`/`.pyd`)
+    /// artifacts anywhere inside its top-level directory (so compiled submodules keep
+    /// importing correctly at runtime), or when its Python source reads its own installed
+    /// distribution metadata at runtime (`importlib.metadata`, `pkg_resources`), which is
+    /// unavailable once the source is inlined into a bundle.
+    fn package_must_stay_external(&self, search_root: &Path, module_name: &str) -> bool {
         let top_level = module_name.split('.').next().unwrap_or(module_name);
         let package_dir = search_root.join(top_level);
         if !package_dir.is_dir() {
-            // Single-file module: either a pure `top_level.py` (no native artifacts) or a
-            // native extension file, which per-module resolution already classifies as
-            // `ImportSource::NativeExtension`.
-            return self
+            // Single-file module: check the file itself for metadata usage; native
+            // extension files are already classified as `ImportSource::NativeExtension`.
+            if self
                 .find_native_extension_module(search_root, top_level)
-                .is_some();
+                .is_some()
+            {
+                return true;
+            }
+            let module_file = search_root.join(format!("{top_level}.py"));
+            return module_file.is_file() && Self::python_file_requires_distribution(&module_file);
         }
 
         let package_dir = self.canonicalize_path(package_dir);
-        if let Some(&has_native) = self
-            .native_extension_packages_cache
-            .borrow()
-            .get(&package_dir)
-        {
-            return has_native;
+        if let Some(&stays_external) = self.external_packages_cache.borrow().get(&package_dir) {
+            return stays_external;
         }
 
-        let has_native = Self::directory_contains_native_extensions(&package_dir);
+        let stays_external = Self::scan_package_for_external_markers(&package_dir);
         debug!(
-            "Package directory '{}' contains native extensions: {has_native}",
+            "Package directory '{}' must stay external: {stays_external}",
             package_dir.display()
         );
-        self.native_extension_packages_cache
+        self.external_packages_cache
             .borrow_mut()
-            .insert(package_dir, has_native);
-        has_native
+            .insert(package_dir, stays_external);
+        stays_external
     }
 
-    /// Recursively scan a directory tree for native extension (`.so`/`.pyd`) files.
-    fn directory_contains_native_extensions(root: &Path) -> bool {
+    /// Scan a package directory tree for markers that force the package to stay
+    /// external: native extension artifacts or runtime distribution-metadata access.
+    ///
+    /// The scan is conservative: unreadable entries keep the package external, and
+    /// symlinked directories are never traversed (a symlink cycle or a link to a large
+    /// external tree must not stall bundling) — a directory symlink instead keeps the
+    /// package external because its contents cannot be inspected safely.
+    fn scan_package_for_external_markers(root: &Path) -> bool {
         let mut pending = vec![root.to_path_buf()];
         while let Some(directory) = pending.pop() {
             let Ok(entries) = std::fs::read_dir(&directory) else {
-                continue;
+                // Conservative: a package that cannot be fully inspected stays external
+                return true;
             };
             for entry in entries.flatten() {
+                let Ok(file_type) = entry.file_type() else {
+                    return true;
+                };
                 let path = entry.path();
-                if path.is_dir() {
+                if file_type.is_symlink() {
+                    // Do not follow directory symlinks; treat them as uninspectable
+                    match std::fs::metadata(&path) {
+                        Ok(metadata) if metadata.is_dir() => return true,
+                        Ok(_) => {
+                            if Self::is_external_marker_file(&path) {
+                                return true;
+                            }
+                        }
+                        Err(_) => return true,
+                    }
+                } else if file_type.is_dir() {
                     pending.push(path);
-                } else if path
-                    .extension()
-                    .and_then(OsStr::to_str)
-                    .is_some_and(|extension| matches!(extension, "so" | "pyd"))
-                {
+                } else if Self::is_external_marker_file(&path) {
                     return true;
                 }
             }
         }
         false
+    }
+
+    /// Return whether a single file forces its package to stay external: a native
+    /// extension artifact or a Python source reading installed distribution metadata.
+    fn is_external_marker_file(path: &Path) -> bool {
+        match path.extension().and_then(OsStr::to_str) {
+            Some("so" | "pyd") => true,
+            Some("py") => Self::python_file_requires_distribution(path),
+            _ => false,
+        }
+    }
+
+    /// Return whether a Python source file references runtime distribution-metadata
+    /// APIs that require an installed distribution (`importlib.metadata`,
+    /// `importlib_metadata`, `pkg_resources`).
+    fn python_file_requires_distribution(path: &Path) -> bool {
+        const DISTRIBUTION_METADATA_MARKERS: [&str; 4] = [
+            "importlib.metadata",
+            "importlib_metadata",
+            "pkg_resources",
+            "from importlib import metadata",
+        ];
+        let Ok(source) = std::fs::read_to_string(path) else {
+            // Conservative: an unreadable source file keeps the package external
+            return true;
+        };
+        DISTRIBUTION_METADATA_MARKERS
+            .iter()
+            .any(|marker| source.contains(marker))
     }
 
     fn get_virtualenv_site_packages_search_directories(
@@ -1275,6 +1343,11 @@ impl ModuleResolver {
             return Self::explicit_virtualenv_paths(path);
         }
         if let Ok(path) = std::env::var("VIRTUAL_ENV") {
+            return Self::explicit_virtualenv_paths(&path);
+        }
+        // Conda environments use the same site-packages layout; RequirementResolver
+        // already honors CONDA_PREFIX, keep module resolution consistent with it
+        if let Ok(path) = std::env::var("CONDA_PREFIX") {
             return Self::explicit_virtualenv_paths(&path);
         }
         self.detect_fallback_virtualenv_paths()
@@ -1683,8 +1756,13 @@ impl ModuleResolver {
             self.canonicalize_path(joined)
         };
 
-        // Find which search directory (entry dir, PYTHONPATH, or src) contains this file
-        let search_dirs = self.get_search_directories();
+        // Find which search directory (entry dir, PYTHONPATH, or src) contains this file.
+        // Under third-party bundling, site-packages roots participate as well so relative
+        // imports inside bundled dependencies resolve to absolute module names.
+        let mut search_dirs = self.get_search_directories();
+        if self.config.bundle_third_party() {
+            search_dirs.extend(self.get_virtualenv_site_packages_search_directories(None));
+        }
         log::trace!(
             "path_to_module_parts: absolute_file_path={}, search_dirs={:?}",
             absolute_file_path.display(),
@@ -2732,13 +2810,13 @@ IMPORT-NAMESPACE: UPPER_CASE
     fn create_bundle_third_party_virtualenv(virtualenv: &Path) -> Result<PathBuf> {
         let site_packages = virtualenv.join("lib/python3.12/site-packages");
 
-        // Pure-Python package
+        // Pure-Python package whose __init__.py uses a relative import
         create_test_file(
             &site_packages.join(format!(
                 "pure_package/{}",
                 crate::python::constants::INIT_FILE
             )),
-            "VALUE = 'pure'\n",
+            "from .helpers import helper\nVALUE = 'pure'\n",
         )?;
         create_test_file(
             &site_packages.join("pure_package/helpers.py"),
@@ -2761,15 +2839,18 @@ IMPORT-NAMESPACE: UPPER_CASE
         Ok(site_packages)
     }
 
+    /// Build a resolver with third-party bundling enabled against a fake virtualenv.
     fn bundle_third_party_resolver(virtualenv: &Path) -> Result<ModuleResolver> {
         let config = Config {
-            bundle_third_party: true,
+            bundle_third_party: Some(true),
             ..Default::default()
         };
         let virtualenv_path = virtualenv.to_string_lossy();
         ModuleResolver::new_with_overrides(config, Some(""), Some(virtualenv_path.as_ref()))
     }
 
+    /// Pure-Python site-packages distributions are classified for bundling and resolve
+    /// to real site-packages paths when third-party bundling is enabled.
     #[test]
     fn test_bundle_third_party_includes_pure_python_distribution() -> Result<()> {
         let temp_dir = TempDir::new()?;
@@ -2799,12 +2880,33 @@ IMPORT-NAMESPACE: UPPER_CASE
         );
         assert_eq!(
             resolver.resolve_module_path("pure_package.helpers")?,
-            Some(site_packages.join("pure_package/helpers.py").canonicalize()?)
+            Some(
+                site_packages
+                    .join("pure_package/helpers.py")
+                    .canonicalize()?
+            )
+        );
+
+        // Relative imports inside the bundled package resolve against site-packages
+        let package_init = site_packages.join(format!(
+            "pure_package/{}",
+            crate::python::constants::INIT_FILE
+        ));
+        assert_eq!(
+            resolver.resolve_module_path_with_context(".helpers", Some(&package_init))?,
+            Some(
+                site_packages
+                    .join("pure_package/helpers.py")
+                    .canonicalize()?
+            ),
+            "relative imports inside bundled site-packages modules must resolve"
         );
 
         Ok(())
     }
 
+    /// A distribution shipping native extension artifacts anywhere inside its package
+    /// directory stays external as a whole, even when its `__init__.py` is pure Python.
     #[test]
     fn test_bundle_third_party_keeps_native_distribution_external() -> Result<()> {
         let temp_dir = TempDir::new()?;
@@ -2826,6 +2928,7 @@ IMPORT-NAMESPACE: UPPER_CASE
         Ok(())
     }
 
+    /// `known_third_party` entries force listed packages external even when pure Python.
     #[test]
     fn test_bundle_third_party_respects_known_third_party_override() -> Result<()> {
         let temp_dir = TempDir::new()?;
@@ -2833,7 +2936,7 @@ IMPORT-NAMESPACE: UPPER_CASE
         create_bundle_third_party_virtualenv(&virtualenv)?;
 
         let config = Config {
-            bundle_third_party: true,
+            bundle_third_party: Some(true),
             known_third_party: IndexSet::from(["pure_package".to_owned()]),
             ..Default::default()
         };
@@ -2846,9 +2949,51 @@ IMPORT-NAMESPACE: UPPER_CASE
         assert_eq!(classification.bundle, BundleDisposition::External);
         assert!(resolver.resolve_module_path("pure_package")?.is_none());
 
+        // The escape hatch covers submodules of the configured package root as well
+        let submodule = resolver.classify_import("pure_package.helpers");
+        assert_eq!(submodule.origin, ImportOrigin::ThirdParty);
+        assert_eq!(submodule.bundle, BundleDisposition::External);
+        assert!(
+            resolver
+                .resolve_module_path("pure_package.helpers")?
+                .is_none(),
+            "submodules of known_third_party roots must stay external"
+        );
+
         Ok(())
     }
 
+    /// Packages reading their own installed distribution metadata at runtime
+    /// (`importlib.metadata`, `pkg_resources`) stay external because that metadata is
+    /// unavailable once the source is inlined into a bundle.
+    #[test]
+    fn test_bundle_third_party_keeps_metadata_dependent_distribution_external() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!(
+                "metadata_package/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "from importlib.metadata import version\n__version__ = \
+             version('metadata-package')\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let classification = resolver.classify_import("metadata_package");
+        assert_eq!(classification.origin, ImportOrigin::ThirdParty);
+        assert_eq!(classification.bundle, BundleDisposition::External);
+        assert!(
+            resolver.resolve_module_path("metadata_package")?.is_none(),
+            "metadata-dependent packages must not be inlined"
+        );
+
+        Ok(())
+    }
+
+    /// With third-party bundling disabled (the default), pure-Python site-packages
+    /// distributions keep their previous external disposition.
     #[test]
     fn test_bundle_third_party_disabled_keeps_pure_distribution_external() -> Result<()> {
         let temp_dir = TempDir::new()?;
@@ -2865,6 +3010,39 @@ IMPORT-NAMESPACE: UPPER_CASE
         let classification = resolver.classify_import("pure_package");
         assert_eq!(classification.bundle, BundleDisposition::External);
         assert!(resolver.resolve_module_path("pure_package")?.is_none());
+
+        Ok(())
+    }
+
+    /// Directory symlinks inside a site-packages package are never traversed; the
+    /// package conservatively stays external because it cannot be inspected safely.
+    #[cfg(unix)]
+    #[test]
+    fn test_bundle_third_party_directory_symlink_keeps_package_external() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!(
+                "linked_package/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "",
+        )?;
+        // Symlink cycle: linked_package/loop -> linked_package
+        std::os::unix::fs::symlink(
+            site_packages.join("linked_package"),
+            site_packages.join("linked_package/loop"),
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let classification = resolver.classify_import("linked_package");
+        assert_eq!(
+            classification.bundle,
+            BundleDisposition::External,
+            "packages with directory symlinks must conservatively stay external"
+        );
+        assert!(resolver.resolve_module_path("linked_package")?.is_none());
 
         Ok(())
     }
