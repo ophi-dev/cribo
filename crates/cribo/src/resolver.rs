@@ -668,6 +668,10 @@ struct DistributionInfo {
     requires_dist: Vec<String>,
     /// Whether the distribution installs native artifacts (`.so`/`.pyd`) per `RECORD`
     ships_native_artifacts: bool,
+    /// Whether the distribution declares runtime-discovered entry points (any
+    /// `entry_points.txt` group other than script shims); such providers are located
+    /// through installed metadata and cannot be inlined
+    has_runtime_entry_points: bool,
     /// Import prefixes declared via `Import-Name`/`Import-Namespace`
     declared_prefixes: IndexSet<String>,
     /// Import names implied by installed `RECORD` files
@@ -1615,6 +1619,16 @@ impl ModuleResolver {
             return true;
         }
 
+        // Plugin providers are discovered through installed entry-point metadata by
+        // OTHER code; inlining their source would make them invisible to discovery
+        if self.distribution_with_runtime_entry_points_owns_import(search_root, module_name) {
+            debug!(
+                "Import '{module_name}' is owned by a distribution declaring runtime entry \
+                 points; keeping it external"
+            );
+            return true;
+        }
+
         let top_level = module_name.split('.').next().unwrap_or(module_name);
         let package_dir = search_root.join(top_level);
         if !package_dir.is_dir() {
@@ -2048,6 +2062,21 @@ impl ModuleResolver {
         })
     }
 
+    /// Return whether any distribution claiming an import declares runtime-discovered
+    /// entry points (plugin metadata located through `importlib.metadata`).
+    fn distribution_with_runtime_entry_points_owns_import(
+        &self,
+        site_packages_dir: &Path,
+        import_name: &str,
+    ) -> bool {
+        self.with_distribution_ownership_index(site_packages_dir, |index| {
+            index
+                .owning_distributions(import_name)
+                .iter()
+                .any(|distribution| distribution.has_runtime_entry_points)
+        })
+    }
+
     /// Return whether the configured target Python version satisfies a PEP 440
     /// specifier set. Unparsable specifiers conservatively report as unsatisfied.
     fn target_python_satisfies(&self, specifiers: &str) -> bool {
@@ -2320,6 +2349,7 @@ impl ModuleResolver {
         }
 
         Self::index_top_level_declarations(dist_info_dir, &mut distribution);
+        Self::index_entry_points(dist_info_dir, &mut distribution);
 
         let record_file = dist_info_dir.join("RECORD");
         if record_file.exists()
@@ -2354,6 +2384,7 @@ impl ModuleResolver {
         }
 
         Self::index_top_level_declarations(egg_info_dir, &mut distribution);
+        Self::index_entry_points(egg_info_dir, &mut distribution);
 
         // installed-files.txt paths are relative to the egg-info directory itself
         // (e.g. "../package/module.py"); resolve them against the site-packages root
@@ -2391,6 +2422,29 @@ impl ModuleResolver {
                         .declared_prefixes
                         .insert(import_root.to_owned());
                 }
+            }
+        }
+    }
+
+    /// Record whether a metadata directory declares runtime-discovered entry points.
+    ///
+    /// `console_scripts`/`gui_scripts` groups are installer-generated script shims and
+    /// do not require the distribution at runtime; any other group is plugin metadata
+    /// that consumers discover through `importlib.metadata.entry_points()`.
+    fn index_entry_points(metadata_dir: &Path, distribution: &mut DistributionInfo) {
+        let entry_points_file = metadata_dir.join("entry_points.txt");
+        let Ok(entry_points) = std::fs::read_to_string(entry_points_file) else {
+            return;
+        };
+        for line in entry_points.lines() {
+            let line = line.trim();
+            if let Some(group) = line
+                .strip_prefix('[')
+                .and_then(|rest| rest.strip_suffix(']'))
+                && !matches!(group.trim(), "console_scripts" | "gui_scripts")
+            {
+                distribution.has_runtime_entry_points = true;
+                return;
             }
         }
     }
@@ -4140,6 +4194,52 @@ Import-Name: folded_module
             "requested extras must activate their dependencies with the extra marker \
              simplified away (pip leaves `extra` unset in requirements files); unrequested \
              extras must not"
+        );
+
+        Ok(())
+    }
+
+    /// Distributions declaring runtime entry points (plugin metadata) stay external;
+    /// script-shim groups (`console_scripts`) alone do not prevent bundling.
+    #[test]
+    fn test_bundle_third_party_keeps_entry_point_provider_external() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        for (package, entry_points) in [
+            (
+                "plugin_provider",
+                "[myapp.plugins]\nprovider = plugin_provider:register\n",
+            ),
+            ("cli_tool", "[console_scripts]\ncli-tool = cli_tool:main\n"),
+        ] {
+            create_test_file(
+                &site_packages.join(format!("{package}/{}", crate::python::constants::INIT_FILE)),
+                "VALUE = 1\n",
+            )?;
+            create_test_file(
+                &site_packages.join(format!("{package}-1.0.dist-info/METADATA")),
+                &format!(
+                    "Metadata-Version: 2.5\nName: {package}\nVersion: 1.0\nImport-Name: \
+                     {package}\n"
+                ),
+            )?;
+            create_test_file(
+                &site_packages.join(format!("{package}-1.0.dist-info/entry_points.txt")),
+                entry_points,
+            )?;
+        }
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        assert_eq!(
+            resolver.classify_import("plugin_provider").bundle,
+            BundleDisposition::External,
+            "runtime entry-point providers must stay discoverable through metadata"
+        );
+        assert_eq!(
+            resolver.classify_import("cli_tool").bundle,
+            BundleDisposition::Include,
+            "console-script shims alone must not prevent bundling"
         );
 
         Ok(())

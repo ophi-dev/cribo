@@ -1803,8 +1803,15 @@ impl BundleOrchestrator {
                     continue;
                 };
                 let classification = resolver.classify_import(&module_name);
+                // Namespace-package parents are synthetic containers claimed by every
+                // provider distribution in the namespace; ownership must come from the
+                // concrete bundled descendants only
                 if classification.should_bundle()
                     && matches!(classification.origin, ImportOrigin::ThirdParty)
+                    && !matches!(
+                        classification.source,
+                        crate::resolver::ImportSource::NamespacePackage
+                    )
                 {
                     let extras = self.module_map_extras(&module_name)?;
                     bundled_third_party_imports
