@@ -697,15 +697,28 @@ impl DistributionInfo {
 /// All installed distributions discovered under one search root.
 /// Collect literal distribution names whose metadata a module queries at runtime,
 /// e.g. `importlib.metadata.version("provider")`, `metadata.distribution("provider")`,
-/// or `pkg_resources.get_distribution("provider")`.
+/// `pkg_resources.get_distribution("provider")`, or
+/// `pkg_resources.require("provider>=2")`.
 ///
 /// Detection is name-based on the queried-API call (`version`, `distribution`,
-/// `metadata`, `requires`, `files`, `get_distribution`, `require`) with a literal
-/// first argument; over-collection is safe because it only keeps more distributions
-/// installed.
+/// `metadata`, `requires`, `files`, `get_distribution`, `require`) with literal
+/// arguments; requirement-style arguments are parsed so constrained strings like
+/// `"provider>=2"` record the distribution name. Over-collection is safe because it
+/// only keeps more distributions installed.
 pub(crate) fn queried_distribution_names(module: &ruff_python_ast::ModModule) -> Vec<String> {
     struct QueryCollector {
         names: Vec<String>,
+    }
+
+    impl QueryCollector {
+        /// Record one literal query argument, resolving requirement syntax
+        /// (`provider>=2`, `provider[extra]`) to its distribution name.
+        fn record(&mut self, literal: &str) {
+            use std::str::FromStr;
+            let name = pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(literal)
+                .map_or_else(|_| literal.to_owned(), |parsed| parsed.name.to_string());
+            self.names.push(name);
+        }
     }
 
     impl<'a> ruff_python_ast::visitor::Visitor<'a> for QueryCollector {
@@ -729,8 +742,12 @@ pub(crate) fn queried_distribution_names(module: &ruff_python_ast::ModModule) ->
                             | "require"
                     )
                 }) {
-                    if let Some(Expr::StringLiteral(literal)) = call.arguments.args.first() {
-                        self.names.push(literal.value.to_str().to_owned());
+                    // `require` is variadic; collecting every positional literal is
+                    // safe for the other APIs too
+                    for argument in &call.arguments.args {
+                        if let Expr::StringLiteral(literal) = argument {
+                            self.record(literal.value.to_str());
+                        }
                     }
                     // Keyword forms differ per API (`distribution_name=`, `dist=`);
                     // over-collection is safe, so accept any literal keyword value
@@ -738,7 +755,7 @@ pub(crate) fn queried_distribution_names(module: &ruff_python_ast::ModModule) ->
                         if keyword.arg.is_some()
                             && let Expr::StringLiteral(literal) = &keyword.value
                         {
-                            self.names.push(literal.value.to_str().to_owned());
+                            self.record(literal.value.to_str());
                         }
                     }
                 }
@@ -4485,13 +4502,21 @@ print(version('direct-name'))
 print(importlib.metadata.distribution('attr-name'))
 print(pkg_resources.get_distribution('legacy-name'))
 print(importlib.metadata.version(distribution_name='keyword-name'))
+print(pkg_resources.require('constrained-name>=2', 'variadic-name[extra]<3'))
 print(unrelated('not', 'a', 'query'))
 ";
         let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
         let names = queried_distribution_names(parsed.syntax());
         assert_eq!(
             names,
-            vec!["direct-name", "attr-name", "legacy-name", "keyword-name"]
+            vec![
+                "direct-name",
+                "attr-name",
+                "legacy-name",
+                "keyword-name",
+                "constrained-name",
+                "variadic-name"
+            ]
         );
     }
 
