@@ -414,8 +414,8 @@ fn create_bundle_third_party_sandbox(entry_source: &str) -> BundleThirdPartySand
 }
 
 /// Run cribo with `--bundle-third-party --emit-requirements` against the sandbox and
-/// assert that bundling succeeded. The closure customizes the environment (e.g. which
-/// mechanism locates the virtualenv).
+/// assert that bundling succeeded. The closure customizes the invocation (e.g. which
+/// mechanism locates the virtualenv, or the interpreter used for metadata queries).
 fn run_bundle_third_party_cribo(
     sandbox: &BundleThirdPartySandbox,
     configure: impl FnOnce(&mut Command),
@@ -428,8 +428,6 @@ fn run_bundle_third_party_cribo(
         .arg(&sandbox.output_path)
         .arg("--bundle-third-party")
         .arg("--emit-requirements")
-        .arg("--python")
-        .arg(common::get_python_executable())
         .env_remove("VIRTUAL_ENV")
         .env_remove("PYTHONPATH")
         .env_remove("CONDA_PREFIX");
@@ -466,7 +464,10 @@ fn test_bundle_third_party_inlines_pure_dependency() {
     .expect("Failed to write dependency submodule");
 
     run_bundle_third_party_cribo(&sandbox, |command| {
-        command.env("VIRTUAL_ENV", &sandbox.environment);
+        command
+            .arg("--python")
+            .arg(common::get_python_executable())
+            .env("VIRTUAL_ENV", &sandbox.environment);
     });
 
     // The pure dependency is bundled, so no requirements file is needed
@@ -531,7 +532,10 @@ fn test_bundle_third_party_keeps_native_dependency_external() {
     .expect("Failed to write native artifact");
 
     let output = run_bundle_third_party_cribo(&sandbox, |command| {
-        command.env("VIRTUAL_ENV", &sandbox.environment);
+        command
+            .arg("--python")
+            .arg(common::get_python_executable())
+            .env("VIRTUAL_ENV", &sandbox.environment);
     });
 
     // Only the native-extension distribution stays in requirements.txt
@@ -576,7 +580,9 @@ fn test_bundle_third_party_detects_virtualenv_beside_entry() {
     );
 
     run_bundle_third_party_cribo(&sandbox, |command| {
-        // Run from a directory that contains no virtualenv and rely on fallback discovery
+        // Run from a directory that contains no virtualenv and rely on fallback
+        // discovery; no --python is passed since an explicitly configured interpreter
+        // would designate its own environment instead
         command.current_dir(&sandbox.output_dir);
     });
 

@@ -381,8 +381,13 @@ impl ImportModuleDescriptor {
 #[derive(Default)]
 struct UnbundlablePatternDetector {
     found: bool,
-    /// Local aliases bound to `importlib.import_module` via `from importlib import ...`
+    /// Local aliases bound to `importlib.import_module` via `from importlib import ...`.
+    /// Literal calls through these are statically discovered and stay bundleable.
     dynamic_import_aliases: IndexSet<String>,
+    /// Callable aliases created by (annotated) assignments such as
+    /// `load = importlib.import_module`. Import discovery cannot rewrite calls through
+    /// these, so any call blocks bundling, literal or not.
+    assigned_import_aliases: IndexSet<String>,
 }
 
 impl UnbundlablePatternDetector {
@@ -413,7 +418,10 @@ impl UnbundlablePatternDetector {
                 Some(DynamicImportKind::ImportModule)
             }
             Expr::Name(name) if name.id.as_str() == "__import__" => {
-                Some(DynamicImportKind::DunderImport)
+                Some(DynamicImportKind::Undiscoverable)
+            }
+            Expr::Name(name) if self.assigned_import_aliases.contains(name.id.as_str()) => {
+                Some(DynamicImportKind::Undiscoverable)
             }
             Expr::Name(name)
                 if name.id.as_str() == "import_module"
@@ -428,26 +436,44 @@ impl UnbundlablePatternDetector {
     /// Record every alias bound to `importlib.import_module` anywhere in the module
     /// (including inside `try`/`if` blocks and function bodies) before the detection
     /// pass, so calls in functions defined above the alias binding are still
-    /// recognized. Both import aliases (`from importlib import import_module as X`)
-    /// and assignment aliases (`X = importlib.import_module`) are collected.
+    /// recognized. Import aliases (`from importlib import import_module as X`) and
+    /// (annotated) assignment aliases (`X = importlib.import_module`) are collected
+    /// separately because only import aliases support static discovery.
     /// Over-collection is safe: it can only classify more packages as external.
     fn collect_dynamic_import_aliases(&mut self, body: &[ruff_python_ast::Stmt]) {
-        struct AliasCollector<'aliases> {
-            aliases: &'aliases mut IndexSet<String>,
+        struct AliasCollector<'detector> {
+            import_aliases: &'detector mut IndexSet<String>,
+            assigned_aliases: &'detector mut IndexSet<String>,
         }
 
         impl<'a> ruff_python_ast::visitor::Visitor<'a> for AliasCollector<'_> {
             fn visit_stmt(&mut self, stmt: &'a ruff_python_ast::Stmt) {
-                use ruff_python_ast::Stmt;
+                use ruff_python_ast::{Expr, Stmt};
                 match stmt {
                     Stmt::ImportFrom(import_from)
                         if import_from.level == 0
                             && import_from.module.as_deref() == Some("importlib") =>
                     {
-                        record_import_module_aliases(import_from, self.aliases);
+                        record_import_module_aliases(import_from, self.import_aliases);
                     }
                     Stmt::Assign(assign) => {
-                        record_assigned_import_module_aliases(assign, self.aliases);
+                        record_assigned_import_module_aliases(
+                            &assign.targets,
+                            &assign.value,
+                            self.import_aliases,
+                            self.assigned_aliases,
+                        );
+                    }
+                    Stmt::AnnAssign(ann_assign) => {
+                        if let Some(value) = &ann_assign.value {
+                            let target: &Expr = &ann_assign.target;
+                            record_assigned_import_module_aliases(
+                                std::slice::from_ref(target),
+                                value,
+                                self.import_aliases,
+                                self.assigned_aliases,
+                            );
+                        }
                     }
                     _ => {}
                 }
@@ -457,7 +483,8 @@ impl UnbundlablePatternDetector {
 
         use ruff_python_ast::visitor::Visitor as _;
         let mut collector = AliasCollector {
-            aliases: &mut self.dynamic_import_aliases,
+            import_aliases: &mut self.dynamic_import_aliases,
+            assigned_aliases: &mut self.assigned_import_aliases,
         };
         for stmt in body {
             collector.visit_stmt(stmt);
@@ -482,38 +509,42 @@ fn record_import_module_aliases(
     }
 }
 
-/// Track callable aliases created by assignments such as
-/// `load = importlib.import_module` or `load = import_module`.
+/// Track callable aliases created by (annotated) assignments such as
+/// `load = importlib.import_module` or `load: Callable = import_module`.
 fn record_assigned_import_module_aliases(
-    assign: &ruff_python_ast::StmtAssign,
-    aliases: &mut IndexSet<String>,
+    targets: &[ruff_python_ast::Expr],
+    value: &ruff_python_ast::Expr,
+    import_aliases: &IndexSet<String>,
+    assigned_aliases: &mut IndexSet<String>,
 ) {
     use ruff_python_ast::Expr;
-    let value_is_import_module = match assign.value.as_ref() {
+    let value_is_import_module = match value {
         Expr::Attribute(attribute) => attribute.attr.as_str() == "import_module",
         Expr::Name(name) => {
-            name.id.as_str() == "import_module" || aliases.contains(name.id.as_str())
+            name.id.as_str() == "import_module"
+                || import_aliases.contains(name.id.as_str())
+                || assigned_aliases.contains(name.id.as_str())
         }
         _ => false,
     };
     if !value_is_import_module {
         return;
     }
-    for target in &assign.targets {
+    for target in targets {
         if let Expr::Name(name) = target {
-            aliases.insert(name.id.to_string());
+            assigned_aliases.insert(name.id.to_string());
         }
     }
 }
 
 /// The dynamic-import mechanism used by a call expression.
 enum DynamicImportKind {
-    /// `importlib.import_module(...)` (possibly aliased); literal arguments are
+    /// `importlib.import_module(...)` (possibly import-aliased); literal arguments are
     /// statically discovered, so only non-literal ones block bundling
     ImportModule,
-    /// `__import__(...)`; import discovery never resolves these, so any call blocks
-    /// bundling
-    DunderImport,
+    /// Calls that import discovery never resolves — `__import__(...)` and callables
+    /// assigned from `import_module` — so any such call blocks bundling
+    Undiscoverable,
 }
 
 impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
@@ -563,10 +594,11 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
         }
         // Dynamic imports whose targets are not statically discovered would be missing
         // from the bundle: non-literal (or missing) `import_module` names cannot be
-        // resolved, and `__import__` calls are never handled by import discovery at all
+        // resolved, and `__import__` calls or assignment-derived callables are never
+        // handled by import discovery at all
         if let Expr::Call(call) = expr {
             match self.dynamic_import_kind(&call.func) {
-                Some(DynamicImportKind::DunderImport) => {
+                Some(DynamicImportKind::Undiscoverable) => {
                     self.found = true;
                     return;
                 }
@@ -1423,13 +1455,26 @@ impl ModuleResolver {
         let search_dirs = self.get_search_directories();
         if let Some((search_root, resolved)) = self.locate_in_directories(module_name, &search_dirs)
         {
-            return self.classify_resolved_import(
+            let mut classification = self.classify_resolved_import(
                 module_name,
                 &search_root,
                 &resolved,
                 ImportOrigin::FirstParty,
                 true,
             );
+            // Under third-party bundling, distribution-backed packages supplied through
+            // normal roots (e.g. PYTHONPATH vendoring with adjacent dist-info) are
+            // subject to the same external policy as site-packages installs;
+            // known_first_party remains the force-include escape hatch
+            if self.config.bundle_third_party()
+                && classification.origin == ImportOrigin::ThirdParty
+                && classification.should_bundle()
+                && !self.config.known_first_party.contains(module_name)
+                && self.package_must_stay_external(&search_root, module_name)
+            {
+                classification.bundle = BundleDisposition::External;
+            }
+            return classification;
         }
 
         if module_name.contains('.') {
@@ -1600,22 +1645,34 @@ impl ModuleResolver {
         false
     }
 
-    /// Return whether a file extension denotes a native binary artifact: Python
-    /// extension modules (`.so`/`.pyd`) or shared libraries loaded at runtime through
-    /// ctypes/CFFI (`.dll`/`.dylib`). Distinct from importable-extension matching in
+    /// Return whether a file name denotes a native binary artifact: Python extension
+    /// modules (`.so`/`.pyd`), shared libraries loaded at runtime through ctypes/CFFI
+    /// (`.dll`/`.dylib`), and versioned shared libraries such as `libhelper.so.1`.
+    /// Distinct from importable-extension matching in
     /// [`Self::find_native_extension_module`], which covers only Python extensions.
-    fn is_native_artifact_extension(extension: &str) -> bool {
-        matches!(extension, "so" | "pyd" | "dll" | "dylib")
+    fn is_native_artifact_file_name(file_name: &str) -> bool {
+        use cow_utils::CowUtils;
+        let lowercase_name = file_name.cow_to_ascii_lowercase();
+        lowercase_name.ends_with(".so")
+            || lowercase_name.ends_with(".pyd")
+            || lowercase_name.ends_with(".dll")
+            || lowercase_name.ends_with(".dylib")
+            || lowercase_name.contains(".so.")
     }
 
     /// Return whether a single file forces its package to stay external: a native
     /// artifact or a Python source containing a bundling-blocking pattern.
     fn is_external_marker_file(path: &Path) -> bool {
-        match path.extension().and_then(OsStr::to_str) {
-            Some(extension) if Self::is_native_artifact_extension(extension) => true,
-            Some("py") => Self::python_file_blocks_bundling(path),
-            _ => false,
+        let Some(file_name) = path.file_name().and_then(OsStr::to_str) else {
+            return false;
+        };
+        if Self::is_native_artifact_file_name(file_name) {
+            return true;
         }
+        if path.extension().and_then(OsStr::to_str) == Some("py") {
+            return Self::python_file_blocks_bundling(path);
+        }
+        false
     }
 
     /// Return whether a Python source file contains a pattern that makes it unsafe to
@@ -1703,7 +1760,31 @@ impl ModuleResolver {
         if let Ok(path) = std::env::var("CONDA_PREFIX") {
             return Self::explicit_virtualenv_paths(&path);
         }
-        self.detect_fallback_virtualenv_paths()
+        // Without an activated environment, combine auto-detected virtualenvs with the
+        // environment of an explicitly configured interpreter (--python /
+        // requirements.python), matching the environment requirement resolution inspects
+        let mut environments: IndexSet<PathBuf> = self
+            .detect_fallback_virtualenv_paths()
+            .into_iter()
+            .collect();
+        if let Some(python) = &self.config.requirements.python
+            && let Some(environment) = Self::environment_root_of_interpreter(python)
+        {
+            environments.insert(environment);
+        }
+        environments.into_iter().collect()
+    }
+
+    /// Derive an environment root from an interpreter path laid out as
+    /// `<env>/bin/python` (Unix) or `<env>\Scripts\python.exe` (Windows).
+    fn environment_root_of_interpreter(python: &Path) -> Option<PathBuf> {
+        let executable_dir = python.parent()?;
+        let dir_name = executable_dir.file_name()?.to_str()?;
+        if dir_name.eq_ignore_ascii_case("bin") || dir_name.eq_ignore_ascii_case("Scripts") {
+            executable_dir.parent().map(Path::to_path_buf)
+        } else {
+            None
+        }
     }
 
     fn explicit_virtualenv_paths(virtualenv_path: &str) -> Vec<PathBuf> {
@@ -1926,17 +2007,26 @@ impl ModuleResolver {
     ) -> Vec<String> {
         use std::str::FromStr;
 
-        let mut bundled_distribution_names: IndexSet<String> = IndexSet::new();
-        // Declared entry -> extras requested for the distribution that declared it
-        let mut declared_requirements: IndexMap<String, Vec<pep508_rs::ExtraName>> =
-            IndexMap::new();
+        /// Facts collected for one bundled distribution before filtering.
+        #[derive(Default)]
+        struct BundledDistribution {
+            requires_dist: Vec<String>,
+            extras: Vec<pep508_rs::ExtraName>,
+        }
 
         // Distributions can be installed into the environment's site-packages or
-        // supplied through PYTHONPATH/source roots with adjacent dist-info metadata;
-        // search the same roots as requirement resolution itself
+        // supplied through PYTHONPATH/source roots with adjacent dist-info metadata
         let metadata_dirs = self.get_distribution_metadata_search_directories();
+        let mut bundled: IndexMap<String, BundledDistribution> = IndexMap::new();
+
         for (import_name, requested_extras) in bundled_imports {
-            for site_packages_dir in &metadata_dirs {
+            // Query ownership at the root that actually supplied the module, so a
+            // stale dist-info in an earlier root cannot claim it; namespace packages
+            // have no single root and fall back to scanning all metadata roots
+            let owner_roots: Vec<PathBuf> = self
+                .get_import_search_root(import_name)
+                .map_or_else(|| metadata_dirs.clone(), |root| vec![root]);
+            for site_packages_dir in &owner_roots {
                 // Aggregate over all owning distributions (shared namespaces can have
                 // several claimants; record-exact owners take precedence in the index)
                 let found = self.with_distribution_ownership_index(site_packages_dir, |index| {
@@ -1954,15 +2044,13 @@ impl ModuleResolver {
                 });
                 if let Some(owners) = found {
                     for (name, requires_dist) in owners {
-                        if !name.is_empty() {
-                            bundled_distribution_names
-                                .insert(Self::normalize_distribution_name(&name));
-                        }
-                        for entry in requires_dist {
-                            declared_requirements
-                                .entry(entry)
-                                .or_default()
-                                .extend(requested_extras.iter().cloned());
+                        let normalized_name = Self::normalize_distribution_name(&name);
+                        let record = bundled.entry(normalized_name).or_default();
+                        record.requires_dist = requires_dist;
+                        for extra in requested_extras {
+                            if !record.extras.contains(extra) {
+                                record.extras.push(extra.clone());
+                            }
                         }
                     }
                     break;
@@ -1970,36 +2058,82 @@ impl ModuleResolver {
             }
         }
 
+        // Propagate extras between bundled distributions to a fixpoint: when bundled A
+        // declares `B[speed]` and B is bundled too, B's `extra == "speed"` dependencies
+        // must be activated as if A had been installed normally
+        for _ in 0..bundled.len().max(1) {
+            let mut propagated: Vec<(String, Vec<pep508_rs::ExtraName>)> = Vec::new();
+            for record in bundled.values() {
+                for entry in &record.requires_dist {
+                    let Ok(parsed) =
+                        pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(entry)
+                    else {
+                        continue;
+                    };
+                    if parsed.extras.is_empty() || !parsed.marker.evaluate_extras(&record.extras) {
+                        continue;
+                    }
+                    let target = parsed.name.to_string();
+                    if bundled.contains_key(&target) {
+                        propagated.push((target, parsed.extras));
+                    }
+                }
+            }
+            let mut changed = false;
+            for (target, extras) in propagated {
+                let record = bundled
+                    .get_mut(&target)
+                    .expect("propagation targets are bundled distributions");
+                for extra in extras {
+                    if !record.extras.contains(&extra) {
+                        record.extras.push(extra);
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+
         // Deduplicate by distribution name: `pip install -r` rejects files that name
         // the same distribution twice ("Double requirement given")
+        let bundled_names: IndexSet<String> = bundled.keys().cloned().collect();
         let mut merged: IndexMap<String, pep508_rs::Requirement<pep508_rs::VerbatimUrl>> =
             IndexMap::new();
-        for (entry, extras) in declared_requirements {
-            let Ok(mut parsed) = pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(&entry)
-            else {
-                warn!("Skipping unparsable Requires-Dist entry of a bundled distribution: {entry}");
-                continue;
-            };
-            // Keep only declarations that can apply with the requested extras: a pure
-            // `extra == ...` condition holds only when that extra was asked for, while
-            // mixed markers like `python_version < "3.12" or extra == "fast"` always can
-            if !parsed.marker.evaluate_extras(&extras) {
-                continue;
-            }
-            // Requested extras are satisfied by construction; remove them from the
-            // marker, because `extra` is unset when pip evaluates a requirements file
-            parsed.marker = parsed.marker.clone().simplify_extras(&extras);
-            let name = parsed.name.to_string();
-            // Requirements satisfied by other bundled distributions are not needed
-            if bundled_distribution_names.contains(&name) {
-                continue;
-            }
-            match merged.entry(name) {
-                indexmap::map::Entry::Vacant(vacant) => {
-                    vacant.insert(parsed);
+        for record in bundled.values() {
+            for entry in &record.requires_dist {
+                let Ok(mut parsed) =
+                    pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(entry)
+                else {
+                    warn!(
+                        "Skipping unparsable Requires-Dist entry of a bundled distribution: \
+                         {entry}"
+                    );
+                    continue;
+                };
+                // Keep only declarations that can apply with the requested extras: a
+                // pure `extra == ...` condition holds only when that extra was asked
+                // for, while markers like `python_version < "3.12" or extra == "fast"`
+                // always can
+                if !parsed.marker.evaluate_extras(&record.extras) {
+                    continue;
                 }
-                indexmap::map::Entry::Occupied(mut occupied) => {
-                    Self::merge_requirement_constraints(occupied.get_mut(), parsed);
+                // Requested extras are satisfied by construction; remove them from the
+                // marker, because `extra` is unset when pip evaluates requirements files
+                parsed.marker = parsed.marker.clone().simplify_extras(&record.extras);
+                let name = parsed.name.to_string();
+                // Requirements satisfied by other bundled distributions are not needed
+                if bundled_names.contains(&name) {
+                    continue;
+                }
+                match merged.entry(name) {
+                    indexmap::map::Entry::Vacant(vacant) => {
+                        vacant.insert(parsed);
+                    }
+                    indexmap::map::Entry::Occupied(mut occupied) => {
+                        Self::merge_requirement_constraints(occupied.get_mut(), parsed);
+                    }
                 }
             }
         }
@@ -2101,7 +2235,9 @@ impl ModuleResolver {
         index
     }
 
-    /// Index one modern `.dist-info` distribution (METADATA + RECORD).
+    /// Index one modern `.dist-info` distribution (METADATA + RECORD, with
+    /// `top_level.txt` supplying import roots when present — older tooling relies on
+    /// it instead of `Import-Name` headers or a `RECORD` file).
     fn index_dist_info(dist_info_dir: &Path) -> DistributionInfo {
         // Index each distribution separately so ownership facts carry the
         // distribution's own policy metadata (native artifacts, requirements)
@@ -2112,6 +2248,8 @@ impl ModuleResolver {
             Self::index_distribution_metadata(&metadata, &mut distribution);
         }
 
+        Self::index_top_level_declarations(dist_info_dir, &mut distribution);
+
         let record_file = dist_info_dir.join("RECORD");
         if record_file.exists()
             && let Ok(file) = std::fs::File::open(&record_file)
@@ -2120,10 +2258,10 @@ impl ModuleResolver {
             for line in reader.lines().map_while(Result::ok) {
                 let path_part = Self::record_line_first_field(&line);
                 Self::index_record_path(&path_part, &mut distribution);
-                if Path::new(path_part.as_str())
-                    .extension()
-                    .and_then(OsStr::to_str)
-                    .is_some_and(Self::is_native_artifact_extension)
+                if path_part
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .is_some_and(Self::is_native_artifact_file_name)
                 {
                     distribution.ships_native_artifacts = true;
                 }
@@ -2144,17 +2282,7 @@ impl ModuleResolver {
             Self::index_distribution_metadata(&metadata, &mut distribution);
         }
 
-        let top_level_file = egg_info_dir.join("top_level.txt");
-        if let Ok(top_level) = std::fs::read_to_string(top_level_file) {
-            for line in top_level.lines() {
-                let import_root = line.trim();
-                if !import_root.is_empty() {
-                    distribution
-                        .declared_prefixes
-                        .insert(import_root.to_owned());
-                }
-            }
-        }
+        Self::index_top_level_declarations(egg_info_dir, &mut distribution);
 
         // installed-files.txt paths are relative to the egg-info directory itself
         // (e.g. "../package/module.py"); resolve them against the site-packages root
@@ -2168,10 +2296,10 @@ impl ModuleResolver {
                     .unwrap_or(record_path)
                     .trim_start_matches("./");
                 Self::index_record_path(normalized, &mut distribution);
-                if Path::new(normalized)
-                    .extension()
-                    .and_then(OsStr::to_str)
-                    .is_some_and(Self::is_native_artifact_extension)
+                if normalized
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .is_some_and(Self::is_native_artifact_file_name)
                 {
                     distribution.ships_native_artifacts = true;
                 }
@@ -2179,6 +2307,21 @@ impl ModuleResolver {
         }
 
         distribution
+    }
+
+    /// Add the import roots declared in a metadata directory's `top_level.txt`.
+    fn index_top_level_declarations(metadata_dir: &Path, distribution: &mut DistributionInfo) {
+        let top_level_file = metadata_dir.join("top_level.txt");
+        if let Ok(top_level) = std::fs::read_to_string(top_level_file) {
+            for line in top_level.lines() {
+                let import_root = line.trim();
+                if !import_root.is_empty() {
+                    distribution
+                        .declared_prefixes
+                        .insert(import_root.to_owned());
+                }
+            }
+        }
     }
 
     /// Extract the first CSV field of an installed-files `RECORD` line.
@@ -3894,30 +4037,263 @@ Import-Name: injected_module
         Ok(())
     }
 
-    /// Shared libraries loaded through ctypes/CFFI (`.dll`/`.dylib`) also keep a
-    /// distribution external, not just Python extension modules.
+    /// Shared libraries loaded through ctypes/CFFI (`.dll`/`.dylib`) and versioned
+    /// shared libraries (`libhelper.so.1`) also keep a distribution external, not just
+    /// Python extension modules.
     #[test]
     fn test_bundle_third_party_keeps_shared_library_distribution_external() -> Result<()> {
         let temp_dir = TempDir::new()?;
         let virtualenv = temp_dir.path().join("venv");
         let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        for (package, library) in [
+            ("cffi_style_pkg", "libhelper.dylib"),
+            ("versioned_so_pkg", "libhelper.so.1"),
+        ] {
+            create_test_file(
+                &site_packages.join(format!("{package}/{}", crate::python::constants::INIT_FILE)),
+                "VALUE = 1\n",
+            )?;
+            create_test_file(&site_packages.join(format!("{package}/{library}")), "")?;
+        }
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        for package in ["cffi_style_pkg", "versioned_so_pkg"] {
+            let classification = resolver.classify_import(package);
+            assert_eq!(
+                classification.bundle,
+                BundleDisposition::External,
+                "distributions shipping shared libraries must stay external: {package}"
+            );
+            assert!(resolver.resolve_module_path(package)?.is_none());
+        }
+
+        Ok(())
+    }
+
+    /// An explicitly configured interpreter (`requirements.python` / `--python`)
+    /// designates the environment for third-party bundling when no environment
+    /// variables are set, matching the environment requirement resolution inspects.
+    #[test]
+    fn test_bundle_third_party_uses_configured_interpreter_environment() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = create_bundle_third_party_virtualenv(&virtualenv)?;
+        create_test_file(&virtualenv.join("bin/python"), "")?;
+
+        let config = Config {
+            bundle_third_party: Some(true),
+            requirements: crate::config::RequirementsConfig {
+                python: Some(virtualenv.join("bin/python")),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // No virtualenv override: the environment comes from the interpreter path
+        let resolver = ModuleResolver::new_with_overrides(config, Some(""), None)?;
+
+        let classification = resolver.classify_import("pure_package");
+        assert_eq!(classification.origin, ImportOrigin::ThirdParty);
+        assert_eq!(
+            classification.bundle,
+            BundleDisposition::Include,
+            "packages from the configured interpreter's environment must be bundleable"
+        );
+        assert_eq!(
+            resolver.resolve_module_path("pure_package")?,
+            Some(
+                site_packages
+                    .join(format!(
+                        "pure_package/{}",
+                        crate::python::constants::INIT_FILE
+                    ))
+                    .canonicalize()?
+            )
+        );
+
+        Ok(())
+    }
+
+    /// Distribution-backed packages supplied through PYTHONPATH are subject to the
+    /// same external policy as site-packages installs under third-party bundling,
+    /// while default-mode behavior is unchanged.
+    #[test]
+    fn test_bundle_third_party_applies_external_policy_to_pythonpath_distributions() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let pythonpath_dir = temp_dir.path().join("vendored");
+        create_test_file(
+            &pythonpath_dir.join(format!(
+                "vendored_metadata_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "from importlib.metadata import version\n__version__ = \
+             version('vendored-metadata-pkg')\n",
+        )?;
+        create_test_file(
+            &pythonpath_dir.join("vendored_metadata_pkg-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: vendored-metadata-pkg\nVersion: 1.0\nImport-Name: \
+             vendored_metadata_pkg\n",
+        )?;
+        let pythonpath = pythonpath_dir.to_string_lossy();
+
+        let bundling_config = Config {
+            bundle_third_party: Some(true),
+            ..Default::default()
+        };
+        let bundling_resolver = ModuleResolver::new_with_overrides(
+            bundling_config,
+            Some(pythonpath.as_ref()),
+            Some(""),
+        )?;
+        let classification = bundling_resolver.classify_import("vendored_metadata_pkg");
+        assert_eq!(classification.origin, ImportOrigin::ThirdParty);
+        assert_eq!(
+            classification.bundle,
+            BundleDisposition::External,
+            "hazardous PYTHONPATH distributions must stay external under the opt-in mode"
+        );
+
+        // Default mode keeps its long-standing behavior of bundling PYTHONPATH sources
+        let default_resolver = ModuleResolver::new_with_overrides(
+            Config::default(),
+            Some(pythonpath.as_ref()),
+            Some(""),
+        )?;
+        assert_eq!(
+            default_resolver
+                .classify_import("vendored_metadata_pkg")
+                .bundle,
+            BundleDisposition::Include,
+            "default-mode classification of PYTHONPATH distributions must not change"
+        );
+
+        Ok(())
+    }
+
+    /// A `.dist-info` without `RECORD` or `Import-Name` headers still declares its
+    /// import roots through `top_level.txt`, so its policy metadata applies.
+    #[test]
+    fn test_dist_info_top_level_txt_supplies_ownership() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
         create_test_file(
             &site_packages.join(format!(
-                "cffi_style_pkg/{}",
+                "no_record_pkg/{}",
                 crate::python::constants::INIT_FILE
             )),
             "VALUE = 1\n",
         )?;
-        create_test_file(&site_packages.join("cffi_style_pkg/libhelper.dylib"), "")?;
+        create_test_file(
+            &site_packages.join("no_record_pkg-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.1\nName: no-record-pkg\nVersion: 1.0\nRequires-Python: >=3.13\n",
+        )?;
+        create_test_file(
+            &site_packages.join("no_record_pkg-1.0.dist-info/top_level.txt"),
+            "no_record_pkg\n",
+        )?;
         let resolver = bundle_third_party_resolver(&virtualenv)?;
 
-        let classification = resolver.classify_import("cffi_style_pkg");
+        let classification = resolver.classify_import("no_record_pkg");
         assert_eq!(
             classification.bundle,
             BundleDisposition::External,
-            "distributions shipping shared libraries must stay external"
+            "top_level.txt ownership must enforce Requires-Python without RECORD"
         );
-        assert!(resolver.resolve_module_path("cffi_style_pkg")?.is_none());
+
+        Ok(())
+    }
+
+    /// Ownership is read from the root that actually supplied the bundled module, so
+    /// a stale dist-info in an earlier search root cannot inject its dependencies.
+    #[test]
+    fn test_bundled_distribution_requirements_use_owning_root() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        // Stale metadata in a PYTHONPATH root that does NOT contain the package
+        let stale_root = temp_dir.path().join("stale");
+        create_test_file(
+            &stale_root.join("shadowed_pkg-0.1.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: shadowed-pkg\nVersion: 0.1\nImport-Name: \
+             shadowed_pkg\nRequires-Dist: stale-dep==1\n",
+        )?;
+        // The real installation in the virtualenv
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!(
+                "shadowed_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("shadowed_pkg-2.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: shadowed-pkg\nVersion: 2.0\nImport-Name: \
+             shadowed_pkg\nRequires-Dist: real-dep>=2\n",
+        )?;
+        let config = Config {
+            bundle_third_party: Some(true),
+            ..Default::default()
+        };
+        let pythonpath = stale_root.to_string_lossy();
+        let virtualenv_path = virtualenv.to_string_lossy();
+        let resolver = ModuleResolver::new_with_overrides(
+            config,
+            Some(pythonpath.as_ref()),
+            Some(virtualenv_path.as_ref()),
+        )?;
+
+        let mut bundled_imports: FxIndexMap<String, Vec<pep508_rs::ExtraName>> =
+            FxIndexMap::default();
+        bundled_imports.insert("shadowed_pkg".to_owned(), Vec::new());
+
+        let requirements = resolver.bundled_distribution_requirements(&bundled_imports);
+        assert_eq!(
+            requirements,
+            vec!["real-dep>=2".to_owned()],
+            "dependencies must come from the distribution that supplied the module"
+        );
+
+        Ok(())
+    }
+
+    /// Extras propagate transitively between bundled distributions: `A -> B[speed]`
+    /// activates B's `extra == "speed"` dependencies even though B is bundled.
+    #[test]
+    fn test_bundled_distribution_requirements_propagate_transitive_extras() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!("dist_a/{}", crate::python::constants::INIT_FILE)),
+            "import dist_b\n",
+        )?;
+        create_test_file(
+            &site_packages.join("dist_a-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: dist-a\nVersion: 1.0\nImport-Name: \
+             dist_a\nRequires-Dist: dist-b[speed]>=1\n",
+        )?;
+        create_test_file(
+            &site_packages.join(format!("dist_b/{}", crate::python::constants::INIT_FILE)),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("dist_b-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: dist-b\nVersion: 1.0\nImport-Name: \
+             dist_b\nRequires-Dist: accelerator>=3; extra == \"speed\"\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let mut bundled_imports: FxIndexMap<String, Vec<pep508_rs::ExtraName>> =
+            FxIndexMap::default();
+        bundled_imports.insert("dist_a".to_owned(), Vec::new());
+        bundled_imports.insert("dist_b".to_owned(), Vec::new());
+
+        let requirements = resolver.bundled_distribution_requirements(&bundled_imports);
+        assert_eq!(
+            requirements,
+            vec!["accelerator>=3".to_owned()],
+            "extras requested by bundled dependents must activate transitively"
+        );
 
         Ok(())
     }
@@ -4104,6 +4480,8 @@ Import-Name: injected_module
             "def load_backend(name):\n    return load(name)\n\ntry:\n    from importlib import \
              import_module as load\nexcept ImportError:\n    load = None\n",
             "import importlib\nload = importlib.import_module\nload(module_variable)\n",
+            "import importlib\nload = importlib.import_module\nload('pkg.backend')\n",
+            "import importlib\nload: object = importlib.import_module\nload(module_variable)\n",
             "def load_backend(name):\n    return load(name)\n\nimport importlib\nload = \
              importlib.import_module\n",
             "import importlib\nimportlib.import_module(name=module_variable)\n",
@@ -4123,7 +4501,6 @@ Import-Name: injected_module
             "import importlib\nimportlib.import_module('.helper', 'pkg')\n",
             "import importlib\nimportlib.import_module(name='pkg.module')\n",
             "from importlib import import_module as load\nload('.helper', 'pkg')\n",
-            "import importlib\nload = importlib.import_module\nload('json')\n",
         ] {
             assert!(
                 !ModuleResolver::python_source_blocks_bundling(source),
