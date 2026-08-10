@@ -2,7 +2,6 @@ use std::{
     cell::RefCell,
     ffi::OsStr,
     fmt,
-    io::{BufRead, BufReader},
     path::{Path, PathBuf},
     sync::Mutex,
 };
@@ -2512,13 +2511,15 @@ impl ModuleResolver {
             };
             if path.is_dir() {
                 if dir_name.ends_with(".dist-info") {
-                    index.distributions.push(Self::index_dist_info(&path));
+                    let distribution = Self::index_dist_info(&path, &mut index.incomplete);
+                    index.distributions.push(distribution);
                 } else if dir_name.ends_with(".egg-info") {
-                    index.distributions.push(Self::index_egg_info(&path));
+                    let distribution = Self::index_egg_info(&path, &mut index.incomplete);
+                    index.distributions.push(distribution);
                 }
             } else if dir_name.ends_with(".egg-info") {
                 // Legacy file-form egg-info: the file itself is PKG-INFO metadata
-                if let Ok(metadata) = std::fs::read_to_string(&path) {
+                if let Some(metadata) = Self::read_metadata_sidecar(&path, &mut index.incomplete) {
                     let mut distribution = DistributionInfo::default();
                     Self::index_distribution_metadata(&metadata, &mut distribution);
                     Self::infer_egg_info_import_root(&mut distribution);
@@ -2533,26 +2534,23 @@ impl ModuleResolver {
     /// Index one modern `.dist-info` distribution (METADATA + RECORD, with
     /// `top_level.txt` supplying import roots when present — older tooling relies on
     /// it instead of `Import-Name` headers or a `RECORD` file).
-    fn index_dist_info(dist_info_dir: &Path) -> DistributionInfo {
+    fn index_dist_info(dist_info_dir: &Path, incomplete: &mut bool) -> DistributionInfo {
         // Index each distribution separately so ownership facts carry the
         // distribution's own policy metadata (native artifacts, requirements)
         let mut distribution = DistributionInfo::default();
 
         let metadata_file = dist_info_dir.join("METADATA");
-        if let Ok(metadata) = std::fs::read_to_string(metadata_file) {
+        if let Some(metadata) = Self::read_metadata_sidecar(&metadata_file, incomplete) {
             Self::index_distribution_metadata(&metadata, &mut distribution);
         }
 
-        Self::index_top_level_declarations(dist_info_dir, &mut distribution);
-        Self::index_entry_points(dist_info_dir, &mut distribution);
+        Self::index_top_level_declarations(dist_info_dir, &mut distribution, incomplete);
+        Self::index_entry_points(dist_info_dir, &mut distribution, incomplete);
 
         let record_file = dist_info_dir.join("RECORD");
-        if record_file.exists()
-            && let Ok(file) = std::fs::File::open(&record_file)
-        {
-            let reader = BufReader::new(file);
-            for line in reader.lines().map_while(Result::ok) {
-                let path_part = Self::record_line_first_field(&line);
+        if let Some(record) = Self::read_metadata_sidecar(&record_file, incomplete) {
+            for line in record.lines() {
+                let path_part = Self::record_line_first_field(line);
                 Self::index_record_path(&path_part, &mut distribution);
                 if path_part
                     .rsplit(['/', '\\'])
@@ -2570,25 +2568,24 @@ impl ModuleResolver {
     /// Index one legacy `.egg-info` distribution: `PKG-INFO` uses the same Core
     /// Metadata headers, `top_level.txt` declares import roots, and
     /// `installed-files.txt` (when present) lists installed files.
-    fn index_egg_info(egg_info_dir: &Path) -> DistributionInfo {
+    fn index_egg_info(egg_info_dir: &Path, incomplete: &mut bool) -> DistributionInfo {
         let mut distribution = DistributionInfo::default();
 
         let metadata_file = egg_info_dir.join("PKG-INFO");
-        if let Ok(metadata) = std::fs::read_to_string(metadata_file) {
+        if let Some(metadata) = Self::read_metadata_sidecar(&metadata_file, incomplete) {
             Self::index_distribution_metadata(&metadata, &mut distribution);
         }
 
-        Self::index_top_level_declarations(egg_info_dir, &mut distribution);
-        Self::index_entry_points(egg_info_dir, &mut distribution);
-        Self::index_requires_txt(egg_info_dir, &mut distribution);
+        Self::index_top_level_declarations(egg_info_dir, &mut distribution, incomplete);
+        Self::index_entry_points(egg_info_dir, &mut distribution, incomplete);
+        Self::index_requires_txt(egg_info_dir, &mut distribution, incomplete);
         Self::infer_egg_info_import_root(&mut distribution);
 
         // installed-files.txt paths are relative to the egg-info directory itself
         // (e.g. "../package/module.py"); resolve them against the site-packages root
         let installed_files = egg_info_dir.join("installed-files.txt");
-        if let Ok(file) = std::fs::File::open(installed_files) {
-            let reader = BufReader::new(file);
-            for line in reader.lines().map_while(Result::ok) {
+        if let Some(listing) = Self::read_metadata_sidecar(&installed_files, incomplete) {
+            for line in listing.lines() {
                 let record_path = line.trim();
                 let normalized = record_path
                     .strip_prefix("../")
@@ -2608,10 +2605,30 @@ impl ModuleResolver {
         distribution
     }
 
+    /// Read one metadata sidecar file, distinguishing a missing file (benign: the
+    /// sidecar is optional) from an unreadable one (file-level permissions, transient
+    /// I/O errors), which must mark the ownership data incomplete so the distribution's
+    /// policy metadata is never silently treated as absent.
+    fn read_metadata_sidecar(path: &Path, incomplete: &mut bool) -> Option<String> {
+        match std::fs::read_to_string(path) {
+            Ok(content) => Some(content),
+            Err(error) => {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    *incomplete = true;
+                }
+                None
+            }
+        }
+    }
+
     /// Add the import roots declared in a metadata directory's `top_level.txt`.
-    fn index_top_level_declarations(metadata_dir: &Path, distribution: &mut DistributionInfo) {
+    fn index_top_level_declarations(
+        metadata_dir: &Path,
+        distribution: &mut DistributionInfo,
+        incomplete: &mut bool,
+    ) {
         let top_level_file = metadata_dir.join("top_level.txt");
-        if let Ok(top_level) = std::fs::read_to_string(top_level_file) {
+        if let Some(top_level) = Self::read_metadata_sidecar(&top_level_file, incomplete) {
             for line in top_level.lines() {
                 let import_root = line.trim();
                 if !import_root.is_empty() {
@@ -2628,9 +2645,13 @@ impl ModuleResolver {
     /// `console_scripts`/`gui_scripts` groups are installer-generated script shims and
     /// do not require the distribution at runtime; any other group is plugin metadata
     /// that consumers discover through `importlib.metadata.entry_points()`.
-    fn index_entry_points(metadata_dir: &Path, distribution: &mut DistributionInfo) {
+    fn index_entry_points(
+        metadata_dir: &Path,
+        distribution: &mut DistributionInfo,
+        incomplete: &mut bool,
+    ) {
         let entry_points_file = metadata_dir.join("entry_points.txt");
-        let Ok(entry_points) = std::fs::read_to_string(entry_points_file) else {
+        let Some(entry_points) = Self::read_metadata_sidecar(&entry_points_file, incomplete) else {
             return;
         };
         for line in entry_points.lines() {
@@ -2665,8 +2686,13 @@ impl ModuleResolver {
     ///
     /// Sections scope their entries: `[extra]` maps to `; extra == "extra"`,
     /// `[:marker]` to `; marker`, and `[extra:marker]` to both conditions combined.
-    fn index_requires_txt(egg_info_dir: &Path, distribution: &mut DistributionInfo) {
-        let Ok(requires) = std::fs::read_to_string(egg_info_dir.join("requires.txt")) else {
+    fn index_requires_txt(
+        egg_info_dir: &Path,
+        distribution: &mut DistributionInfo,
+        incomplete: &mut bool,
+    ) {
+        let requires_file = egg_info_dir.join("requires.txt");
+        let Some(requires) = Self::read_metadata_sidecar(&requires_file, incomplete) else {
             return;
         };
         let mut section: Option<String> = None;
@@ -4611,6 +4637,48 @@ Import-Name: folded_module
             classification.bundle,
             BundleDisposition::External,
             "packages from a root whose metadata cannot be enumerated must stay external"
+        );
+
+        Ok(())
+    }
+
+    /// When a distribution's metadata directory is enumerable but a sidecar file
+    /// inside it cannot be read (file-level permissions, transient I/O errors), the
+    /// distribution's ownership and policy metadata may be silently missing, so
+    /// packages from that root conservatively stay external.
+    #[cfg(unix)]
+    #[test]
+    fn test_bundle_third_party_keeps_packages_external_when_metadata_file_unreadable() -> Result<()>
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!(
+                "opaque_file_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        let metadata_file = site_packages.join("opaque_file_pkg-1.0.dist-info/METADATA");
+        create_test_file(
+            &metadata_file,
+            "Metadata-Version: 2.5\nName: opaque-file-pkg\nVersion: 1.0\nImport-Name: \
+             opaque_file_pkg\nRequires-Dist: hidden-dep>=1\n",
+        )?;
+        fs::set_permissions(&metadata_file, fs::Permissions::from_mode(0o000))?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let classification = resolver.classify_import("opaque_file_pkg");
+        // Restore permissions before asserting so the tempdir can be cleaned up
+        fs::set_permissions(&metadata_file, fs::Permissions::from_mode(0o644))?;
+        assert_eq!(classification.origin, ImportOrigin::ThirdParty);
+        assert_eq!(
+            classification.bundle,
+            BundleDisposition::External,
+            "packages whose distribution metadata files cannot be read must stay external"
         );
 
         Ok(())
