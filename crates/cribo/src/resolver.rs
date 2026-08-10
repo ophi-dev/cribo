@@ -2254,14 +2254,6 @@ impl ModuleResolver {
         }
     }
 
-    /// Extract the normalized distribution name of a PEP 508 requirement string.
-    pub(crate) fn requirement_distribution_name(requirement: &str) -> Option<String> {
-        use std::str::FromStr;
-        pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(requirement)
-            .ok()
-            .map(|parsed| parsed.name.to_string())
-    }
-
     /// Normalize a distribution name per PEP 503 for set comparisons.
     fn normalize_distribution_name(name: &str) -> String {
         pep508_rs::PackageName::new(name.to_owned())
