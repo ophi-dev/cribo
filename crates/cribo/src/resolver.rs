@@ -2545,6 +2545,7 @@ impl ModuleResolver {
 
         Self::index_top_level_declarations(egg_info_dir, &mut distribution);
         Self::index_entry_points(egg_info_dir, &mut distribution);
+        Self::index_requires_txt(egg_info_dir, &mut distribution);
         Self::infer_egg_info_import_root(&mut distribution);
 
         // installed-files.txt paths are relative to the egg-info directory itself
@@ -2622,6 +2623,51 @@ impl ModuleResolver {
             use cow_utils::CowUtils;
             let inferred = distribution.name.cow_replace('-', "_").into_owned();
             distribution.declared_prefixes.insert(inferred);
+        }
+    }
+
+    /// Parse a legacy `requires.txt` sidecar into `Requires-Dist`-equivalent entries.
+    ///
+    /// Sections scope their entries: `[extra]` maps to `; extra == "extra"`,
+    /// `[:marker]` to `; marker`, and `[extra:marker]` to both conditions combined.
+    fn index_requires_txt(egg_info_dir: &Path, distribution: &mut DistributionInfo) {
+        let Ok(requires) = std::fs::read_to_string(egg_info_dir.join("requires.txt")) else {
+            return;
+        };
+        let mut section: Option<String> = None;
+        for line in requires.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some(header) = line
+                .strip_prefix('[')
+                .and_then(|rest| rest.strip_suffix(']'))
+            {
+                section = Some(header.trim().to_owned());
+                continue;
+            }
+            let entry = match section.as_deref() {
+                None | Some("") => line.to_owned(),
+                Some(header) => {
+                    let (extra, marker) = header
+                        .split_once(':')
+                        .map_or((header, ""), |(extra, marker)| (extra, marker));
+                    let mut conditions: Vec<String> = Vec::new();
+                    if !extra.trim().is_empty() {
+                        conditions.push(format!("extra == \"{}\"", extra.trim()));
+                    }
+                    if !marker.trim().is_empty() {
+                        conditions.push(format!("({})", marker.trim()));
+                    }
+                    if conditions.is_empty() {
+                        line.to_owned()
+                    } else {
+                        format!("{line}; {}", conditions.join(" and "))
+                    }
+                }
+            };
+            distribution.requires_dist.push(entry);
         }
     }
 
@@ -5323,6 +5369,55 @@ print(unrelated('not', 'a', 'query'))
             );
             assert!(resolver.resolve_module_path(package)?.is_none());
         }
+
+        Ok(())
+    }
+
+    /// Legacy egg-info installs declare dependencies in a `requires.txt` sidecar
+    /// instead of `Requires-Dist` headers: base entries and `[:marker]` sections must
+    /// be carried over into the emitted requirements, while `[extra]` sections stay
+    /// dropped when the extra is not requested.
+    #[test]
+    fn test_bundled_distribution_requirements_from_egg_info_requires_txt() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!(
+                "legacy_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("legacy_pkg.egg-info/PKG-INFO"),
+            "Metadata-Version: 1.2\nName: legacy-pkg\nVersion: 1.0\n",
+        )?;
+        create_test_file(
+            &site_packages.join("legacy_pkg.egg-info/top_level.txt"),
+            "legacy_pkg\n",
+        )?;
+        create_test_file(
+            &site_packages.join("legacy_pkg.egg-info/requires.txt"),
+            "base-dep>=1\n\n[docs]\nsphinx>=4\n\n[:python_version < \"4\"]\nconditional-dep>=2\n\n[\
+             docs:python_version < \"4\"]\nextra-marker-dep>=3\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let mut bundled_imports: FxIndexMap<String, Vec<pep508_rs::ExtraName>> =
+            FxIndexMap::default();
+        bundled_imports.insert("legacy_pkg".to_owned(), Vec::new());
+
+        let requirements = resolver.bundled_distribution_requirements(&bundled_imports);
+        assert_eq!(
+            requirements,
+            vec![
+                "base-dep>=1".to_owned(),
+                "conditional-dep>=2 ; python_full_version < '4'".to_owned(),
+            ],
+            "requires.txt base and marker-section entries must carry over; extra-only \
+             sections must stay dropped"
+        );
 
         Ok(())
     }
