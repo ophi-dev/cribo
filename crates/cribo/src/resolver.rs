@@ -4074,7 +4074,7 @@ Import-Name: injected_module
     /// designates an environment for third-party bundling when no environment
     /// variables are set. Site-packages discovery is covered end-to-end in
     /// `test_bundle_third_party_uses_configured_interpreter_environment` (CLI test,
-    /// hermetic against ambient VIRTUAL_ENV); this covers the path derivation.
+    /// hermetic against ambient `VIRTUAL_ENV`); this covers the path derivation.
     #[test]
     fn test_environment_root_of_interpreter() {
         assert_eq!(
