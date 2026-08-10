@@ -629,6 +629,56 @@ fn test_bundle_third_party_uses_configured_interpreter_environment() {
     );
 }
 
+/// End-to-end: when an auto-detected virtualenv AND a configured interpreter both
+/// provide the same package, the configured interpreter's environment wins so module
+/// lookup and requirement metadata inspect the same packages.
+#[test]
+fn test_bundle_third_party_configured_interpreter_outranks_autodetected_env() {
+    let sandbox =
+        create_bundle_third_party_sandbox("import pure_helper\nprint(pure_helper.GREETING)\n");
+
+    // Auto-detected environment beside the entry file with a conflicting package copy
+    let project_dir = sandbox
+        .entry_path
+        .parent()
+        .expect("entry file must have a parent directory");
+    let autodetected_site_packages = create_virtualenv_skeleton(&project_dir.join(".venv"));
+    write_test_distribution(
+        &autodetected_site_packages,
+        "pure_helper",
+        "pure-helper",
+        "GREETING = 'wrong: auto-detected environment copy'\n",
+    );
+
+    // Configured environment (the sandbox one) with the intended package copy
+    write_test_distribution(
+        &sandbox.site_packages,
+        "pure_helper",
+        "pure-helper",
+        "GREETING = 'right: configured interpreter environment'\n",
+    );
+    let interpreter = sandbox.environment.join(if cfg!(windows) {
+        "Scripts/python.exe"
+    } else {
+        "bin/python"
+    });
+    fs::write(&interpreter, "").expect("Failed to create placeholder interpreter");
+
+    run_bundle_third_party_cribo(&sandbox, |command| {
+        command.arg("--python").arg(&interpreter);
+    });
+
+    let bundle = fs::read_to_string(&sandbox.output_path).expect("Failed to read bundle");
+    assert!(
+        bundle.contains("right: configured interpreter environment"),
+        "the configured interpreter's environment must outrank the auto-detected one"
+    );
+    assert!(
+        !bundle.contains("wrong: auto-detected environment copy"),
+        "the auto-detected environment's conflicting copy must not be bundled"
+    );
+}
+
 /// An invalid `requirements.module-map` entry matching a bundled import is a hard
 /// configuration error: bundled imports skip the requirement resolver's own
 /// validation, so the orchestrator must surface the problem itself.

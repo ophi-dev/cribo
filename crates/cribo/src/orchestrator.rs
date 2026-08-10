@@ -1869,39 +1869,53 @@ impl BundleOrchestrator {
         let requirements: Vec<String> = resolved_requirements.into_iter().collect();
 
         // Carry over Requires-Dist constraints declared by bundled distributions for
-        // their external (or dynamically imported) dependencies. requirements files
-        // must name a distribution once, so entries are merged by normalized name,
-        // preferring a constrained declaration over a bare resolved name
-        let mut entries_by_name: IndexMap<String, String> = IndexMap::new();
-        let mut unnamed_entries: Vec<String> = Vec::new();
-        for entry in requirements {
-            match ModuleResolver::requirement_distribution_name(&entry) {
-                Some(name) => {
-                    entries_by_name.insert(name, entry);
+        // their external (or dynamically imported) dependencies. Entries are grouped
+        // by normalized name; within one name, equal-marker declarations are merged
+        // (preferring a constrained declaration over a bare resolved name) while
+        // distinct marker branches stay on separate lines, since pip evaluates each
+        // line's marker independently
+        use std::str::FromStr;
+        type ParsedRequirement = pep508_rs::Requirement<pep508_rs::VerbatimUrl>;
+        let mut entries_by_name: IndexMap<String, Vec<ParsedRequirement>> = IndexMap::new();
+        let mut unparsable_entries: Vec<String> = Vec::new();
+        let mut record_entry =
+            |entry: String, entries: &mut IndexMap<String, Vec<ParsedRequirement>>| {
+                let Ok(parsed) = ParsedRequirement::from_str(&entry) else {
+                    if !unparsable_entries.contains(&entry) {
+                        unparsable_entries.push(entry);
+                    }
+                    return;
+                };
+                let name = parsed.name.to_string();
+                let branches = entries.entry(name).or_default();
+                if let Some(existing) = branches
+                    .iter_mut()
+                    .find(|existing| existing.marker == parsed.marker)
+                {
+                    // A bare name carries no constraints; the richer declaration wins
+                    let existing_is_bare =
+                        existing.version_or_url.is_none() && existing.extras.is_empty();
+                    let parsed_is_bare =
+                        parsed.version_or_url.is_none() && parsed.extras.is_empty();
+                    if existing_is_bare && !parsed_is_bare {
+                        *existing = parsed;
+                    }
+                } else {
+                    branches.push(parsed);
                 }
-                None => unnamed_entries.push(entry),
-            }
+            };
+        for entry in requirements {
+            record_entry(entry, &mut entries_by_name);
         }
         for declared in resolver.bundled_distribution_requirements(&bundled_third_party_imports) {
-            let Some(name) = ModuleResolver::requirement_distribution_name(&declared) else {
-                if !unnamed_entries.contains(&declared) {
-                    unnamed_entries.push(declared);
-                }
-                continue;
-            };
-            match entries_by_name.get(&name) {
-                // A bare resolved name carries no constraints; the declared entry does
-                Some(existing) if *existing == name && declared != name => {
-                    entries_by_name.insert(name, declared);
-                }
-                Some(_) => {}
-                None => {
-                    entries_by_name.insert(name, declared);
-                }
-            }
+            record_entry(declared, &mut entries_by_name);
         }
-        let mut requirements: Vec<String> = entries_by_name.into_values().collect();
-        requirements.extend(unnamed_entries);
+        let mut requirements: Vec<String> = entries_by_name
+            .into_values()
+            .flatten()
+            .map(|requirement| requirement.to_string())
+            .collect();
+        requirements.extend(unparsable_entries);
         requirements.sort();
 
         Ok(requirements.join("\n"))

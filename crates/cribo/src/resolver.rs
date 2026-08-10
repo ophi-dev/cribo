@@ -1833,18 +1833,17 @@ impl ModuleResolver {
         if let Ok(path) = std::env::var("CONDA_PREFIX") {
             return Self::explicit_virtualenv_paths(&path);
         }
-        // Without an activated environment, combine auto-detected virtualenvs with the
-        // environment of an explicitly configured interpreter (--python /
-        // requirements.python), matching the environment requirement resolution inspects
-        let mut environments: IndexSet<PathBuf> = self
-            .detect_fallback_virtualenv_paths()
-            .into_iter()
-            .collect();
+        // Without an activated environment, the configured interpreter's environment
+        // (--python / requirements.python) takes precedence over auto-detected
+        // virtualenvs so both halves of the run inspect the same packages; the
+        // auto-detected ones remain as lower-priority roots
+        let mut environments: IndexSet<PathBuf> = IndexSet::new();
         if let Some(python) = &self.config.requirements.python
             && let Some(environment) = Self::environment_root_of_interpreter(python)
         {
             environments.insert(environment);
         }
+        environments.extend(self.detect_fallback_virtualenv_paths());
         environments.into_iter().collect()
     }
 
