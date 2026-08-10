@@ -39,62 +39,80 @@ impl DynamicHandler {
         }
     }
 
-    /// Resolve `importlib.import_module()` target module name, handling relative imports
-    fn resolve_importlib_target(call: &ExprCall, bundler: &Bundler<'_>) -> Option<String> {
-        if let Some(arg) = call.arguments.args.first()
-            && let Expr::StringLiteral(lit) = arg
-        {
-            let module_name = lit.value.to_str();
-
-            // Handle relative imports with package context
-            let resolved_name = if module_name.starts_with('.') && call.arguments.args.len() >= 2 {
-                // Get the package context from the second argument
-                if let Expr::StringLiteral(package_lit) = &call.arguments.args[1] {
-                    let package = package_lit.value.to_str();
-
-                    // Resolve package to path, then use resolver
-                    if let Ok(Some(package_path)) = bundler.resolver.resolve_module_path(package) {
-                        let level = module_name.chars().take_while(|&c| c == '.').count() as u32;
-                        let name_part = module_name.trim_start_matches('.');
-
-                        bundler
-                            .resolver
-                            .resolve_relative_to_absolute_module_name(
-                                level,
-                                if name_part.is_empty() {
-                                    None
-                                } else {
-                                    Some(name_part)
-                                },
-                                &package_path,
-                            )
-                            .unwrap_or_else(|| module_name.to_owned())
-                    } else {
-                        // Use resolver's method for package name resolution when path not found
-                        let level = module_name.chars().take_while(|&c| c == '.').count() as u32;
-                        let name_part = module_name.trim_start_matches('.');
-
-                        bundler.resolver.resolve_relative_import_from_package_name(
-                            level,
-                            if name_part.is_empty() {
-                                None
-                            } else {
-                                Some(name_part)
-                            },
-                            package,
-                        )
-                    }
-                } else {
-                    module_name.to_owned()
-                }
-            } else {
-                module_name.to_owned()
-            };
-
-            Some(resolved_name)
-        } else {
-            None
+    /// Return the string-literal value of a call argument supplied either at a
+    /// positional index or through a keyword name.
+    fn string_argument<'c>(
+        call: &'c ExprCall,
+        position: usize,
+        keyword_name: &str,
+    ) -> Option<&'c str> {
+        if let Some(Expr::StringLiteral(lit)) = call.arguments.args.get(position) {
+            return Some(lit.value.to_str());
         }
+        call.arguments.keywords.iter().find_map(|keyword| {
+            let matches_keyword = keyword
+                .arg
+                .as_ref()
+                .is_some_and(|arg| arg.as_str() == keyword_name);
+            if !matches_keyword {
+                return None;
+            }
+            if let Expr::StringLiteral(lit) = &keyword.value {
+                Some(lit.value.to_str())
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Resolve `importlib.import_module()` target module name, handling relative imports.
+    /// Both argument forms are supported: positional (`import_module(".m", "pkg")`) and
+    /// keyword (`import_module(name=".m", package="pkg")`).
+    fn resolve_importlib_target(call: &ExprCall, bundler: &Bundler<'_>) -> Option<String> {
+        let module_name = Self::string_argument(call, 0, "name")?;
+
+        // Handle relative imports with package context
+        let package_argument = Self::string_argument(call, 1, "package");
+        let resolved_name = if module_name.starts_with('.')
+            && let Some(package) = package_argument
+        {
+            // Resolve package to path, then use resolver
+            if let Ok(Some(package_path)) = bundler.resolver.resolve_module_path(package) {
+                let level = module_name.chars().take_while(|&c| c == '.').count() as u32;
+                let name_part = module_name.trim_start_matches('.');
+
+                bundler
+                    .resolver
+                    .resolve_relative_to_absolute_module_name(
+                        level,
+                        if name_part.is_empty() {
+                            None
+                        } else {
+                            Some(name_part)
+                        },
+                        &package_path,
+                    )
+                    .unwrap_or_else(|| module_name.to_owned())
+            } else {
+                // Use resolver's method for package name resolution when path not found
+                let level = module_name.chars().take_while(|&c| c == '.').count() as u32;
+                let name_part = module_name.trim_start_matches('.');
+
+                bundler.resolver.resolve_relative_import_from_package_name(
+                    level,
+                    if name_part.is_empty() {
+                        None
+                    } else {
+                        Some(name_part)
+                    },
+                    package,
+                )
+            }
+        } else {
+            module_name.to_owned()
+        };
+
+        Some(resolved_name)
     }
 
     /// Transform importlib.import_module("module-name") to direct module reference

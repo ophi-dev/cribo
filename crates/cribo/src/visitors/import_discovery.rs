@@ -411,7 +411,10 @@ impl<'a> ImportDiscoveryVisitor<'a> {
         false
     }
 
-    /// Extract literal module name from `importlib.import_module` call
+    /// Extract literal module name from `importlib.import_module` call.
+    ///
+    /// Only string literals are recognized, supplied either as the first positional
+    /// argument or as the `name=` keyword argument.
     fn extract_literal_module_name(&self, call: &ExprCall) -> Option<String> {
         // Only handle static string literals
         if let Some(arg) = call.arguments.args.first()
@@ -419,7 +422,21 @@ impl<'a> ImportDiscoveryVisitor<'a> {
         {
             return Some(value.to_str().to_owned());
         }
-        None
+        // Also accept the keyword form: importlib.import_module(name="pkg.module")
+        call.arguments.keywords.iter().find_map(|keyword| {
+            let is_name_keyword = keyword
+                .arg
+                .as_ref()
+                .is_some_and(|name| name.as_str() == "name");
+            if !is_name_keyword {
+                return None;
+            }
+            if let Expr::StringLiteral(ExprStringLiteral { value, .. }) = &keyword.value {
+                Some(value.to_str().to_owned())
+            } else {
+                None
+            }
+        })
     }
 
     /// Extract the package context of a static `importlib.import_module` call.
@@ -1058,13 +1075,15 @@ from ...package import sibling
     }
 
     /// The package context of static `importlib.import_module` relative imports is
-    /// captured from both the positional and the keyword `package=` argument forms.
+    /// captured from both the positional and the keyword `package=` argument forms,
+    /// and the module name from both the positional and the keyword `name=` forms.
     #[test]
     fn test_importlib_static_package_context_positional_and_keyword() {
         let source = "\
 import importlib
 importlib.import_module('.positional', 'pkg_positional')
 importlib.import_module('.keyword', package='pkg_keyword')
+importlib.import_module(name='.kwname', package='pkg_kwname')
 ";
         let parsed = parse_module(source).expect("Failed to parse test module");
         let mut visitor = ImportDiscoveryVisitor::new();
@@ -1077,7 +1096,7 @@ importlib.import_module('.keyword', package='pkg_keyword')
             .iter()
             .filter(|import| matches!(import.import_type, ImportType::ImportlibStatic))
             .collect();
-        assert_eq!(static_imports.len(), 2);
+        assert_eq!(static_imports.len(), 3);
 
         assert_eq!(
             static_imports[0].module_name.as_deref(),
@@ -1092,6 +1111,12 @@ importlib.import_module('.keyword', package='pkg_keyword')
         assert_eq!(
             static_imports[1].package_context.as_deref(),
             Some("pkg_keyword")
+        );
+
+        assert_eq!(static_imports[2].module_name.as_deref(), Some(".kwname"));
+        assert_eq!(
+            static_imports[2].package_context.as_deref(),
+            Some("pkg_kwname")
         );
     }
 }

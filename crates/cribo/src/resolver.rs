@@ -436,6 +436,22 @@ enum DynamicImportKind {
     DunderImport,
 }
 
+/// Return the module-name argument of a dynamic import call: the first positional
+/// argument or the `name=` keyword argument.
+fn dynamic_import_name_argument(
+    call: &ruff_python_ast::ExprCall,
+) -> Option<&ruff_python_ast::Expr> {
+    call.arguments.args.first().or_else(|| {
+        call.arguments.keywords.iter().find_map(|keyword| {
+            keyword
+                .arg
+                .as_ref()
+                .is_some_and(|name| name.as_str() == "name")
+                .then_some(&keyword.value)
+        })
+    })
+}
+
 impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
     fn visit_stmt(&mut self, stmt: &'a ruff_python_ast::Stmt) {
         use ruff_python_ast::Stmt;
@@ -490,8 +506,8 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
             return;
         }
         // Dynamic imports whose targets are not statically discovered would be missing
-        // from the bundle: non-literal `import_module` names cannot be resolved, and
-        // `__import__` calls are never handled by import discovery at all
+        // from the bundle: non-literal (or missing) `import_module` names cannot be
+        // resolved, and `__import__` calls are never handled by import discovery at all
         if let Expr::Call(call) = expr {
             match self.dynamic_import_kind(&call.func) {
                 Some(DynamicImportKind::DunderImport) => {
@@ -499,11 +515,8 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
                     return;
                 }
                 Some(DynamicImportKind::ImportModule)
-                    if call
-                        .arguments
-                        .args
-                        .first()
-                        .is_some_and(|argument| !matches!(argument, Expr::StringLiteral(_))) =>
+                    if !dynamic_import_name_argument(call)
+                        .is_some_and(|argument| matches!(argument, Expr::StringLiteral(_))) =>
                 {
                     self.found = true;
                     return;
@@ -1877,20 +1890,25 @@ impl ModuleResolver {
         let mut seen_names: IndexSet<String> = IndexSet::new();
         let mut requirements: Vec<String> = Vec::new();
         for entry in declared_requirements {
-            // Extras-conditioned requirements only apply when the extra is requested
-            let marker = entry.split_once(';').map(|(_, marker)| marker);
-            if marker.is_some_and(|marker| marker.contains("extra")) {
+            use std::str::FromStr;
+            let Ok(parsed) = pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(&entry)
+            else {
+                warn!("Skipping unparsable Requires-Dist entry of a bundled distribution: {entry}");
+                continue;
+            };
+            // Keep only declarations that can apply without any requested extra:
+            // a pure `extra == ...` condition never holds for a plain install, but
+            // mixed markers like `python_version < "3.12" or extra == "fast"` can
+            if !parsed.marker.evaluate_extras(&[]) {
                 continue;
             }
-            match Self::requirement_distribution_name(&entry) {
-                // Requirements satisfied by other bundled distributions are not needed
-                Some(name) if bundled_distribution_names.contains(&name) => {}
-                Some(name) => {
-                    if seen_names.insert(name) {
-                        requirements.push(entry);
-                    }
-                }
-                None => requirements.push(entry),
+            let name = parsed.name.to_string();
+            // Requirements satisfied by other bundled distributions are not needed
+            if bundled_distribution_names.contains(&name) {
+                continue;
+            }
+            if seen_names.insert(name) {
+                requirements.push(entry);
             }
         }
         requirements.sort();
@@ -3846,6 +3864,8 @@ Import-Name: injected_module
             "from importlib import import_module\nimport_module(module_variable)\n",
             "from importlib import import_module as load\nload(f'.{name}', __package__)\n",
             "from importlib import (\n    import_module as _load,\n)\n_load(module_variable)\n",
+            "import importlib\nimportlib.import_module(name=module_variable)\n",
+            "import importlib\nimportlib.import_module(name=f'.{name}', package=__package__)\n",
             "__import__(module_variable)\n",
             "__import__('json')\n",
             "backend = __import__('pkg.backend', fromlist=['KIND'])\n",
@@ -3859,6 +3879,7 @@ Import-Name: injected_module
         for source in [
             "import importlib\nimportlib.import_module('json')\n",
             "import importlib\nimportlib.import_module('.helper', 'pkg')\n",
+            "import importlib\nimportlib.import_module(name='pkg.module')\n",
             "from importlib import import_module as load\nload('.helper', 'pkg')\n",
         ] {
             assert!(
@@ -3887,7 +3908,8 @@ Import-Name: injected_module
             &site_packages.join("pure_parent-1.0.dist-info/METADATA"),
             "Metadata-Version: 2.5\nName: Pure_Parent\nVersion: 1.0\nImport-Name: \
              pure_parent\nRequires-Dist: lazy-extra<2\nRequires-Dist: pure-child>=1\nRequires-Dist: \
-             docs-tool; extra == \"docs\"\n",
+             docs-tool; extra == \"docs\"\nRequires-Dist: mixed-dep; python_version < \"3.12\" or \
+             extra == \"speed\"\n",
         )?;
         create_test_file(
             &site_packages.join(format!(
@@ -3909,8 +3931,12 @@ Import-Name: injected_module
         let requirements = resolver.bundled_distribution_requirements(&bundled_imports);
         assert_eq!(
             requirements,
-            vec!["lazy-extra<2".to_owned()],
-            "constraints for external deps are kept; bundled deps and extras are dropped"
+            vec![
+                "lazy-extra<2".to_owned(),
+                "mixed-dep; python_version < \"3.12\" or extra == \"speed\"".to_owned(),
+            ],
+            "constraints for external deps and mixed markers are kept; bundled deps and \
+             extras-only markers are dropped"
         );
 
         Ok(())

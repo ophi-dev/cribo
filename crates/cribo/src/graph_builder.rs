@@ -2031,12 +2031,27 @@ impl<'a> GraphBuilder<'a> {
             };
 
             if is_import_module {
-                // Extract the module name if it's a static string
+                // Extract the module name if it's a static string, from either the
+                // first positional argument or the `name=` keyword argument
                 if let Some(arg) = call.arguments.args.first()
                     && let Expr::StringLiteral(string_lit) = arg
                 {
                     return Some(string_lit.value.to_string());
                 }
+                return call.arguments.keywords.iter().find_map(|keyword| {
+                    let is_name_keyword = keyword
+                        .arg
+                        .as_ref()
+                        .is_some_and(|name| name.as_str() == "name");
+                    if !is_name_keyword {
+                        return None;
+                    }
+                    if let Expr::StringLiteral(string_lit) = &keyword.value {
+                        Some(string_lit.value.to_string())
+                    } else {
+                        None
+                    }
+                });
             }
         }
         None
