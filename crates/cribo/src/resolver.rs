@@ -1788,8 +1788,16 @@ impl ModuleResolver {
     /// The scan is conservative: unreadable entries keep the package external, and
     /// symlinked directories are never traversed (a symlink cycle or a link to a large
     /// external tree must not stall bundling) — a directory symlink instead keeps the
-    /// package external because its contents cannot be inspected safely.
+    /// package external because its contents cannot be inspected safely. File symlinks
+    /// whose target escapes the package tree (editable or shared-source layouts) also
+    /// keep the package external: module resolution canonicalizes such files to the
+    /// outside target, losing the logical package path that relative imports need.
     fn scan_package_for_external_markers(root: &Path) -> bool {
+        // Resolve the boundary once so per-entry targets compare against the same
+        // canonical tree regardless of how the root itself was reached
+        let Ok(canonical_root) = std::fs::canonicalize(root) else {
+            return true;
+        };
         let mut pending = vec![root.to_path_buf()];
         while let Some(directory) = pending.pop() {
             let Ok(entries) = std::fs::read_dir(&directory) else {
@@ -1815,6 +1823,12 @@ impl ModuleResolver {
                     match std::fs::metadata(&path) {
                         Ok(metadata) if metadata.is_dir() => return true,
                         Ok(_) => {
+                            // A file symlink escaping the package tree loses its
+                            // logical path when module resolution canonicalizes it
+                            match std::fs::canonicalize(&path) {
+                                Ok(target) if target.starts_with(&canonical_root) => {}
+                                _ => return true,
+                            }
                             if Self::is_external_marker_file(&path) {
                                 return true;
                             }
@@ -4637,6 +4651,53 @@ Import-Name: folded_module
             classification.bundle,
             BundleDisposition::External,
             "packages that cannot be fully inspected must stay external"
+        );
+
+        Ok(())
+    }
+
+    /// A package exposing a Python file through a symlink whose target escapes the
+    /// package tree (editable or shared-source layouts) stays external: module
+    /// resolution canonicalizes the file to the outside target, losing the logical
+    /// package path that relative imports need. Intra-package symlinks are harmless.
+    #[cfg(unix)]
+    #[test]
+    fn test_bundle_third_party_keeps_escaping_symlink_package_external() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        // Shared source living outside the environment
+        let shared_source = temp_dir.path().join("shared/impl.py");
+        create_test_file(&shared_source, "VALUE = 1\n")?;
+        create_test_file(
+            &site_packages.join(format!(
+                "escaping_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "from .impl import VALUE\n",
+        )?;
+        std::os::unix::fs::symlink(&shared_source, site_packages.join("escaping_pkg/impl.py"))?;
+        // Negative control: a symlink staying inside the package tree is harmless
+        create_test_file(
+            &site_packages.join(format!(
+                "internal_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "from .alias import VALUE\n",
+        )?;
+        create_test_file(&site_packages.join("internal_pkg/real.py"), "VALUE = 1\n")?;
+        std::os::unix::fs::symlink("real.py", site_packages.join("internal_pkg/alias.py"))?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        assert_eq!(
+            resolver.classify_import("escaping_pkg").bundle,
+            BundleDisposition::External,
+            "symlinks escaping the package tree must keep the package external"
+        );
+        assert_eq!(
+            resolver.classify_import("internal_pkg").bundle,
+            BundleDisposition::Include,
+            "intra-package symlinks must not force the package external"
         );
 
         Ok(())

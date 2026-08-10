@@ -557,6 +557,54 @@ fn test_bundle_third_party_keeps_native_dependency_external() {
     );
 }
 
+/// End-to-end: with `--bundle-third-party`, a dependency exposing a Python file
+/// through a symlink whose target lives outside the environment (editable or
+/// shared-source layouts) stays external as a whole: the bundle preserves its import
+/// and its distribution appears in requirements.txt.
+#[cfg(unix)]
+#[test]
+fn test_bundle_third_party_keeps_escaping_symlink_dependency_external() {
+    let sandbox =
+        create_bundle_third_party_sandbox("import linked_helper\nprint(linked_helper.VALUE)\n");
+    write_test_distribution(
+        &sandbox.site_packages,
+        "linked_helper",
+        "linked-helper",
+        "from .impl import VALUE\n",
+    );
+    // The implementation lives outside the environment; the installed package only
+    // links to it
+    let shared_dir = sandbox.output_dir.join("shared-src");
+    fs::create_dir_all(&shared_dir).expect("Failed to create shared source directory");
+    fs::write(shared_dir.join("impl.py"), "VALUE = 'linked'\n")
+        .expect("Failed to write shared source");
+    std::os::unix::fs::symlink(
+        shared_dir.join("impl.py"),
+        sandbox.site_packages.join("linked_helper").join("impl.py"),
+    )
+    .expect("Failed to create symlink");
+
+    let output = run_bundle_third_party_cribo(&sandbox, |command| {
+        command
+            .arg("--python")
+            .arg(common::get_python_executable())
+            .env("VIRTUAL_ENV", &sandbox.environment);
+    });
+
+    // The symlinked dependency stays external, so its distribution is required
+    assert_requirement_output(&output, &sandbox.output_dir, "linked-helper");
+
+    let bundle = fs::read_to_string(&sandbox.output_path).expect("Failed to read bundle");
+    assert!(
+        bundle.contains("import linked_helper"),
+        "symlinked dependency import must be preserved as external"
+    );
+    assert!(
+        !bundle.contains("'linked'"),
+        "symlinked dependency source must not be inlined into the bundle"
+    );
+}
+
 /// End-to-end: without `VIRTUAL_ENV`/`CONDA_PREFIX`, a virtualenv living next to the
 /// entry file is auto-detected even when cribo runs from a different working directory
 /// (e.g. a monorepo root).
