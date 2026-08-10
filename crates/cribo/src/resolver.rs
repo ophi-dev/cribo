@@ -1771,21 +1771,21 @@ impl ModuleResolver {
         }
 
         let mut site_packages_dirs = IndexSet::new();
+        // A configured interpreter without a recognizable <env>/bin layout (a PATH
+        // command, pyenv shim, system Python) is asked for its purelib directly and
+        // ordered first, so bundling inspects the same environment requirement
+        // resolution executes even when auto-detected virtualenvs also exist
+        if virtualenv_override.is_none()
+            && let Some(python) = &self.config.requirements.python
+            && Self::environment_root_of_interpreter(python).is_none()
+            && let Some(purelib) = Self::interpreter_site_packages(python)
+        {
+            site_packages_dirs.insert(self.canonicalize_path(purelib));
+        }
         for virtualenv_path in self.resolve_virtualenv_paths(virtualenv_override) {
             for directory in self.get_virtualenv_site_packages_directories(&virtualenv_path) {
                 site_packages_dirs.insert(self.canonicalize_path(directory));
             }
-        }
-        // A configured interpreter without a recognizable <env>/bin layout (a PATH
-        // command, pyenv shim, system Python) is asked for its purelib directly, so
-        // bundling inspects the same environment requirement resolution executes
-        if virtualenv_override.is_none()
-            && self.virtualenv_override.is_none()
-            && site_packages_dirs.is_empty()
-            && let Some(python) = &self.config.requirements.python
-            && let Some(purelib) = Self::interpreter_site_packages(python)
-        {
-            site_packages_dirs.insert(self.canonicalize_path(purelib));
         }
         let directories: Vec<PathBuf> = site_packages_dirs.into_iter().collect();
 
@@ -4775,6 +4775,74 @@ Import-Name: folded_module
             }
         }
         PathBuf::from(if cfg!(windows) { "python" } else { "python3" })
+    }
+
+    /// A PATH-style configured interpreter (no `<env>/bin` layout) is queried for its
+    /// purelib and that root outranks other environments, even when one exists.
+    #[cfg(unix)]
+    #[test]
+    fn test_configured_interpreter_purelib_outranks_other_roots() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new()?;
+        // The interpreter's environment: a purelib containing the intended copy
+        let purelib = temp_dir.path().join("interpreter-purelib");
+        create_test_file(
+            &purelib.join(format!(
+                "shared_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "SOURCE = 'configured interpreter'\n",
+        )?;
+        // A competing virtualenv with a conflicting copy
+        let virtualenv = temp_dir.path().join("venv");
+        create_test_file(
+            &virtualenv
+                .join("lib/python3.12/site-packages")
+                .join(format!(
+                    "shared_pkg/{}",
+                    crate::python::constants::INIT_FILE
+                )),
+            "SOURCE = 'competing virtualenv'\n",
+        )?;
+        // A fake PATH-style interpreter: a script printing its purelib (placed in a
+        // directory not named bin/Scripts so lexical derivation fails)
+        let interpreter = temp_dir.path().join("shims/python3");
+        create_test_file(
+            &interpreter,
+            &format!("#!/bin/sh\necho {}\n", purelib.display()),
+        )?;
+        fs::set_permissions(&interpreter, fs::Permissions::from_mode(0o755))?;
+
+        let config = Config {
+            bundle_third_party: Some(true),
+            requirements: crate::config::RequirementsConfig {
+                python: Some(interpreter),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let virtualenv_path = virtualenv.to_string_lossy();
+        let resolver =
+            ModuleResolver::new_with_overrides(config, Some(""), Some(virtualenv_path.as_ref()))?;
+
+        let classification = resolver.classify_import("shared_pkg");
+        assert_eq!(classification.origin, ImportOrigin::ThirdParty);
+        assert_eq!(classification.bundle, BundleDisposition::Include);
+        assert_eq!(
+            resolver.resolve_module_path("shared_pkg")?,
+            Some(
+                purelib
+                    .join(format!(
+                        "shared_pkg/{}",
+                        crate::python::constants::INIT_FILE
+                    ))
+                    .canonicalize()?
+            ),
+            "the configured interpreter's purelib must outrank other environments"
+        );
+
+        Ok(())
     }
 
     /// Legacy `.egg-info` installs are indexed too: their `PKG-INFO` `Requires-Python`

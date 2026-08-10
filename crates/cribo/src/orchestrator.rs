@@ -1434,6 +1434,9 @@ impl BundleOrchestrator {
                     );
                     // Use the resolved name instead of the original import
                     self.add_to_discovery_queue_if_new(&resolved_name, import_path, params)?;
+                    // Python executes parent package initializers before loading a
+                    // submodule; queue them like the normal-import path does
+                    self.add_parent_packages_to_discovery(&resolved_name, params)?;
                 } else {
                     debug!(
                         "ImportlibStatic '{import}' resolved to '{resolved_name}' but classified \
