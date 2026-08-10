@@ -73,10 +73,15 @@ pub(crate) fn arguments_safely_discardable(call: &ExprCall) -> bool {
     if call.arguments.args.len() > 2 || call.arguments.args.iter().any(Expr::is_starred_expr) {
         return false;
     }
-    // Only name=/package= keywords; **kwargs unpacking (arg == None) is opaque
+    // Only name=/package= keywords; **kwargs unpacking (arg == None) is opaque, and
+    // a keyword that also has a positional binding raises TypeError at runtime, so
+    // the call must be preserved for the conflict to surface
+    let positional_count = call.arguments.args.len();
     for keyword in &call.arguments.keywords {
-        match &keyword.arg {
-            Some(name) if matches!(name.as_str(), "name" | "package") => {}
+        match keyword.arg.as_deref() {
+            Some("name") if positional_count >= 1 => return false,
+            Some("package") if positional_count >= 2 => return false,
+            Some("name" | "package") => {}
             _ => return false,
         }
     }
