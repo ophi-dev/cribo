@@ -734,18 +734,23 @@ impl DistributionInfo {
 }
 
 /// All installed distributions discovered under one search root.
-/// Collect literal distribution names whose metadata a module queries at runtime,
-/// e.g. `importlib.metadata.version("provider")`, `metadata.distribution("provider")`,
-/// `pkg_resources.get_distribution("provider")`, or
-/// `pkg_resources.require("provider>=2")`.
+/// Collect literal requirement strings whose distribution metadata a module queries
+/// at runtime, e.g. `importlib.metadata.version("provider")`,
+/// `metadata.distribution("provider")`, `pkg_resources.get_distribution("provider")`,
+/// or `pkg_resources.require("provider[speed]>=2")`.
 ///
-/// A call is recognized only when its callee resolves through the module's imports
-/// and aliases to one of the metadata APIs (`importlib.metadata`,
-/// `importlib_metadata`, `pkg_resources`), so unrelated callables that merely share a
-/// final name (e.g. `provider.version("provider")`) record nothing. Literal
-/// requirement-style arguments are parsed so constrained strings like `"provider>=2"`
-/// record the distribution name.
-pub(crate) fn queried_distribution_names(module: &ruff_python_ast::ModModule) -> Vec<String> {
+/// A call is recognized only when its callee resolves through the enclosing scopes'
+/// import bindings to one of the metadata APIs (`importlib.metadata`,
+/// `importlib_metadata`, `pkg_resources`): unrelated callables that merely share a
+/// final name (e.g. `provider.version("provider")`) record nothing, and a
+/// scope-local rebinding (e.g. a function-level `import json as md`) shadows an
+/// outer metadata alias only inside that scope. Literals are returned verbatim so
+/// version specifiers and extras (`"provider[speed]>=2"`) survive into requirements.
+pub(crate) fn queried_distribution_requirements(
+    module: &ruff_python_ast::ModModule,
+) -> Vec<String> {
+    use ruff_python_ast::Stmt;
+
     /// Canonical dotted paths of the query functions that take a distribution name.
     const QUERY_FUNCTIONS: [&str; 12] = [
         "importlib.metadata.version",
@@ -761,73 +766,119 @@ pub(crate) fn queried_distribution_names(module: &ruff_python_ast::ModModule) ->
         "pkg_resources.get_distribution",
         "pkg_resources.require",
     ];
-    /// Module prefixes whose members may be bound by `from ... import ...`.
-    const METADATA_API_MODULES: [&str; 3] =
-        ["importlib.metadata", "importlib_metadata", "pkg_resources"];
 
-    /// Collect every import binding relevant to metadata queries, anywhere in the
-    /// module (function-local imports included): local name -> canonical dotted path.
-    struct AliasCollector {
-        bindings: IndexMap<String, String>,
+    /// Collect the import bindings of ONE lexical scope (local name -> canonical
+    /// dotted path): control-flow blocks are traversed, while nested function and
+    /// class bodies are skipped — their bindings belong to those scopes.
+    fn collect_scope_bindings(stmts: &[Stmt]) -> IndexMap<String, String> {
+        use ruff_python_ast::{
+            AnyNodeRef,
+            visitor::source_order::{self, SourceOrderVisitor, TraversalSignal},
+        };
+
+        struct ScopeBindingCollector {
+            bindings: IndexMap<String, String>,
+        }
+
+        impl<'a> SourceOrderVisitor<'a> for ScopeBindingCollector {
+            fn enter_node(&mut self, node: AnyNodeRef<'a>) -> TraversalSignal {
+                match node {
+                    AnyNodeRef::StmtFunctionDef(_) | AnyNodeRef::StmtClassDef(_) => {
+                        TraversalSignal::Skip
+                    }
+                    _ => TraversalSignal::Traverse,
+                }
+            }
+
+            fn visit_stmt(&mut self, stmt: &'a Stmt) {
+                match stmt {
+                    Stmt::Import(import_stmt) => {
+                        for alias in &import_stmt.names {
+                            let module_name = alias.name.as_str();
+                            if let Some(asname) = &alias.asname {
+                                // `import importlib.metadata as md` binds the full path
+                                self.bindings
+                                    .insert(asname.as_str().to_owned(), module_name.to_owned());
+                            } else {
+                                // `import importlib.metadata` binds only `importlib`
+                                let top_level =
+                                    module_name.split('.').next().unwrap_or(module_name);
+                                self.bindings
+                                    .insert(top_level.to_owned(), top_level.to_owned());
+                            }
+                        }
+                    }
+                    Stmt::ImportFrom(import_from) if import_from.level == 0 => {
+                        if let Some(module) = import_from.module.as_deref() {
+                            for alias in &import_from.names {
+                                if alias.name.as_str() == "*" {
+                                    continue;
+                                }
+                                let bound_name = alias
+                                    .asname
+                                    .as_ref()
+                                    .map_or_else(|| alias.name.as_str(), |name| name.as_str());
+                                self.bindings.insert(
+                                    bound_name.to_owned(),
+                                    format!("{module}.{}", alias.name.as_str()),
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                source_order::walk_stmt(self, stmt);
+            }
+        }
+
+        let mut collector = ScopeBindingCollector {
+            bindings: IndexMap::new(),
+        };
+        for stmt in stmts {
+            collector.visit_stmt(stmt);
+        }
+        collector.bindings
     }
 
-    impl<'a> ruff_python_ast::visitor::Visitor<'a> for AliasCollector {
-        fn visit_stmt(&mut self, stmt: &'a ruff_python_ast::Stmt) {
-            use ruff_python_ast::Stmt;
-            match stmt {
-                Stmt::Import(import_stmt) => {
-                    for alias in &import_stmt.names {
-                        let module_name = alias.name.as_str();
-                        if let Some(asname) = &alias.asname {
-                            // `import importlib.metadata as md` binds the full path
-                            self.bindings
-                                .insert(asname.as_str().to_owned(), module_name.to_owned());
-                        } else {
-                            // `import importlib.metadata` binds only `importlib`
-                            let top_level = module_name.split('.').next().unwrap_or(module_name);
-                            self.bindings
-                                .insert(top_level.to_owned(), top_level.to_owned());
-                        }
-                    }
-                }
-                Stmt::ImportFrom(import_from) if import_from.level == 0 => {
-                    if let Some(module) = import_from.module.as_deref()
-                        && (module == "importlib" || METADATA_API_MODULES.contains(&module))
-                    {
-                        for alias in &import_from.names {
-                            let bound_name = alias
-                                .asname
-                                .as_ref()
-                                .map_or_else(|| alias.name.as_str(), |name| name.as_str());
-                            self.bindings.insert(
-                                bound_name.to_owned(),
-                                format!("{module}.{}", alias.name.as_str()),
-                            );
-                        }
-                    }
-                }
-                _ => {}
-            }
-            ruff_python_ast::visitor::walk_stmt(self, stmt);
-        }
+    /// Collect the names a scope rebinds outside of imports (parameters are added by
+    /// the caller): such names shadow outer metadata aliases for the whole scope.
+    fn collect_scope_shadows(stmts: &[Stmt]) -> FxIndexSet<String> {
+        let mut shadows = FxIndexSet::default();
+        let no_globals = FxIndexSet::default();
+        crate::visitors::LocalVarCollector::new(&mut shadows, &no_globals)
+            .ignore_import_bindings()
+            .collect_from_stmts(stmts);
+        shadows
     }
 
     struct QueryCollector {
-        names: Vec<String>,
-        bindings: IndexMap<String, String>,
+        requirements: Vec<String>,
+        /// Innermost-last stacks, parallel per scope
+        binding_scopes: Vec<IndexMap<String, String>>,
+        shadow_scopes: Vec<FxIndexSet<String>>,
     }
 
     impl QueryCollector {
-        /// Record one literal query argument, resolving requirement syntax
-        /// (`provider>=2`, `provider[extra]`) to its distribution name.
-        fn record(&mut self, literal: &str) {
-            use std::str::FromStr;
-            let name = pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(literal)
-                .map_or_else(|_| literal.to_owned(), |parsed| parsed.name.to_string());
-            self.names.push(name);
+        /// Resolve a base name through the scope stacks, innermost first: an import
+        /// binding wins in its scope, and a non-import rebinding blocks resolution.
+        fn resolve_base(&self, name: &str) -> Option<&String> {
+            for (bindings, shadows) in self
+                .binding_scopes
+                .iter()
+                .rev()
+                .zip(self.shadow_scopes.iter().rev())
+            {
+                if let Some(target) = bindings.get(name) {
+                    return Some(target);
+                }
+                if shadows.contains(name) {
+                    return None;
+                }
+            }
+            None
         }
 
-        /// Resolve a callee to its canonical dotted path through the collected
+        /// Resolve a callee to its canonical dotted path through the scoped
         /// bindings: the base name is substituted by what it was imported as, and
         /// attribute segments are appended verbatim.
         fn canonical_callee_path(&self, callee: &ruff_python_ast::Expr) -> Option<String> {
@@ -841,8 +892,7 @@ pub(crate) fn queried_distribution_names(module: &ruff_python_ast::ModModule) ->
                         current = &attribute.value;
                     }
                     Expr::Name(name) => {
-                        let base = name.id.as_str();
-                        let canonical_base = self.bindings.get(base)?;
+                        let canonical_base = self.resolve_base(name.id.as_str())?;
                         let mut path = canonical_base.clone();
                         for segment in segments.iter().rev() {
                             path.push('.');
@@ -857,6 +907,47 @@ pub(crate) fn queried_distribution_names(module: &ruff_python_ast::ModModule) ->
     }
 
     impl<'a> ruff_python_ast::visitor::Visitor<'a> for QueryCollector {
+        fn visit_stmt(&mut self, stmt: &'a Stmt) {
+            match stmt {
+                Stmt::FunctionDef(function_def) => {
+                    // Parameters and body-wide non-import bindings shadow outer
+                    // aliases for the WHOLE function body (Python scoping)
+                    let mut shadows = collect_scope_shadows(&function_def.body);
+                    for param in function_def
+                        .parameters
+                        .posonlyargs
+                        .iter()
+                        .chain(&function_def.parameters.args)
+                        .chain(&function_def.parameters.kwonlyargs)
+                    {
+                        shadows.insert(param.parameter.name.as_str().to_owned());
+                    }
+                    if let Some(vararg) = &function_def.parameters.vararg {
+                        shadows.insert(vararg.name.as_str().to_owned());
+                    }
+                    if let Some(kwarg) = &function_def.parameters.kwarg {
+                        shadows.insert(kwarg.name.as_str().to_owned());
+                    }
+                    self.binding_scopes
+                        .push(collect_scope_bindings(&function_def.body));
+                    self.shadow_scopes.push(shadows);
+                    ruff_python_ast::visitor::walk_stmt(self, stmt);
+                    self.binding_scopes.pop();
+                    self.shadow_scopes.pop();
+                }
+                Stmt::ClassDef(class_def) => {
+                    self.binding_scopes
+                        .push(collect_scope_bindings(&class_def.body));
+                    self.shadow_scopes
+                        .push(collect_scope_shadows(&class_def.body));
+                    ruff_python_ast::visitor::walk_stmt(self, stmt);
+                    self.binding_scopes.pop();
+                    self.shadow_scopes.pop();
+                }
+                _ => ruff_python_ast::visitor::walk_stmt(self, stmt),
+            }
+        }
+
         fn visit_expr(&mut self, expr: &'a ruff_python_ast::Expr) {
             use ruff_python_ast::Expr;
             if let Expr::Call(call) = expr
@@ -868,7 +959,7 @@ pub(crate) fn queried_distribution_names(module: &ruff_python_ast::ModModule) ->
                 // safe for the other APIs too
                 for argument in &call.arguments.args {
                     if let Expr::StringLiteral(literal) = argument {
-                        self.record(literal.value.to_str());
+                        self.requirements.push(literal.value.to_str().to_owned());
                     }
                 }
                 // Keyword forms differ per API (`distribution_name=`, `dist=`);
@@ -877,7 +968,7 @@ pub(crate) fn queried_distribution_names(module: &ruff_python_ast::ModModule) ->
                     if keyword.arg.is_some()
                         && let Expr::StringLiteral(literal) = &keyword.value
                     {
-                        self.record(literal.value.to_str());
+                        self.requirements.push(literal.value.to_str().to_owned());
                     }
                 }
             }
@@ -886,22 +977,17 @@ pub(crate) fn queried_distribution_names(module: &ruff_python_ast::ModModule) ->
     }
 
     use ruff_python_ast::visitor::Visitor as _;
-    // Bindings are collected module-wide first: a function body may query through an
-    // alias imported after the function definition
-    let mut alias_collector = AliasCollector {
-        bindings: IndexMap::new(),
-    };
-    for stmt in &module.body {
-        alias_collector.visit_stmt(stmt);
-    }
     let mut collector = QueryCollector {
-        names: Vec::new(),
-        bindings: alias_collector.bindings,
+        requirements: Vec::new(),
+        // Module-scope bindings are collected up front: a function body may query
+        // through an alias imported after the function definition
+        binding_scopes: vec![collect_scope_bindings(&module.body)],
+        shadow_scopes: vec![FxIndexSet::default()],
     };
     for stmt in &module.body {
         collector.visit_stmt(stmt);
     }
-    collector.names
+    collector.requirements
 }
 
 #[derive(Debug, Default)]
@@ -966,6 +1052,10 @@ pub struct ModuleResolver {
     /// Distribution names queried at runtime by bundled code (e.g.
     /// `importlib.metadata.version("provider")`); their owners must stay installed
     queried_distributions: RefCell<IndexSet<String>>,
+    /// The verbatim requirement literals of those queries (e.g.
+    /// `provider[speed]>=2` from `pkg_resources.require`), preserved so requirements
+    /// generation keeps their extras and version constraints
+    queried_requirement_literals: RefCell<IndexSet<String>>,
     /// Cache of resolved environment site-packages roots (hot path for resolution)
     site_packages_dirs_cache: RefCell<Option<Vec<PathBuf>>>,
     /// Distribution ownership indexed once for each searched filesystem root
@@ -1016,6 +1106,7 @@ impl ModuleResolver {
             virtualenv_packages_cache: RefCell::new(None),
             external_packages_cache: RefCell::new(IndexMap::new()),
             queried_distributions: RefCell::new(IndexSet::new()),
+            queried_requirement_literals: RefCell::new(IndexSet::new()),
             site_packages_dirs_cache: RefCell::new(None),
             distribution_ownership_cache: RefCell::new(IndexMap::new()),
             entry_dir: None,
@@ -2377,19 +2468,31 @@ impl ModuleResolver {
         })
     }
 
-    /// Record distribution names whose metadata bundled code queries at runtime.
+    /// Record requirement literals whose distribution metadata bundled code queries
+    /// at runtime. The distribution name drives classification policy (owners stay
+    /// external), while the verbatim literal is preserved for requirements
+    /// generation so extras and version constraints survive.
     ///
     /// Newly recorded names invalidate classification-derived caches so modules whose
     /// bundling decision predates the query are re-evaluated.
-    pub(crate) fn record_queried_distributions(&self, names: impl IntoIterator<Item = String>) {
+    pub(crate) fn record_queried_distributions(
+        &self,
+        requirements: impl IntoIterator<Item = String>,
+    ) {
+        use std::str::FromStr;
         let mut queried = self.queried_distributions.borrow_mut();
+        let mut literals = self.queried_requirement_literals.borrow_mut();
         let mut changed = false;
-        for name in names {
+        for requirement in requirements {
+            let name = pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(&requirement)
+                .map_or_else(|_| requirement.clone(), |parsed| parsed.name.to_string());
+            literals.insert(requirement);
             if queried.insert(Self::normalize_distribution_name(&name)) {
                 changed = true;
             }
         }
         drop(queried);
+        drop(literals);
         if changed {
             self.classification_cache.borrow_mut().clear();
             self.external_packages_cache.borrow_mut().clear();
@@ -2397,31 +2500,40 @@ impl ModuleResolver {
         }
     }
 
-    /// Return the declared names of installed distributions whose metadata bundled
-    /// code queries at runtime (e.g. `importlib.metadata.version("provider")`).
+    /// Return the verbatim requirement literals of runtime metadata queries whose
+    /// distribution is installed in the scanned environment (e.g.
+    /// `importlib.metadata.version("provider")` yields `provider`, while
+    /// `pkg_resources.require("provider[speed]>=2")` yields the constrained literal).
     ///
     /// The query itself requires the installed dist-info, so these distributions must
     /// appear in requirements even when no module of theirs is ever imported.
-    /// Recorded names that match no installed distribution are skipped: they raise
-    /// `PackageNotFoundError` in the source environment as well.
-    pub(crate) fn queried_installed_distribution_names(&self) -> Vec<String> {
-        let queried = self.queried_distributions.borrow();
-        if queried.is_empty() {
+    /// Recorded literals whose name matches no installed distribution are skipped:
+    /// they raise `PackageNotFoundError` in the source environment as well.
+    pub(crate) fn queried_installed_distribution_requirements(&self) -> Vec<String> {
+        use std::str::FromStr;
+        let literals = self.queried_requirement_literals.borrow();
+        if literals.is_empty() {
             return Vec::new();
         }
-        let mut names: IndexSet<String> = IndexSet::new();
+        let mut installed: IndexSet<String> = IndexSet::new();
         for metadata_dir in self.get_distribution_metadata_search_directories() {
             self.with_distribution_ownership_index(&metadata_dir, |index| {
                 for distribution in &index.distributions {
-                    if !distribution.name.is_empty()
-                        && queried.contains(&Self::normalize_distribution_name(&distribution.name))
-                    {
-                        names.insert(distribution.name.clone());
+                    if !distribution.name.is_empty() {
+                        installed.insert(Self::normalize_distribution_name(&distribution.name));
                     }
                 }
             });
         }
-        names.into_iter().collect()
+        literals
+            .iter()
+            .filter(|literal| {
+                let name = pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(literal)
+                    .map_or_else(|_| (*literal).clone(), |parsed| parsed.name.to_string());
+                installed.contains(&Self::normalize_distribution_name(&name))
+            })
+            .cloned()
+            .collect()
     }
 
     /// Return whether the configured target Python version satisfies a PEP 440
@@ -2624,7 +2736,7 @@ impl ModuleResolver {
     ///
     /// URL-based requirements cannot have their constraints merged soundly; the
     /// existing constraint is kept in that case.
-    fn merge_requirement_constraints(
+    pub(crate) fn merge_requirement_constraints(
         existing: &mut pep508_rs::Requirement<pep508_rs::VerbatimUrl>,
         incoming: pep508_rs::Requirement<pep508_rs::VerbatimUrl>,
     ) {
@@ -4989,10 +5101,11 @@ Import-Name: folded_module
         Ok(())
     }
 
-    /// The metadata-query scanner collects literal distribution names from the
-    /// supported query call forms, and only when the callee resolves through the
-    /// module's imports to a metadata API — unrelated callables sharing a final name
-    /// (e.g. `provider.version(...)`) record nothing.
+    /// The metadata-query scanner collects literal requirement strings from the
+    /// supported query call forms — verbatim, so constraints and extras survive —
+    /// and only when the callee resolves through the enclosing scopes' imports to a
+    /// metadata API: unrelated callables sharing a final name record nothing, and a
+    /// function-local rebinding shadows an outer alias only inside that function.
     #[test]
     fn test_queried_distribution_names_collection() {
         let source = "\
@@ -5012,19 +5125,34 @@ print(unrelated('not', 'a', 'query'))
 print(provider.version('provider'))
 print(provider.metadata('provider'))
 files = provider.files('provider')
+
+
+def local_collision():
+    import json as md
+
+    return md.dumps({})
+
+
+def local_shadow(version):
+    return version('shadowed-name')
+
+
+print(local_collision(), local_shadow(str))
+print(md.version('post-collision-name'))
 ";
         let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
-        let names = queried_distribution_names(parsed.syntax());
+        let requirements = queried_distribution_requirements(parsed.syntax());
         assert_eq!(
-            names,
+            requirements,
             vec![
                 "direct-name",
                 "attr-name",
                 "module-alias-name",
                 "legacy-name",
                 "keyword-name",
-                "constrained-name",
-                "variadic-name"
+                "constrained-name>=2",
+                "variadic-name[extra]<3",
+                "post-collision-name"
             ]
         );
     }

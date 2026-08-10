@@ -803,7 +803,7 @@ impl BundleOrchestrator {
                     || processed.source.contains("pkg_resources"))
             {
                 params.resolver.record_queried_distributions(
-                    crate::resolver::queried_distribution_names(&processed.ast),
+                    crate::resolver::queried_distribution_requirements(&processed.ast),
                 );
             }
 
@@ -2038,14 +2038,11 @@ impl BundleOrchestrator {
                     .iter_mut()
                     .find(|existing| existing.marker == parsed.marker)
                 {
-                    // A bare name carries no constraints; the richer declaration wins
-                    let existing_is_bare =
-                        existing.version_or_url.is_none() && existing.extras.is_empty();
-                    let parsed_is_bare =
-                        parsed.version_or_url.is_none() && parsed.extras.is_empty();
-                    if existing_is_bare && !parsed_is_bare {
-                        *existing = parsed;
-                    }
+                    // Same-marker duplicates intersect their constraints: extras are
+                    // unioned and version-specifier sets combined, so a module-map
+                    // override and a bundled distribution's Requires-Dist entry both
+                    // apply, like a normal installation would resolve them
+                    ModuleResolver::merge_requirement_constraints(existing, parsed);
                 } else {
                     branches.push(parsed);
                 }
@@ -2055,10 +2052,12 @@ impl BundleOrchestrator {
         }
         // Distributions whose metadata bundled code queries at runtime (e.g.
         // `importlib.metadata.version("provider")`) need their dist-info installed
-        // even when no module of theirs is imported; the query alone is a dependency
+        // even when no module of theirs is imported; the query alone is a dependency,
+        // and constrained literals (`pkg_resources.require("provider[speed]>=2")`)
+        // keep their extras and version specifiers
         if self.config.bundle_third_party() {
-            for name in resolver.queried_installed_distribution_names() {
-                record_entry(name, &mut entries_by_name);
+            for requirement in resolver.queried_installed_distribution_requirements() {
+                record_entry(requirement, &mut entries_by_name);
             }
         }
         for declared in resolver.bundled_distribution_requirements(&bundled_third_party_imports) {
