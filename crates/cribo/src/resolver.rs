@@ -3969,6 +3969,8 @@ Import-Name: injected_module
             "from importlib import import_module\nimport_module(module_variable)\n",
             "from importlib import import_module as load\nload(f'.{name}', __package__)\n",
             "from importlib import (\n    import_module as _load,\n)\n_load(module_variable)\n",
+            "def load_backend(name):\n    return load(name)\n\nfrom importlib import \
+             import_module as load\n",
             "import importlib\nimportlib.import_module(name=module_variable)\n",
             "import importlib\nimportlib.import_module(name=f'.{name}', package=__package__)\n",
             "__import__(module_variable)\n",
