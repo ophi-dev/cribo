@@ -529,7 +529,8 @@ fn record_import_module_aliases(
 }
 
 /// Track callable aliases created by (annotated) assignments such as
-/// `load = importlib.import_module` or `load: Callable = import_module`.
+/// `load = importlib.import_module`, `load = __import__`, or
+/// `load = builtins.__import__`.
 fn record_assigned_import_module_aliases(
     targets: &[ruff_python_ast::Expr],
     value: &ruff_python_ast::Expr,
@@ -537,16 +538,18 @@ fn record_assigned_import_module_aliases(
     assigned_aliases: &mut IndexSet<String>,
 ) {
     use ruff_python_ast::Expr;
-    let value_is_import_module = match value {
-        Expr::Attribute(attribute) => attribute.attr.as_str() == "import_module",
+    let value_is_import_callable = match value {
+        Expr::Attribute(attribute) => {
+            matches!(attribute.attr.as_str(), "import_module" | "__import__")
+        }
         Expr::Name(name) => {
-            name.id.as_str() == "import_module"
+            matches!(name.id.as_str(), "import_module" | "__import__")
                 || import_aliases.contains(name.id.as_str())
                 || assigned_aliases.contains(name.id.as_str())
         }
         _ => false,
     };
-    if !value_is_import_module {
+    if !value_is_import_callable {
         return;
     }
     for target in targets {
@@ -4674,6 +4677,8 @@ Import-Name: folded_module
             "import importlib\nload: object = importlib.import_module\nload(module_variable)\n",
             "import builtins\nbuiltins.__import__(module_variable)\n",
             "from builtins import __import__ as dynamic_import\ndynamic_import('pkg')\n",
+            "load = __import__\nload('pkg')\n",
+            "import builtins\nload = builtins.__import__\nload(module_variable)\n",
             "import importlib\nmeta = importlib.import_module('importlib.metadata')\n",
             "import importlib\nres = importlib.import_module(name='pkg_resources')\n",
             "import importlib\nimportlib.import_module('.backend', __package__)\n",
