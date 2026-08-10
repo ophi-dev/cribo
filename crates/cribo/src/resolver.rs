@@ -414,6 +414,10 @@ impl UnbundlablePatternDetector {
     fn dynamic_import_kind(&self, callee: &ruff_python_ast::Expr) -> Option<DynamicImportKind> {
         use ruff_python_ast::Expr;
         match callee {
+            // Qualified forms like builtins.__import__ are equally undiscoverable
+            Expr::Attribute(attribute) if attribute.attr.as_str() == "__import__" => {
+                Some(DynamicImportKind::Undiscoverable)
+            }
             Expr::Attribute(attribute) if attribute.attr.as_str() == "import_module" => {
                 Some(DynamicImportKind::ImportModule)
             }
@@ -455,6 +459,21 @@ impl UnbundlablePatternDetector {
                             && import_from.module.as_deref() == Some("importlib") =>
                     {
                         record_import_module_aliases(import_from, self.import_aliases);
+                    }
+                    // Aliases of builtins.__import__ are undiscoverable callables
+                    Stmt::ImportFrom(import_from)
+                        if import_from.level == 0
+                            && import_from.module.as_deref() == Some("builtins") =>
+                    {
+                        for alias in &import_from.names {
+                            if alias.name.as_str() == "__import__" {
+                                let bound_name = alias
+                                    .asname
+                                    .as_ref()
+                                    .map_or_else(|| alias.name.as_str(), |name| name.as_str());
+                                self.assigned_aliases.insert(bound_name.to_owned());
+                            }
+                        }
                     }
                     Stmt::Assign(assign) => {
                         record_assigned_import_module_aliases(
@@ -602,12 +621,23 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
                     self.found = true;
                     return;
                 }
-                Some(DynamicImportKind::ImportModule)
-                    if !crate::python::importlib_call::module_name_argument(call)
-                        .is_some_and(|argument| matches!(argument, Expr::StringLiteral(_))) =>
-                {
-                    self.found = true;
-                    return;
+                Some(DynamicImportKind::ImportModule) => {
+                    match crate::python::importlib_call::module_name_argument(call) {
+                        // Literal imports of installed-package APIs are equivalent to
+                        // their ordinary import statements and block bundling too
+                        Some(Expr::StringLiteral(literal))
+                            if Self::module_is_metadata_api(literal.value.to_str()) =>
+                        {
+                            self.found = true;
+                            return;
+                        }
+                        Some(Expr::StringLiteral(_)) => {}
+                        // Non-literal or missing names cannot be discovered statically
+                        _ => {
+                            self.found = true;
+                            return;
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -2147,15 +2177,23 @@ impl ModuleResolver {
     }
 
     /// Merge a duplicate requirement declaration into an existing one by combining
-    /// their version specifiers (e.g. `dep<2` + `dep>=1` becomes `dep>=1,<2`).
+    /// their version specifiers (e.g. `dep<2` + `dep>=1` becomes `dep>=1,<2`) and
+    /// taking the union of their extras (e.g. `dep[speed]` + `dep[security]`).
     ///
-    /// URL-based requirements and marker-conditioned declarations cannot be merged
-    /// soundly; the existing declaration is kept in those cases.
+    /// URL-based requirements and marker-conditioned declarations cannot have their
+    /// constraints merged soundly; the existing constraint is kept in those cases,
+    /// but extras are always unioned since each declaration requests them
+    /// unconditionally for the installed distribution.
     fn merge_requirement_constraints(
         existing: &mut pep508_rs::Requirement<pep508_rs::VerbatimUrl>,
         incoming: pep508_rs::Requirement<pep508_rs::VerbatimUrl>,
     ) {
         use pep508_rs::VersionOrUrl;
+        for extra in &incoming.extras {
+            if !existing.extras.contains(extra) {
+                existing.extras.push(extra.clone());
+            }
+        }
         if !existing.marker.is_true() || !incoming.marker.is_true() {
             return;
         }
@@ -4464,6 +4502,10 @@ Import-Name: injected_module
             "import importlib\nload = importlib.import_module\nload(module_variable)\n",
             "import importlib\nload = importlib.import_module\nload('pkg.backend')\n",
             "import importlib\nload: object = importlib.import_module\nload(module_variable)\n",
+            "import builtins\nbuiltins.__import__(module_variable)\n",
+            "from builtins import __import__ as dynamic_import\ndynamic_import('pkg')\n",
+            "import importlib\nmeta = importlib.import_module('importlib.metadata')\n",
+            "import importlib\nres = importlib.import_module(name='pkg_resources')\n",
             "def load_backend(name):\n    return load(name)\n\nimport importlib\nload = \
              importlib.import_module\n",
             "import importlib\nimportlib.import_module(name=module_variable)\n",
@@ -4554,8 +4596,8 @@ Import-Name: injected_module
         let virtualenv = temp_dir.path().join("venv");
         let site_packages = virtualenv.join("lib/python3.12/site-packages");
         for (package, specifier) in [
-            ("first_pkg", "lazy-extra<2"),
-            ("second_pkg", "lazy_extra>=1"),
+            ("first_pkg", "lazy-extra[speed]<2"),
+            ("second_pkg", "lazy_extra[security]>=1"),
         ] {
             create_test_file(
                 &site_packages.join(format!("{package}/{}", crate::python::constants::INIT_FILE)),
@@ -4579,8 +4621,8 @@ Import-Name: injected_module
         let requirements = resolver.bundled_distribution_requirements(&bundled_imports);
         assert_eq!(
             requirements,
-            vec!["lazy-extra>=1,<2".to_owned()],
-            "duplicate declarations of one distribution must merge their specifiers"
+            vec!["lazy-extra[speed,security]>=1,<2".to_owned()],
+            "duplicate declarations must merge specifiers and union extras"
         );
 
         Ok(())
