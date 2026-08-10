@@ -788,6 +788,18 @@ impl BundleOrchestrator {
             // Parse the module and cache its reusable facts.
             let processed = self.process_module(&module_path, &module_name)?;
 
+            // Record literal distribution-metadata queries (importlib.metadata.version
+            // et al.) before classifying this module's imports, so queried providers
+            // are kept external and installed
+            if self.config.bundle_third_party()
+                && (processed.source.contains("importlib")
+                    || processed.source.contains("pkg_resources"))
+            {
+                params.resolver.record_queried_distributions(
+                    crate::resolver::queried_distribution_names(&processed.ast),
+                );
+            }
+
             // Extract imports from the processed AST
             let imports_with_context = self.extract_imports_from_facts(
                 &processed.facts.discovered_imports,
@@ -826,6 +838,32 @@ impl BundleOrchestrator {
             "Phase 1 complete: discovered {} modules",
             discovered_modules.len()
         );
+
+        // Metadata queries recorded late in discovery can flip earlier bundling
+        // decisions; drop modules whose final classification is external before they
+        // enter the graph (their imports stay preserved via fresh classifications)
+        if self.config.bundle_third_party() {
+            discovered_modules.retain(|(module_id, module_path, _, _)| {
+                if module_id.is_entry() {
+                    return true;
+                }
+                let Some(module_name) = params.resolver.get_module_name(*module_id) else {
+                    return true;
+                };
+                let keep = params
+                    .resolver
+                    .classify_import(&module_name)
+                    .should_bundle();
+                if !keep {
+                    debug!(
+                        "Dropping module '{module_name}' ({}) after discovery: final \
+                         classification is external",
+                        module_path.display()
+                    );
+                }
+                keep
+            });
+        }
 
         // PHASE 2: Add all modules to graph and create dependency edges
         info!("Phase 2: Adding modules to graph...");

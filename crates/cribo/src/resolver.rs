@@ -695,6 +695,56 @@ impl DistributionInfo {
 }
 
 /// All installed distributions discovered under one search root.
+/// Collect literal distribution names whose metadata a module queries at runtime,
+/// e.g. `importlib.metadata.version("provider")`, `metadata.distribution("provider")`,
+/// or `pkg_resources.get_distribution("provider")`.
+///
+/// Detection is name-based on the queried-API call (`version`, `distribution`,
+/// `metadata`, `requires`, `files`, `get_distribution`, `require`) with a literal
+/// first argument; over-collection is safe because it only keeps more distributions
+/// installed.
+pub(crate) fn queried_distribution_names(module: &ruff_python_ast::ModModule) -> Vec<String> {
+    struct QueryCollector {
+        names: Vec<String>,
+    }
+
+    impl<'a> ruff_python_ast::visitor::Visitor<'a> for QueryCollector {
+        fn visit_expr(&mut self, expr: &'a ruff_python_ast::Expr) {
+            use ruff_python_ast::Expr;
+            if let Expr::Call(call) = expr {
+                let callee_name = match &*call.func {
+                    Expr::Attribute(attribute) => Some(attribute.attr.as_str()),
+                    Expr::Name(name) => Some(name.id.as_str()),
+                    _ => None,
+                };
+                if callee_name.is_some_and(|name| {
+                    matches!(
+                        name,
+                        "version"
+                            | "distribution"
+                            | "metadata"
+                            | "requires"
+                            | "files"
+                            | "get_distribution"
+                            | "require"
+                    )
+                }) && let Some(Expr::StringLiteral(literal)) = call.arguments.args.first()
+                {
+                    self.names.push(literal.value.to_str().to_owned());
+                }
+            }
+            ruff_python_ast::visitor::walk_expr(self, expr);
+        }
+    }
+
+    use ruff_python_ast::visitor::Visitor as _;
+    let mut collector = QueryCollector { names: Vec::new() };
+    for stmt in &module.body {
+        collector.visit_stmt(stmt);
+    }
+    collector.names
+}
+
 #[derive(Debug, Default)]
 struct DistributionOwnershipIndex {
     distributions: Vec<DistributionInfo>,
@@ -750,6 +800,9 @@ pub struct ModuleResolver {
     virtualenv_packages_cache: RefCell<Option<IndexSet<String>>>,
     /// Cache of "must this site-packages package stay external?" scan results
     external_packages_cache: RefCell<IndexMap<PathBuf, bool>>,
+    /// Distribution names queried at runtime by bundled code (e.g.
+    /// `importlib.metadata.version("provider")`); their owners must stay installed
+    queried_distributions: RefCell<IndexSet<String>>,
     /// Cache of resolved environment site-packages roots (hot path for resolution)
     site_packages_dirs_cache: RefCell<Option<Vec<PathBuf>>>,
     /// Distribution ownership indexed once for each searched filesystem root
@@ -799,6 +852,7 @@ impl ModuleResolver {
             classification_cache: RefCell::new(IndexMap::new()),
             virtualenv_packages_cache: RefCell::new(None),
             external_packages_cache: RefCell::new(IndexMap::new()),
+            queried_distributions: RefCell::new(IndexSet::new()),
             site_packages_dirs_cache: RefCell::new(None),
             distribution_ownership_cache: RefCell::new(IndexMap::new()),
             entry_dir: None,
@@ -1632,6 +1686,16 @@ impl ModuleResolver {
             return true;
         }
 
+        // Distributions whose metadata is queried at runtime by bundled code (e.g.
+        // `importlib.metadata.version("provider")` in the entry) must stay installed
+        if self.queried_distribution_owns_import(search_root, module_name) {
+            debug!(
+                "Import '{module_name}' is owned by a distribution whose metadata is queried by \
+                 bundled code; keeping it external"
+            );
+            return true;
+        }
+
         let top_level = module_name.split('.').next().unwrap_or(module_name);
         let package_dir = search_root.join(top_level);
         if !package_dir.is_dir() {
@@ -1682,6 +1746,10 @@ impl ModuleResolver {
                     return true;
                 };
                 let path = entry.path();
+                // Bytecode caches accompany normal source files and are harmless
+                if path.file_name().and_then(OsStr::to_str) == Some("__pycache__") {
+                    continue;
+                }
                 if file_type.is_symlink() {
                     // Do not follow directory symlinks; treat them as uninspectable
                     match std::fs::metadata(&path) {
@@ -1719,7 +1787,8 @@ impl ModuleResolver {
     }
 
     /// Return whether a single file forces its package to stay external: a native
-    /// artifact or a Python source containing a bundling-blocking pattern.
+    /// artifact, a sourceless bytecode module (`.pyc` without adjacent `.py`), or a
+    /// Python source containing a bundling-blocking pattern.
     fn is_external_marker_file(path: &Path) -> bool {
         let Some(file_name) = path.file_name().and_then(OsStr::to_str) else {
             return false;
@@ -1727,10 +1796,13 @@ impl ModuleResolver {
         if Self::is_native_artifact_file_name(file_name) {
             return true;
         }
-        if path.extension().and_then(OsStr::to_str) == Some("py") {
-            return Self::python_file_blocks_bundling(path);
+        match path.extension().and_then(OsStr::to_str) {
+            Some("py") => Self::python_file_blocks_bundling(path),
+            // Sourceless bytecode outside __pycache__ is importable by Python but has
+            // no source to inline
+            Some("pyc") => !path.with_extension("py").is_file(),
+            _ => false,
         }
-        false
     }
 
     /// Return whether a Python source file contains a pattern that makes it unsafe to
@@ -2078,6 +2150,48 @@ impl ModuleResolver {
                 .iter()
                 .any(|distribution| distribution.has_runtime_entry_points)
         })
+    }
+
+    /// Return whether any distribution claiming an import has its metadata queried at
+    /// runtime by bundled code.
+    fn queried_distribution_owns_import(
+        &self,
+        site_packages_dir: &Path,
+        import_name: &str,
+    ) -> bool {
+        let queried = self.queried_distributions.borrow();
+        if queried.is_empty() {
+            return false;
+        }
+        self.with_distribution_ownership_index(site_packages_dir, |index| {
+            index
+                .owning_distributions(import_name)
+                .iter()
+                .any(|distribution| {
+                    !distribution.name.is_empty()
+                        && queried.contains(&Self::normalize_distribution_name(&distribution.name))
+                })
+        })
+    }
+
+    /// Record distribution names whose metadata bundled code queries at runtime.
+    ///
+    /// Newly recorded names invalidate classification-derived caches so modules whose
+    /// bundling decision predates the query are re-evaluated.
+    pub(crate) fn record_queried_distributions(&self, names: impl IntoIterator<Item = String>) {
+        let mut queried = self.queried_distributions.borrow_mut();
+        let mut changed = false;
+        for name in names {
+            if queried.insert(Self::normalize_distribution_name(&name)) {
+                changed = true;
+            }
+        }
+        drop(queried);
+        if changed {
+            self.classification_cache.borrow_mut().clear();
+            self.external_packages_cache.borrow_mut().clear();
+            self.module_cache.borrow_mut().clear();
+        }
     }
 
     /// Return whether the configured target Python version satisfies a PEP 440
@@ -4251,6 +4365,98 @@ Import-Name: folded_module
         );
 
         Ok(())
+    }
+
+    /// Sourceless bytecode packages (`.pyc` without adjacent `.py`) stay external:
+    /// Python can import them, but there is no source to inline. Regular `__pycache__`
+    /// artifacts beside sources are harmless.
+    #[test]
+    fn test_bundle_third_party_keeps_sourceless_bytecode_package_external() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        // Sourceless package: bytecode initializer without source
+        create_test_file(&site_packages.join("sourceless_pkg/__init__.pyc"), "")?;
+        create_test_file(&site_packages.join("sourceless_pkg/helper.pyc"), "")?;
+        // Ordinary package with a bytecode cache beside its sources
+        create_test_file(
+            &site_packages.join(format!(
+                "cached_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("cached_pkg/__pycache__/__init__.cpython-312.pyc"),
+            "",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        assert_eq!(
+            resolver.classify_import("sourceless_pkg").bundle,
+            BundleDisposition::External,
+            "sourceless bytecode packages must stay external"
+        );
+        assert_eq!(
+            resolver.classify_import("cached_pkg").bundle,
+            BundleDisposition::Include,
+            "__pycache__ artifacts beside sources must not prevent bundling"
+        );
+
+        Ok(())
+    }
+
+    /// Distributions whose metadata bundled code queries at runtime (e.g.
+    /// `importlib.metadata.version("provider")` in the entry) stay external, and
+    /// recording a query invalidates earlier bundling decisions.
+    #[test]
+    fn test_bundle_third_party_keeps_queried_distribution_external() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!("provider/{}", crate::python::constants::INIT_FILE)),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("provider-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: provider\nVersion: 1.0\nImport-Name: provider\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        // Bundleable until a metadata query is observed, external afterwards
+        assert_eq!(
+            resolver.classify_import("provider").bundle,
+            BundleDisposition::Include
+        );
+        resolver.record_queried_distributions(["Provider".to_owned()]);
+        assert_eq!(
+            resolver.classify_import("provider").bundle,
+            BundleDisposition::External,
+            "queried distributions must stay installed (normalized name matching)"
+        );
+        assert!(resolver.resolve_module_path("provider")?.is_none());
+
+        Ok(())
+    }
+
+    /// The metadata-query scanner collects literal distribution names from the
+    /// supported query call forms.
+    #[test]
+    fn test_queried_distribution_names_collection() {
+        let source = "\
+from importlib.metadata import version
+import importlib.metadata
+import pkg_resources
+
+print(version('direct-name'))
+print(importlib.metadata.distribution('attr-name'))
+print(pkg_resources.get_distribution('legacy-name'))
+print(unrelated('not', 'a', 'query'))
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let names = queried_distribution_names(parsed.syntax());
+        assert_eq!(names, vec!["direct-name", "attr-name", "legacy-name"]);
     }
 
     /// Shared libraries loaded through ctypes/CFFI (`.dll`/`.dylib`) and versioned
