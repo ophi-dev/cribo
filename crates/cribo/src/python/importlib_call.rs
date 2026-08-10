@@ -60,3 +60,29 @@ pub(crate) fn literal_module_name(call: &ExprCall) -> Option<&str> {
 pub(crate) fn literal_package_context(call: &ExprCall) -> Option<&str> {
     string_argument(call, 1, "package")
 }
+
+/// Return whether replacing an `import_module` call with direct module access
+/// discards no observable behavior from its remaining arguments.
+///
+/// Python evaluates every argument before importing: a non-literal `package`
+/// argument (e.g. `package=touch()`) or an unrecognized/unpacked argument may have
+/// side effects or raise, so such calls must be preserved verbatim rather than
+/// rewritten.
+pub(crate) fn arguments_safely_discardable(call: &ExprCall) -> bool {
+    // Only the two supported positionals, without *args unpacking
+    if call.arguments.args.len() > 2 || call.arguments.args.iter().any(Expr::is_starred_expr) {
+        return false;
+    }
+    // Only name=/package= keywords; **kwargs unpacking (arg == None) is opaque
+    for keyword in &call.arguments.keywords {
+        match &keyword.arg {
+            Some(name) if matches!(name.as_str(), "name" | "package") => {}
+            _ => return false,
+        }
+    }
+    // A present package context must be a side-effect-free literal
+    match positional_or_keyword_argument(call, 1, "package") {
+        None | Some(Expr::StringLiteral(_) | Expr::NoneLiteral(_)) => true,
+        Some(_) => false,
+    }
+}

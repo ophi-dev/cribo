@@ -54,7 +54,14 @@ impl DynamicHandler {
     /// Resolve `importlib.import_module()` target module name, handling relative imports.
     /// Both argument forms are supported: positional (`import_module(".m", "pkg")`) and
     /// keyword (`import_module(name=".m", package="pkg")`).
+    ///
+    /// Calls whose remaining arguments cannot be safely discarded (e.g. a
+    /// side-effectful `package=touch()` expression) are not resolved: replacing them
+    /// with module access would skip evaluating those arguments.
     fn resolve_importlib_target(call: &ExprCall, bundler: &Bundler<'_>) -> Option<String> {
+        if !crate::python::importlib_call::arguments_safely_discardable(call) {
+            return None;
+        }
         let module_name = crate::python::importlib_call::literal_module_name(call)?;
 
         // Handle relative imports with package context

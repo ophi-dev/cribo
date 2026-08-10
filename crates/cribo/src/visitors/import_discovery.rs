@@ -769,8 +769,11 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
     fn visit_expr(&mut self, expr: &'a Expr) {
         match expr {
             Expr::Call(call) => {
-                // Check for importlib.import_module("literal")
+                // Check for importlib.import_module("literal"); calls whose remaining
+                // arguments cannot be safely discarded (e.g. package=touch()) are left
+                // for runtime and must not be recorded as static imports
                 if self.is_static_importlib_call(call)
+                    && crate::python::importlib_call::arguments_safely_discardable(call)
                     && let Some(module_name) = self.extract_literal_module_name(call)
                 {
                     let package_context = self.extract_package_context(call);
