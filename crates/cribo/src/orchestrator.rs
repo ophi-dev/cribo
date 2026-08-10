@@ -848,8 +848,14 @@ impl BundleOrchestrator {
 
         // Metadata queries recorded late in discovery can flip earlier bundling
         // decisions; drop modules whose final classification is external before they
-        // enter the graph (their imports stay preserved via fresh classifications)
+        // enter the graph. Dropped names are recorded as external importlib targets:
+        // modules reached only through literal import_module calls leave no graph
+        // import item, so requirements generation would otherwise never see them
         if self.config.bundle_third_party() {
+            let mut external_targets = self
+                .external_importlib_targets
+                .lock()
+                .expect("external importlib targets lock poisoned");
             discovered_modules.retain(|(module_id, module_path, _, _)| {
                 if module_id.is_entry() {
                     return true;
@@ -867,6 +873,7 @@ impl BundleOrchestrator {
                          classification is external",
                         module_path.display()
                     );
+                    external_targets.insert(module_name);
                 }
                 keep
             });
