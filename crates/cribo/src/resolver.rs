@@ -424,6 +424,35 @@ impl UnbundlablePatternDetector {
             _ => None,
         }
     }
+
+    /// Record every module-level alias bound to `importlib.import_module` before the
+    /// detection pass, so calls inside functions defined above the import are still
+    /// recognized.
+    fn collect_dynamic_import_aliases(&mut self, body: &[ruff_python_ast::Stmt]) {
+        use ruff_python_ast::Stmt;
+        for stmt in body {
+            if let Stmt::ImportFrom(import_from) = stmt
+                && import_from.level == 0
+                && import_from.module.as_deref() == Some("importlib")
+            {
+                self.record_import_module_aliases(import_from);
+            }
+        }
+    }
+
+    /// Track local names bound to `importlib.import_module` by a `from importlib
+    /// import ...` statement.
+    fn record_import_module_aliases(&mut self, import_from: &ruff_python_ast::StmtImportFrom) {
+        for alias in &import_from.names {
+            if alias.name.as_str() == "import_module" {
+                let bound_name = alias
+                    .asname
+                    .as_ref()
+                    .map_or_else(|| alias.name.as_str(), |name| name.as_str());
+                self.dynamic_import_aliases.insert(bound_name.to_owned());
+            }
+        }
+    }
 }
 
 /// The dynamic-import mechanism used by a call expression.
@@ -434,22 +463,6 @@ enum DynamicImportKind {
     /// `__import__(...)`; import discovery never resolves these, so any call blocks
     /// bundling
     DunderImport,
-}
-
-/// Return the module-name argument of a dynamic import call: the first positional
-/// argument or the `name=` keyword argument.
-fn dynamic_import_name_argument(
-    call: &ruff_python_ast::ExprCall,
-) -> Option<&ruff_python_ast::Expr> {
-    call.arguments.args.first().or_else(|| {
-        call.arguments.keywords.iter().find_map(|keyword| {
-            keyword
-                .arg
-                .as_ref()
-                .is_some_and(|name| name.as_str() == "name")
-                .then_some(&keyword.value)
-        })
-    })
 }
 
 impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
@@ -483,15 +496,7 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
                     // Track aliases of importlib.import_module so aliased dynamic
                     // calls (e.g. `load(f".{name}")`) are recognized below
                     if module == "importlib" {
-                        for alias in &import_from.names {
-                            if alias.name.as_str() == "import_module" {
-                                let bound_name = alias
-                                    .asname
-                                    .as_ref()
-                                    .map_or_else(|| alias.name.as_str(), |name| name.as_str());
-                                self.dynamic_import_aliases.insert(bound_name.to_owned());
-                            }
-                        }
+                        self.record_import_module_aliases(import_from);
                     }
                 }
             }
@@ -515,7 +520,7 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
                     return;
                 }
                 Some(DynamicImportKind::ImportModule)
-                    if !dynamic_import_name_argument(call)
+                    if !crate::python::importlib_call::module_name_argument(call)
                         .is_some_and(|argument| matches!(argument, Expr::StringLiteral(_))) =>
                 {
                     self.found = true;
@@ -1586,6 +1591,9 @@ impl ModuleResolver {
         };
         use ruff_python_ast::visitor::Visitor as _;
         let mut detector = UnbundlablePatternDetector::default();
+        // Collect importlib.import_module aliases up front: an alias imported after a
+        // function definition still applies to calls inside that function's body
+        detector.collect_dynamic_import_aliases(&parsed.syntax().body);
         for stmt in &parsed.syntax().body {
             detector.visit_stmt(stmt);
         }
@@ -1842,20 +1850,30 @@ impl ModuleResolver {
 
     /// Collect the PEP 508 `Requires-Dist` entries of the distributions owning the
     /// given bundled imports, excluding requirements that are themselves bundled and
-    /// extras-conditioned requirements.
+    /// requirements whose markers cannot apply with the requested extras.
+    ///
+    /// `bundled_imports` maps each bundled import to the extras explicitly requested
+    /// for it (e.g. through a `requirements.module-map` entry like `provider[speed]`),
+    /// so extras-conditioned dependencies of bundled distributions survive when their
+    /// extra was requested. Duplicate declarations of one distribution are merged by
+    /// combining their version specifiers.
     ///
     /// Inlining a distribution removes it from `requirements.txt`, so its declared
     /// dependency constraints must be carried over for the external dependencies it
     /// pulls in (including dynamically or conditionally imported ones).
     pub(crate) fn bundled_distribution_requirements(
         &self,
-        bundled_imports: &FxIndexSet<String>,
+        bundled_imports: &FxIndexMap<String, Vec<pep508_rs::ExtraName>>,
     ) -> Vec<String> {
+        use std::str::FromStr;
+
         let mut bundled_distribution_names: IndexSet<String> = IndexSet::new();
-        let mut declared_requirements: IndexSet<String> = IndexSet::new();
+        // Declared entry -> extras requested for the distribution that declared it
+        let mut declared_requirements: IndexMap<String, Vec<pep508_rs::ExtraName>> =
+            IndexMap::new();
 
         let virtualenv_dirs = self.get_virtualenv_site_packages_search_directories(None);
-        for import_name in bundled_imports {
+        for (import_name, requested_extras) in bundled_imports {
             for site_packages_dir in &virtualenv_dirs {
                 // Aggregate over all owning distributions (shared namespaces can have
                 // several claimants; record-exact owners take precedence in the index)
@@ -1878,7 +1896,12 @@ impl ModuleResolver {
                             bundled_distribution_names
                                 .insert(Self::normalize_distribution_name(&name));
                         }
-                        declared_requirements.extend(requires_dist);
+                        for entry in requires_dist {
+                            declared_requirements
+                                .entry(entry)
+                                .or_default()
+                                .extend(requested_extras.iter().cloned());
+                        }
                     }
                     break;
                 }
@@ -1887,32 +1910,73 @@ impl ModuleResolver {
 
         // Deduplicate by distribution name: `pip install -r` rejects files that name
         // the same distribution twice ("Double requirement given")
-        let mut seen_names: IndexSet<String> = IndexSet::new();
-        let mut requirements: Vec<String> = Vec::new();
-        for entry in declared_requirements {
-            use std::str::FromStr;
-            let Ok(parsed) = pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(&entry)
+        let mut merged: IndexMap<String, pep508_rs::Requirement<pep508_rs::VerbatimUrl>> =
+            IndexMap::new();
+        for (entry, extras) in declared_requirements {
+            let Ok(mut parsed) = pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(&entry)
             else {
                 warn!("Skipping unparsable Requires-Dist entry of a bundled distribution: {entry}");
                 continue;
             };
-            // Keep only declarations that can apply without any requested extra:
-            // a pure `extra == ...` condition never holds for a plain install, but
-            // mixed markers like `python_version < "3.12" or extra == "fast"` can
-            if !parsed.marker.evaluate_extras(&[]) {
+            // Keep only declarations that can apply with the requested extras: a pure
+            // `extra == ...` condition holds only when that extra was asked for, while
+            // mixed markers like `python_version < "3.12" or extra == "fast"` always can
+            if !parsed.marker.evaluate_extras(&extras) {
                 continue;
             }
+            // Requested extras are satisfied by construction; remove them from the
+            // marker, because `extra` is unset when pip evaluates a requirements file
+            parsed.marker = parsed.marker.clone().simplify_extras(&extras);
             let name = parsed.name.to_string();
             // Requirements satisfied by other bundled distributions are not needed
             if bundled_distribution_names.contains(&name) {
                 continue;
             }
-            if seen_names.insert(name) {
-                requirements.push(entry);
+            match merged.entry(name) {
+                indexmap::map::Entry::Vacant(vacant) => {
+                    vacant.insert(parsed);
+                }
+                indexmap::map::Entry::Occupied(mut occupied) => {
+                    Self::merge_requirement_constraints(occupied.get_mut(), parsed);
+                }
             }
         }
+
+        let mut requirements: Vec<String> = merged
+            .into_values()
+            .map(|requirement| requirement.to_string())
+            .collect();
         requirements.sort();
         requirements
+    }
+
+    /// Merge a duplicate requirement declaration into an existing one by combining
+    /// their version specifiers (e.g. `dep<2` + `dep>=1` becomes `dep>=1,<2`).
+    ///
+    /// URL-based requirements and marker-conditioned declarations cannot be merged
+    /// soundly; the existing declaration is kept in those cases.
+    fn merge_requirement_constraints(
+        existing: &mut pep508_rs::Requirement<pep508_rs::VerbatimUrl>,
+        incoming: pep508_rs::Requirement<pep508_rs::VerbatimUrl>,
+    ) {
+        use pep508_rs::VersionOrUrl;
+        if !existing.marker.is_true() || !incoming.marker.is_true() {
+            return;
+        }
+        match (&existing.version_or_url, incoming.version_or_url) {
+            (None, incoming_version) => {
+                existing.version_or_url = incoming_version;
+            }
+            (
+                Some(VersionOrUrl::VersionSpecifier(current)),
+                Some(VersionOrUrl::VersionSpecifier(additional)),
+            ) => {
+                let combined: pep508_rs::pep440_rs::VersionSpecifiers =
+                    current.iter().cloned().chain(additional).collect();
+                existing.version_or_url = Some(VersionOrUrl::VersionSpecifier(combined));
+            }
+            _ => {}
+        }
     }
 
     /// Extract the normalized distribution name of a PEP 508 requirement string.
@@ -3727,6 +3791,47 @@ Import-Name: injected_module
         Ok(())
     }
 
+    /// Extras requested for a bundled distribution (e.g. through a module-map entry
+    /// like `provider[speed]`) activate its extras-conditioned `Requires-Dist`
+    /// entries, while unrequested extras stay dropped.
+    #[test]
+    fn test_bundled_distribution_requirements_respect_requested_extras() -> Result<()> {
+        use std::str::FromStr;
+
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!("provider/{}", crate::python::constants::INIT_FILE)),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("provider-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: provider\nVersion: 1.0\nImport-Name: \
+             provider\nRequires-Dist: speed-dep; extra == \"speed\"\nRequires-Dist: docs-tool; \
+             extra == \"docs\"\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let mut bundled_imports: FxIndexMap<String, Vec<pep508_rs::ExtraName>> =
+            FxIndexMap::default();
+        bundled_imports.insert(
+            "provider".to_owned(),
+            vec![pep508_rs::ExtraName::from_str("speed").expect("valid extra name")],
+        );
+
+        let requirements = resolver.bundled_distribution_requirements(&bundled_imports);
+        assert_eq!(
+            requirements,
+            vec!["speed-dep".to_owned()],
+            "requested extras must activate their dependencies with the extra marker \
+             simplified away (pip leaves `extra` unset in requirements files); unrequested \
+             extras must not"
+        );
+
+        Ok(())
+    }
+
     /// `RECORD` files are CSV: quoted paths with embedded commas (and `""` escapes)
     /// must be parsed whole so native artifacts inside them are still detected.
     #[test]
@@ -3924,16 +4029,18 @@ Import-Name: injected_module
         )?;
         let resolver = bundle_third_party_resolver(&virtualenv)?;
 
-        let mut bundled_imports = FxIndexSet::default();
-        bundled_imports.insert("pure_parent".to_owned());
-        bundled_imports.insert("pure_child".to_owned());
+        let mut bundled_imports: FxIndexMap<String, Vec<pep508_rs::ExtraName>> =
+            FxIndexMap::default();
+        bundled_imports.insert("pure_parent".to_owned(), Vec::new());
+        bundled_imports.insert("pure_child".to_owned(), Vec::new());
 
         let requirements = resolver.bundled_distribution_requirements(&bundled_imports);
         assert_eq!(
             requirements,
             vec![
                 "lazy-extra<2".to_owned(),
-                "mixed-dep; python_version < \"3.12\" or extra == \"speed\"".to_owned(),
+                // Entries are re-serialized in canonical PEP 508 form
+                "mixed-dep ; python_full_version < '3.12' or extra == 'speed'".to_owned(),
             ],
             "constraints for external deps and mixed markers are kept; bundled deps and \
              extras-only markers are dropped"
@@ -3967,16 +4074,16 @@ Import-Name: injected_module
         }
         let resolver = bundle_third_party_resolver(&virtualenv)?;
 
-        let mut bundled_imports = FxIndexSet::default();
-        bundled_imports.insert("first_pkg".to_owned());
-        bundled_imports.insert("second_pkg".to_owned());
+        let mut bundled_imports: FxIndexMap<String, Vec<pep508_rs::ExtraName>> =
+            FxIndexMap::default();
+        bundled_imports.insert("first_pkg".to_owned(), Vec::new());
+        bundled_imports.insert("second_pkg".to_owned(), Vec::new());
 
         let requirements = resolver.bundled_distribution_requirements(&bundled_imports);
         assert_eq!(
-            requirements.len(),
-            1,
-            "the same distribution must appear once even with differing specifiers: \
-             {requirements:?}"
+            requirements,
+            vec!["lazy-extra>=1,<2".to_owned()],
+            "duplicate declarations of one distribution must merge their specifiers"
         );
 
         Ok(())

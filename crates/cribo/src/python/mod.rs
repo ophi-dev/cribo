@@ -5,4 +5,5 @@
 //! using these helpers instead of ad-hoc string checks.
 
 pub(crate) mod constants;
+pub(crate) mod importlib_call;
 pub(crate) mod module_path;

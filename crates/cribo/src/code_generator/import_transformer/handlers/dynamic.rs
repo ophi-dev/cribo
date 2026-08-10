@@ -39,40 +39,14 @@ impl DynamicHandler {
         }
     }
 
-    /// Return the string-literal value of a call argument supplied either at a
-    /// positional index or through a keyword name.
-    fn string_argument<'c>(
-        call: &'c ExprCall,
-        position: usize,
-        keyword_name: &str,
-    ) -> Option<&'c str> {
-        if let Some(Expr::StringLiteral(lit)) = call.arguments.args.get(position) {
-            return Some(lit.value.to_str());
-        }
-        call.arguments.keywords.iter().find_map(|keyword| {
-            let matches_keyword = keyword
-                .arg
-                .as_ref()
-                .is_some_and(|arg| arg.as_str() == keyword_name);
-            if !matches_keyword {
-                return None;
-            }
-            if let Expr::StringLiteral(lit) = &keyword.value {
-                Some(lit.value.to_str())
-            } else {
-                None
-            }
-        })
-    }
-
     /// Resolve `importlib.import_module()` target module name, handling relative imports.
     /// Both argument forms are supported: positional (`import_module(".m", "pkg")`) and
     /// keyword (`import_module(name=".m", package="pkg")`).
     fn resolve_importlib_target(call: &ExprCall, bundler: &Bundler<'_>) -> Option<String> {
-        let module_name = Self::string_argument(call, 0, "name")?;
+        let module_name = crate::python::importlib_call::literal_module_name(call)?;
 
         // Handle relative imports with package context
-        let package_argument = Self::string_argument(call, 1, "package");
+        let package_argument = crate::python::importlib_call::literal_package_context(call);
         let resolved_name = if module_name.starts_with('.')
             && let Some(package) = package_argument
         {

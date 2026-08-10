@@ -224,7 +224,9 @@ Behavior in this mode:
   are kept external so installers can reject the mismatch instead of shipping unsupported code.
 - `Requires-Dist` constraints declared by bundled distributions are carried into
   `requirements.txt` for their external dependencies (entries satisfied by other bundled
-  distributions or conditioned on extras are dropped).
+  distributions are dropped; duplicate declarations are merged by combining version
+  specifiers). Extras-conditioned entries are included only when the extra was requested
+  through a `requirements.module-map` entry such as `provider = "provider[speed]"`.
 - Known limitation: packages that read adjacent data files through untyped filesystem access
   (e.g. `open(os.path.join(os.path.dirname(__file__), "data.json"))`) cannot be detected
   statically and may fail at runtime when inlined. Add such packages to `known_third_party` to

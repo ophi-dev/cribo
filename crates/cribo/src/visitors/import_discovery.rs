@@ -3,8 +3,8 @@
 //! Also performs semantic analysis to determine import usage patterns.
 
 use ruff_python_ast::{
-    AnyNodeRef, Expr, ExprAttribute, ExprCall, ExprName, ExprStringLiteral, ExprUnaryOp, Stmt,
-    StmtImport, StmtImportFrom, UnaryOp,
+    AnyNodeRef, Expr, ExprAttribute, ExprCall, ExprName, ExprUnaryOp, Stmt, StmtImport,
+    StmtImportFrom, UnaryOp,
     visitor::source_order::{SourceOrderVisitor, TraversalSignal, walk_expr, walk_stmt},
 };
 use ruff_text_size::TextRange;
@@ -416,27 +416,7 @@ impl<'a> ImportDiscoveryVisitor<'a> {
     /// Only string literals are recognized, supplied either as the first positional
     /// argument or as the `name=` keyword argument.
     fn extract_literal_module_name(&self, call: &ExprCall) -> Option<String> {
-        // Only handle static string literals
-        if let Some(arg) = call.arguments.args.first()
-            && let Expr::StringLiteral(ExprStringLiteral { value, .. }) = arg
-        {
-            return Some(value.to_str().to_owned());
-        }
-        // Also accept the keyword form: importlib.import_module(name="pkg.module")
-        call.arguments.keywords.iter().find_map(|keyword| {
-            let is_name_keyword = keyword
-                .arg
-                .as_ref()
-                .is_some_and(|name| name.as_str() == "name");
-            if !is_name_keyword {
-                return None;
-            }
-            if let Expr::StringLiteral(ExprStringLiteral { value, .. }) = &keyword.value {
-                Some(value.to_str().to_owned())
-            } else {
-                None
-            }
-        })
+        crate::python::importlib_call::literal_module_name(call).map(ToOwned::to_owned)
     }
 
     /// Extract the package context of a static `importlib.import_module` call.
@@ -444,28 +424,7 @@ impl<'a> ImportDiscoveryVisitor<'a> {
     /// Only string-literal contexts are recognized, supplied either as the second
     /// positional argument or as the `package=` keyword argument.
     fn extract_package_context(&self, call: &ExprCall) -> Option<String> {
-        // Extract the second positional argument if it exists (package context for
-        // relative imports)
-        if call.arguments.args.len() >= 2
-            && let Expr::StringLiteral(ExprStringLiteral { value, .. }) = &call.arguments.args[1]
-        {
-            return Some(value.to_str().to_owned());
-        }
-        // Also accept the keyword form: importlib.import_module(".helper", package="pkg")
-        call.arguments.keywords.iter().find_map(|keyword| {
-            let is_package_keyword = keyword
-                .arg
-                .as_ref()
-                .is_some_and(|name| name.as_str() == "package");
-            if !is_package_keyword {
-                return None;
-            }
-            if let Expr::StringLiteral(ExprStringLiteral { value, .. }) = &keyword.value {
-                Some(value.to_str().to_owned())
-            } else {
-                None
-            }
-        })
+        crate::python::importlib_call::literal_package_context(call).map(ToOwned::to_owned)
     }
 
     /// Record an import statement

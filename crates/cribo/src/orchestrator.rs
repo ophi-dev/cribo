@@ -1755,8 +1755,31 @@ impl BundleOrchestrator {
         graph: &DependencyGraph,
     ) -> Result<String> {
         let mut requirement_imports = IndexMap::new();
-        let mut bundled_third_party_imports: crate::types::FxIndexSet<String> =
-            crate::types::FxIndexSet::default();
+        // Bundled third-party import -> extras requested for it via module-map
+        let mut bundled_third_party_imports: FxIndexMap<String, Vec<pep508_rs::ExtraName>> =
+            FxIndexMap::default();
+
+        // Collect every bundled third-party module by ID, not by import statement:
+        // modules reached only through literal importlib.import_module calls have no
+        // Import/FromImport graph items, but their distributions' declared
+        // dependencies must still be propagated
+        if self.config.bundle_third_party() {
+            for module_id in module_ids {
+                let Some(module_name) = resolver.get_module_name(*module_id) else {
+                    continue;
+                };
+                let classification = resolver.classify_import(&module_name);
+                if classification.should_bundle()
+                    && matches!(classification.origin, ImportOrigin::ThirdParty)
+                {
+                    let extras = self.module_map_extras(&module_name);
+                    bundled_third_party_imports
+                        .entry(module_name)
+                        .or_default()
+                        .extend(extras);
+                }
+            }
+        }
 
         // TODO: Use TYPE_CHECKING information from the dependency graph to filter out
         // dependencies that are only used for type checking. These could be placed
@@ -1771,11 +1794,8 @@ impl BundleOrchestrator {
                     let classification = resolver.classify_import(import);
                     // Under --bundle-third-party, imports whose source is inlined into
                     // the bundle need no requirement entry, but their distributions'
-                    // declared dependencies must still be carried over below
+                    // declared dependencies are still carried over below
                     if self.config.bundle_third_party() && classification.should_bundle() {
-                        if matches!(classification.origin, ImportOrigin::ThirdParty) {
-                            bundled_third_party_imports.insert(import.clone());
-                        }
                         continue;
                     }
                     if matches!(
@@ -1834,5 +1854,25 @@ impl BundleOrchestrator {
         requirements.sort();
 
         Ok(requirements.join("\n"))
+    }
+
+    /// Return the extras requested for a bundled import through a
+    /// `requirements.module-map` entry (e.g. `provider = "provider[speed]"`), matched
+    /// by longest prefix like requirement resolution itself.
+    fn module_map_extras(&self, import_name: &str) -> Vec<pep508_rs::ExtraName> {
+        use std::str::FromStr;
+        let mapping = self
+            .config
+            .requirements
+            .module_map
+            .iter()
+            .filter(|(prefix, _)| RequirementResolver::matches_prefix(prefix, import_name))
+            .max_by_key(|(prefix, _)| prefix.split('.').count());
+        let Some((_, requirement)) = mapping else {
+            return Vec::new();
+        };
+        pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(requirement)
+            .map(|parsed| parsed.extras)
+            .unwrap_or_default()
     }
 }

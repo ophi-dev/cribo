@@ -332,6 +332,15 @@ fn test_bundling_fixtures() {
         if fake_venv.is_some() {
             cribo_args.push("--bundle-third-party");
         }
+        // A fixture-level cribo.toml supplies configuration (e.g. module-map entries)
+        let fixture_config = fixture_dir.join("cribo.toml");
+        let fixture_config_str = fixture_config.to_str().map(ToOwned::to_owned);
+        if fixture_config.is_file()
+            && let Some(config_path) = fixture_config_str.as_deref()
+        {
+            cribo_args.push("--config");
+            cribo_args.push(config_path);
+        }
         let (_bundle_stdout, bundle_stderr, bundle_exit_code) =
             run_cribo(&cribo_args, fake_venv.as_deref());
 
