@@ -766,6 +766,10 @@ pub(crate) struct GraphBuilder<'a> {
     /// Maps local name -> module path (e.g., "il" -> "importlib", "im" ->
     /// "`importlib.import_module`")
     import_aliases: FxIndexMap<String, String>,
+    /// Names rebound by non-import local bindings in the enclosing function scopes
+    /// (parameters, assignments, loop/with targets); such names must not be treated
+    /// as `importlib` or one of its aliases
+    shadowed_bindings: FxIndexSet<String>,
     python_version: u8,
     /// Qualified identity of the function or class currently being traversed.
     scope_path: Option<ScopePath>,
@@ -778,6 +782,7 @@ impl<'a> GraphBuilder<'a> {
         Self {
             graph,
             import_aliases: FxIndexMap::default(),
+            shadowed_bindings: FxIndexSet::default(),
             python_version,
             scope_path: None,
             next_scope_id: 0,
@@ -1120,12 +1125,44 @@ impl<'a> GraphBuilder<'a> {
 
         self.graph.add_item(item_data);
 
+        // Python scoping makes parameters and any name assigned in the function local
+        // for the WHOLE body: precompute them so calls through shadowed names (e.g. a
+        // parameter named `importlib`) are not recorded as real imports
+        let saved_shadowed_bindings = self.shadowed_bindings.clone();
+        for param in func_def
+            .parameters
+            .posonlyargs
+            .iter()
+            .chain(&func_def.parameters.args)
+            .chain(&func_def.parameters.kwonlyargs)
+        {
+            self.shadowed_bindings
+                .insert(param.parameter.name.as_str().to_owned());
+        }
+        if let Some(vararg) = &func_def.parameters.vararg {
+            self.shadowed_bindings
+                .insert(vararg.name.as_str().to_owned());
+        }
+        if let Some(kwarg) = &func_def.parameters.kwarg {
+            self.shadowed_bindings
+                .insert(kwarg.name.as_str().to_owned());
+        }
+        {
+            let mut body_bindings = FxIndexSet::default();
+            let no_globals = FxIndexSet::default();
+            crate::visitors::LocalVarCollector::new(&mut body_bindings, &no_globals)
+                .ignore_import_bindings()
+                .collect_from_stmts(&func_def.body);
+            self.shadowed_bindings.extend(body_bindings);
+        }
+
         // Process the function body in function scope
         let old_scope_path = self.scope_path.replace(function_scope);
         for stmt in &func_def.body {
             self.process_statement(stmt)?;
         }
         self.scope_path = old_scope_path;
+        self.shadowed_bindings = saved_shadowed_bindings;
 
         Ok(())
     }
@@ -1998,7 +2035,13 @@ impl<'a> GraphBuilder<'a> {
         }
     }
 
-    /// Check if an expression is an `importlib.import_module()` call with a static string argument
+    /// Check if an expression is an `importlib.import_module()` call with a static
+    /// string argument.
+    ///
+    /// A callee whose base name is rebound by a local binding (function parameter,
+    /// assignment) dispatches to that binding at runtime, not to `importlib`, and
+    /// calls whose remaining arguments cannot be safely discarded stay runtime calls;
+    /// neither is recorded as a real import.
     fn is_static_importlib_call(&self, expr: &Expr) -> Option<String> {
         if let Expr::Call(call) = expr {
             // Check if this is importlib.import_module() or an alias
@@ -2008,11 +2051,12 @@ impl<'a> GraphBuilder<'a> {
                     if let Expr::Name(name) = &*attr.value {
                         let name_str = name.id.as_str();
                         // Check if it's importlib directly or an alias
-                        name_str == "importlib"
-                            || self
-                                .import_aliases
-                                .get(name_str)
-                                .is_some_and(|v| v == "importlib")
+                        !self.shadowed_bindings.contains(name_str)
+                            && (name_str == "importlib"
+                                || self
+                                    .import_aliases
+                                    .get(name_str)
+                                    .is_some_and(|v| v == "importlib"))
                     } else {
                         false
                     }
@@ -2021,16 +2065,18 @@ impl<'a> GraphBuilder<'a> {
                 Expr::Name(name) => {
                     let name_str = name.id.as_str();
                     // Check if this is import_module or an alias for it
-                    name_str == "import_module"
-                        || self
-                            .import_aliases
-                            .get(name_str)
-                            .is_some_and(|v| v == "importlib.import_module")
+                    !self.shadowed_bindings.contains(name_str)
+                        && (name_str == "import_module"
+                            || self
+                                .import_aliases
+                                .get(name_str)
+                                .is_some_and(|v| v == "importlib.import_module"))
                 }
                 _ => false,
             };
 
-            if is_import_module {
+            if is_import_module && crate::python::importlib_call::arguments_safely_discardable(call)
+            {
                 // Extract the module name if it's a static string, from either the
                 // first positional argument or the `name=` keyword argument
                 return crate::python::importlib_call::literal_module_name(call)
