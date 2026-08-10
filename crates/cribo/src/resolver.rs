@@ -2464,6 +2464,7 @@ impl ModuleResolver {
                 if let Ok(metadata) = std::fs::read_to_string(&path) {
                     let mut distribution = DistributionInfo::default();
                     Self::index_distribution_metadata(&metadata, &mut distribution);
+                    Self::infer_egg_info_import_root(&mut distribution);
                     index.distributions.push(distribution);
                 }
             }
@@ -2522,6 +2523,7 @@ impl ModuleResolver {
 
         Self::index_top_level_declarations(egg_info_dir, &mut distribution);
         Self::index_entry_points(egg_info_dir, &mut distribution);
+        Self::infer_egg_info_import_root(&mut distribution);
 
         // installed-files.txt paths are relative to the egg-info directory itself
         // (e.g. "../package/module.py"); resolve them against the site-packages root
@@ -2583,6 +2585,21 @@ impl ModuleResolver {
                 distribution.has_runtime_entry_points = true;
                 return;
             }
+        }
+    }
+
+    /// Infer an egg-info distribution's import root from its name when the metadata
+    /// declares none (no `Import-Name`, `top_level.txt`, or installed-files listing):
+    /// setuptools conventionally installs `name-version.egg-info` beside a module
+    /// matching the underscore-normalized distribution name.
+    fn infer_egg_info_import_root(distribution: &mut DistributionInfo) {
+        if distribution.declared_prefixes.is_empty()
+            && distribution.record_imports.is_empty()
+            && !distribution.name.is_empty()
+        {
+            use cow_utils::CowUtils;
+            let inferred = distribution.name.cow_replace('-', "_").into_owned();
+            distribution.declared_prefixes.insert(inferred);
         }
     }
 
@@ -5217,7 +5234,8 @@ print(unrelated('not', 'a', 'query'))
             &site_packages.join("legacy_pkg.egg-info/top_level.txt"),
             "legacy_pkg\n",
         )?;
-        // File-form egg-info: the entry is a regular file containing the metadata
+        // File-form egg-info: the entry is a regular file containing the metadata,
+        // with no Import-Name declaration — ownership is inferred from the name
         create_test_file(
             &site_packages.join(format!(
                 "file_form_pkg/{}",
@@ -5227,8 +5245,7 @@ print(unrelated('not', 'a', 'query'))
         )?;
         create_test_file(
             &site_packages.join("file_form_pkg-1.0.egg-info"),
-            "Metadata-Version: 1.2\nName: file-form-pkg\nVersion: 1.0\nRequires-Python: \
-             >=3.13\nImport-Name: file_form_pkg\n",
+            "Metadata-Version: 1.2\nName: file-form-pkg\nVersion: 1.0\nRequires-Python: >=3.13\n",
         )?;
         let resolver = bundle_third_party_resolver(&virtualenv)?;
 
