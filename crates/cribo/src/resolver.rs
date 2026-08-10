@@ -728,9 +728,19 @@ pub(crate) fn queried_distribution_names(module: &ruff_python_ast::ModModule) ->
                             | "get_distribution"
                             | "require"
                     )
-                }) && let Some(Expr::StringLiteral(literal)) = call.arguments.args.first()
-                {
-                    self.names.push(literal.value.to_str().to_owned());
+                }) {
+                    if let Some(Expr::StringLiteral(literal)) = call.arguments.args.first() {
+                        self.names.push(literal.value.to_str().to_owned());
+                    }
+                    // Keyword forms differ per API (`distribution_name=`, `dist=`);
+                    // over-collection is safe, so accept any literal keyword value
+                    for keyword in &call.arguments.keywords {
+                        if keyword.arg.is_some()
+                            && let Expr::StringLiteral(literal) = &keyword.value
+                        {
+                            self.names.push(literal.value.to_str().to_owned());
+                        }
+                    }
                 }
             }
             ruff_python_ast::visitor::walk_expr(self, expr);
@@ -4452,11 +4462,15 @@ import pkg_resources
 print(version('direct-name'))
 print(importlib.metadata.distribution('attr-name'))
 print(pkg_resources.get_distribution('legacy-name'))
+print(importlib.metadata.version(distribution_name='keyword-name'))
 print(unrelated('not', 'a', 'query'))
 ";
         let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
         let names = queried_distribution_names(parsed.syntax());
-        assert_eq!(names, vec!["direct-name", "attr-name", "legacy-name"]);
+        assert_eq!(
+            names,
+            vec!["direct-name", "attr-name", "legacy-name", "keyword-name"]
+        );
     }
 
     /// Shared libraries loaded through ctypes/CFFI (`.dll`/`.dylib`) and versioned

@@ -30,4 +30,4 @@ class _Cribo():
 _cribo = _Cribo()
 version = _cribo.importlib.metadata.version
 import provider
-print(provider.VALUE, _cribo.importlib.metadata.version("provider"))
+print(provider.VALUE, _cribo.importlib.metadata.version(distribution_name="provider"))
