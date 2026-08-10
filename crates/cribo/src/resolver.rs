@@ -377,6 +377,10 @@ impl ImportModuleDescriptor {
 /// - dynamic imports with non-literal module names (including through aliases such as
 ///   `from importlib import import_module as load`), whose loaded modules cannot be
 ///   discovered statically
+/// - references to `__file__`, which resolve filesystem resources relative to the
+///   module's own source (e.g. `Path(__file__).with_name("data.json")`); after
+///   inlining, `__file__` points at the generated bundle and the adjacent assets are
+///   not shipped
 #[derive(Default)]
 struct UnbundlablePatternDetector {
     found: bool,
@@ -611,6 +615,15 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
     fn visit_expr(&mut self, expr: &'a ruff_python_ast::Expr) {
         use ruff_python_ast::Expr;
         if self.found {
+            return;
+        }
+        // A module referencing its own `__file__` locates filesystem resources
+        // relative to its installed source; after inlining, `__file__` points at the
+        // generated bundle and the adjacent assets are not shipped
+        if let Expr::Name(name) = expr
+            && name.id.as_str() == "__file__"
+        {
+            self.found = true;
             return;
         }
         // Dynamic imports whose targets are not statically discovered would be missing
@@ -1854,8 +1867,8 @@ impl ModuleResolver {
 
     /// Return whether a Python source file contains a pattern that makes it unsafe to
     /// inline: imports of installed-distribution APIs (`importlib.metadata`,
-    /// `pkg_resources`, `importlib.resources`, and their backports) or dynamic imports
-    /// with non-literal module names.
+    /// `pkg_resources`, `importlib.resources`, and their backports), dynamic imports
+    /// with non-literal module names, or `__file__`-relative resource access.
     fn python_file_blocks_bundling(path: &Path) -> bool {
         let Ok(source) = std::fs::read_to_string(path) else {
             // Conservative: an unreadable source file keeps the package external
@@ -1875,6 +1888,7 @@ impl ModuleResolver {
         if !source.contains("importlib")
             && !source.contains("pkg_resources")
             && !source.contains("__import__")
+            && !source.contains("__file__")
         {
             return false;
         }
@@ -4316,6 +4330,33 @@ Import-Name: folded_module
             "from .metadata import local_helper\n",
             "from .resources import local_data\n",
             "VALUE = 1\n",
+        ] {
+            assert!(
+                !ModuleResolver::python_source_blocks_bundling(source),
+                "should not flag: {source:?}"
+            );
+        }
+    }
+
+    /// `__file__`-relative resource access blocks bundling: after inlining,
+    /// `__file__` points at the generated bundle and adjacent assets are not shipped.
+    #[test]
+    fn test_file_dunder_resource_access_detection() {
+        for source in [
+            "from pathlib import Path\nDATA = Path(__file__).with_name('data.json').read_text()\n",
+            "import os\nHERE = os.path.dirname(__file__)\n",
+            "def load():\n    return open(__file__)\n",
+        ] {
+            assert!(
+                ModuleResolver::python_source_blocks_bundling(source),
+                "should flag __file__ resource access in: {source:?}"
+            );
+        }
+
+        for source in [
+            "'''docstring mentioning __file__'''\nVALUE = 1\n",
+            "# comment: __file__\nVALUE = 1\n",
+            "file = 'not the dunder'\nprint(file)\n",
         ] {
             assert!(
                 !ModuleResolver::python_source_blocks_bundling(source),
