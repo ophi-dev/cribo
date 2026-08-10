@@ -852,6 +852,7 @@ impl BundleOrchestrator {
         // modules reached only through literal import_module calls leave no graph
         // import item, so requirements generation would otherwise never see them
         if self.config.bundle_third_party() {
+            let modules_before_drop = discovered_modules.len();
             let mut external_targets = self
                 .external_importlib_targets
                 .lock()
@@ -877,6 +878,14 @@ impl BundleOrchestrator {
                 }
                 keep
             });
+            drop(external_targets);
+            // Dropping a module can orphan dependencies it alone pulled in: a
+            // transitive module no longer reachable from the retained graph must not
+            // be bundled, or its side effects would execute while the external parent
+            // loads its own installed copy of the dependency
+            if discovered_modules.len() != modules_before_drop {
+                Self::prune_unreachable_modules(&mut discovered_modules, params.resolver);
+            }
         }
 
         // PHASE 2: Add all modules to graph and create dependency edges
@@ -1030,6 +1039,81 @@ impl BundleOrchestrator {
             modules_to_process.push((package_id, package_path));
         }
         Ok(())
+    }
+
+    /// Drop discovered modules that are no longer reachable from the entry module
+    /// through the retained modules' imports.
+    ///
+    /// Reachability follows resolved import names plus their ancestor packages
+    /// (importing a submodule imports its parents). Orphans are simply dropped, not
+    /// recorded as external targets: bundled code never references them directly, and
+    /// the external parent's own distribution requirements cover their installation.
+    fn prune_unreachable_modules(
+        discovered_modules: &mut Vec<(ModuleId, PathBuf, Vec<String>, ProcessedModule)>,
+        resolver: &ModuleResolver,
+    ) {
+        let module_names: Vec<Option<String>> = discovered_modules
+            .iter()
+            .map(|(module_id, _, _, _)| resolver.get_module_name(*module_id))
+            .collect();
+        let mut index_by_name: FxIndexMap<String, usize> = FxIndexMap::default();
+        for (index, name) in module_names.iter().enumerate() {
+            if let Some(name) = name {
+                index_by_name.insert(name.clone(), index);
+            }
+        }
+
+        let mut reachable = vec![false; discovered_modules.len()];
+        let mut queue: Vec<usize> = Vec::new();
+        // Mark a name and its ancestor packages reachable
+        let mark = |name: &str, reachable: &mut Vec<bool>, queue: &mut Vec<usize>| {
+            let mut current = name;
+            loop {
+                if let Some(&index) = index_by_name.get(current)
+                    && !reachable[index]
+                {
+                    reachable[index] = true;
+                    queue.push(index);
+                }
+                match current.rsplit_once('.') {
+                    Some((parent, _)) => current = parent,
+                    None => break,
+                }
+            }
+        };
+
+        for (index, (module_id, _, _, _)) in discovered_modules.iter().enumerate() {
+            if module_id.is_entry() {
+                reachable[index] = true;
+                queue.push(index);
+                // The entry's ancestor packages are bundled alongside it (a package
+                // __main__ entry pulls in its package initializer)
+                if let Some(name) = &module_names[index] {
+                    mark(name, &mut reachable, &mut queue);
+                }
+            }
+        }
+        while let Some(index) = queue.pop() {
+            // Split borrows: clone the imports to walk them while marking
+            for import in discovered_modules[index].2.clone() {
+                mark(&import, &mut reachable, &mut queue);
+            }
+        }
+
+        let mut index = 0;
+        discovered_modules.retain(|(_, module_path, _, _)| {
+            let keep = reachable[index];
+            if !keep {
+                debug!(
+                    "Pruning module '{}' ({}) after discovery: it is only reachable through \
+                     dropped external modules",
+                    module_names[index].as_deref().unwrap_or("<unknown>"),
+                    module_path.display()
+                );
+            }
+            index += 1;
+            keep
+        });
     }
 
     /// Resolve imports from precomputed module facts with full context information.
