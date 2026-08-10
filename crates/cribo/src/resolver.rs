@@ -373,7 +373,8 @@ impl ImportModuleDescriptor {
 ///
 /// - imports of runtime package-data and metadata APIs that require an installed
 ///   distribution on disk (`importlib.metadata`, `importlib_metadata`, `pkg_resources`,
-///   `importlib.resources`, `importlib_resources`)
+///   `importlib.resources`, `importlib_resources`, `pkgutil`) or that introspect the
+///   import machinery (`importlib.util`), which inlined modules are not registered with
 /// - dynamic imports with non-literal module names (including through aliases such as
 ///   `from importlib import import_module as load`), whose loaded modules cannot be
 ///   discovered statically
@@ -394,12 +395,17 @@ struct UnbundlablePatternDetector {
 }
 
 impl UnbundlablePatternDetector {
-    const INSTALLED_PACKAGE_APIS: [&'static str; 5] = [
+    const INSTALLED_PACKAGE_APIS: [&'static str; 7] = [
         "importlib.metadata",
         "importlib_metadata",
         "pkg_resources",
         "importlib.resources",
         "importlib_resources",
+        // Reads package data files installed on disk (pkgutil.get_data)
+        "pkgutil",
+        // Introspects import specs (find_spec); inlined modules are not registered
+        // with the import machinery, so spec lookups would misreport them
+        "importlib.util",
     ];
 
     /// Return whether an imported module name is (or is inside) an API module that
@@ -594,7 +600,7 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
                     if Self::module_is_metadata_api(module)
                         || (module == "importlib"
                             && import_from.names.iter().any(|alias| {
-                                matches!(alias.name.as_str(), "metadata" | "resources")
+                                matches!(alias.name.as_str(), "metadata" | "resources" | "util")
                             }))
                     {
                         self.found = true;
@@ -625,6 +631,20 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
         {
             self.found = true;
             return;
+        }
+        // Import-spec introspection (importlib.util.find_spec) misreports inlined
+        // modules: they are not registered with Python's import machinery, so
+        // capability detection would disagree with the original installation
+        if let Expr::Call(call) = expr {
+            let callee_is_find_spec = match &*call.func {
+                Expr::Attribute(attribute) => attribute.attr.as_str() == "find_spec",
+                Expr::Name(name) => name.id.as_str() == "find_spec",
+                _ => false,
+            };
+            if callee_is_find_spec {
+                self.found = true;
+                return;
+            }
         }
         // Dynamic imports whose targets are not statically discovered would be missing
         // from the bundle: non-literal (or missing) `import_module` names cannot be
@@ -719,14 +739,82 @@ impl DistributionInfo {
 /// `pkg_resources.get_distribution("provider")`, or
 /// `pkg_resources.require("provider>=2")`.
 ///
-/// Detection is name-based on the queried-API call (`version`, `distribution`,
-/// `metadata`, `requires`, `files`, `get_distribution`, `require`) with literal
-/// arguments; requirement-style arguments are parsed so constrained strings like
-/// `"provider>=2"` record the distribution name. Over-collection is safe because it
-/// only keeps more distributions installed.
+/// A call is recognized only when its callee resolves through the module's imports
+/// and aliases to one of the metadata APIs (`importlib.metadata`,
+/// `importlib_metadata`, `pkg_resources`), so unrelated callables that merely share a
+/// final name (e.g. `provider.version("provider")`) record nothing. Literal
+/// requirement-style arguments are parsed so constrained strings like `"provider>=2"`
+/// record the distribution name.
 pub(crate) fn queried_distribution_names(module: &ruff_python_ast::ModModule) -> Vec<String> {
+    /// Canonical dotted paths of the query functions that take a distribution name.
+    const QUERY_FUNCTIONS: [&str; 12] = [
+        "importlib.metadata.version",
+        "importlib.metadata.distribution",
+        "importlib.metadata.metadata",
+        "importlib.metadata.requires",
+        "importlib.metadata.files",
+        "importlib_metadata.version",
+        "importlib_metadata.distribution",
+        "importlib_metadata.metadata",
+        "importlib_metadata.requires",
+        "importlib_metadata.files",
+        "pkg_resources.get_distribution",
+        "pkg_resources.require",
+    ];
+    /// Module prefixes whose members may be bound by `from ... import ...`.
+    const METADATA_API_MODULES: [&str; 3] =
+        ["importlib.metadata", "importlib_metadata", "pkg_resources"];
+
+    /// Collect every import binding relevant to metadata queries, anywhere in the
+    /// module (function-local imports included): local name -> canonical dotted path.
+    struct AliasCollector {
+        bindings: IndexMap<String, String>,
+    }
+
+    impl<'a> ruff_python_ast::visitor::Visitor<'a> for AliasCollector {
+        fn visit_stmt(&mut self, stmt: &'a ruff_python_ast::Stmt) {
+            use ruff_python_ast::Stmt;
+            match stmt {
+                Stmt::Import(import_stmt) => {
+                    for alias in &import_stmt.names {
+                        let module_name = alias.name.as_str();
+                        if let Some(asname) = &alias.asname {
+                            // `import importlib.metadata as md` binds the full path
+                            self.bindings
+                                .insert(asname.as_str().to_owned(), module_name.to_owned());
+                        } else {
+                            // `import importlib.metadata` binds only `importlib`
+                            let top_level = module_name.split('.').next().unwrap_or(module_name);
+                            self.bindings
+                                .insert(top_level.to_owned(), top_level.to_owned());
+                        }
+                    }
+                }
+                Stmt::ImportFrom(import_from) if import_from.level == 0 => {
+                    if let Some(module) = import_from.module.as_deref()
+                        && (module == "importlib" || METADATA_API_MODULES.contains(&module))
+                    {
+                        for alias in &import_from.names {
+                            let bound_name = alias
+                                .asname
+                                .as_ref()
+                                .map_or_else(|| alias.name.as_str(), |name| name.as_str());
+                            self.bindings.insert(
+                                bound_name.to_owned(),
+                                format!("{module}.{}", alias.name.as_str()),
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+            ruff_python_ast::visitor::walk_stmt(self, stmt);
+        }
+    }
+
     struct QueryCollector {
         names: Vec<String>,
+        bindings: IndexMap<String, String>,
     }
 
     impl QueryCollector {
@@ -738,44 +826,58 @@ pub(crate) fn queried_distribution_names(module: &ruff_python_ast::ModModule) ->
                 .map_or_else(|_| literal.to_owned(), |parsed| parsed.name.to_string());
             self.names.push(name);
         }
+
+        /// Resolve a callee to its canonical dotted path through the collected
+        /// bindings: the base name is substituted by what it was imported as, and
+        /// attribute segments are appended verbatim.
+        fn canonical_callee_path(&self, callee: &ruff_python_ast::Expr) -> Option<String> {
+            use ruff_python_ast::Expr;
+            let mut segments: Vec<&str> = Vec::new();
+            let mut current = callee;
+            loop {
+                match current {
+                    Expr::Attribute(attribute) => {
+                        segments.push(attribute.attr.as_str());
+                        current = &attribute.value;
+                    }
+                    Expr::Name(name) => {
+                        let base = name.id.as_str();
+                        let canonical_base = self.bindings.get(base)?;
+                        let mut path = canonical_base.clone();
+                        for segment in segments.iter().rev() {
+                            path.push('.');
+                            path.push_str(segment);
+                        }
+                        return Some(path);
+                    }
+                    _ => return None,
+                }
+            }
+        }
     }
 
     impl<'a> ruff_python_ast::visitor::Visitor<'a> for QueryCollector {
         fn visit_expr(&mut self, expr: &'a ruff_python_ast::Expr) {
             use ruff_python_ast::Expr;
-            if let Expr::Call(call) = expr {
-                let callee_name = match &*call.func {
-                    Expr::Attribute(attribute) => Some(attribute.attr.as_str()),
-                    Expr::Name(name) => Some(name.id.as_str()),
-                    _ => None,
-                };
-                if callee_name.is_some_and(|name| {
-                    matches!(
-                        name,
-                        "version"
-                            | "distribution"
-                            | "metadata"
-                            | "requires"
-                            | "files"
-                            | "get_distribution"
-                            | "require"
-                    )
-                }) {
-                    // `require` is variadic; collecting every positional literal is
-                    // safe for the other APIs too
-                    for argument in &call.arguments.args {
-                        if let Expr::StringLiteral(literal) = argument {
-                            self.record(literal.value.to_str());
-                        }
+            if let Expr::Call(call) = expr
+                && self
+                    .canonical_callee_path(&call.func)
+                    .is_some_and(|path| QUERY_FUNCTIONS.contains(&path.as_str()))
+            {
+                // `require` is variadic; collecting every positional literal is
+                // safe for the other APIs too
+                for argument in &call.arguments.args {
+                    if let Expr::StringLiteral(literal) = argument {
+                        self.record(literal.value.to_str());
                     }
-                    // Keyword forms differ per API (`distribution_name=`, `dist=`);
-                    // over-collection is safe, so accept any literal keyword value
-                    for keyword in &call.arguments.keywords {
-                        if keyword.arg.is_some()
-                            && let Expr::StringLiteral(literal) = &keyword.value
-                        {
-                            self.record(literal.value.to_str());
-                        }
+                }
+                // Keyword forms differ per API (`distribution_name=`, `dist=`);
+                // over-collection is safe, so accept any literal keyword value
+                for keyword in &call.arguments.keywords {
+                    if keyword.arg.is_some()
+                        && let Expr::StringLiteral(literal) = &keyword.value
+                    {
+                        self.record(literal.value.to_str());
                     }
                 }
             }
@@ -784,7 +886,18 @@ pub(crate) fn queried_distribution_names(module: &ruff_python_ast::ModModule) ->
     }
 
     use ruff_python_ast::visitor::Visitor as _;
-    let mut collector = QueryCollector { names: Vec::new() };
+    // Bindings are collected module-wide first: a function body may query through an
+    // alias imported after the function definition
+    let mut alias_collector = AliasCollector {
+        bindings: IndexMap::new(),
+    };
+    for stmt in &module.body {
+        alias_collector.visit_stmt(stmt);
+    }
+    let mut collector = QueryCollector {
+        names: Vec::new(),
+        bindings: alias_collector.bindings,
+    };
     for stmt in &module.body {
         collector.visit_stmt(stmt);
     }
@@ -1908,6 +2021,8 @@ impl ModuleResolver {
         // Cheap pre-filter: skip parsing sources that cannot reference the APIs
         if !source.contains("importlib")
             && !source.contains("pkg_resources")
+            && !source.contains("pkgutil")
+            && !source.contains("find_spec")
             && !source.contains("__import__")
             && !source.contains("__file__")
         {
@@ -2312,15 +2427,30 @@ impl ModuleResolver {
     /// Return whether the configured target Python version satisfies a PEP 440
     /// specifier set. The minor-only target is checked across its whole patch range
     /// (both `3.X.0` and a high patch sentinel), so patch-sensitive bounds like
-    /// `<3.X.1` conservatively report as unsatisfied. Unparsable specifiers also
-    /// report as unsatisfied.
+    /// `<3.X.1` conservatively report as unsatisfied. Exclusions targeting a patch
+    /// inside the range (e.g. `!=3.X.5`) also report as unsatisfied: both endpoint
+    /// probes would pass, yet part of the target minor range is explicitly rejected.
+    /// Unparsable specifiers also report as unsatisfied.
     fn target_python_satisfies(&self, specifiers: &str) -> bool {
         use std::str::FromStr;
+
+        use pep508_rs::pep440_rs::Operator;
         let Ok(specifiers) = pep508_rs::pep440_rs::VersionSpecifiers::from_str(specifiers) else {
             warn!("Ignoring unparsable Requires-Python specifier: {specifiers}");
             return false;
         };
         let minor = u64::from(self.python_version);
+        // An interior patch exclusion cannot be proven irrelevant by a minor-only
+        // target: some patch release of the target minor is incompatible
+        if specifiers.iter().any(|specifier| {
+            matches!(
+                specifier.operator(),
+                Operator::NotEqual | Operator::NotEqualStar
+            ) && specifier.version().release().first() == Some(&3)
+                && specifier.version().release().get(1) == Some(&minor)
+        }) {
+            return false;
+        }
         let lowest_patch = pep508_rs::pep440_rs::Version::new([3, minor, 0]);
         let highest_patch = pep508_rs::pep440_rs::Version::new([3, minor, u64::from(u16::MAX)]);
         specifiers.contains(&lowest_patch) && specifiers.contains(&highest_patch)
@@ -4362,6 +4492,12 @@ Import-Name: folded_module
             "import importlib_resources\n",
             "from importlib_resources import files\n",
             "def lazy():\n    from importlib import metadata\n    return metadata\n",
+            // Package-data and import-machinery APIs need the installed layout
+            "import pkgutil\nDATA = pkgutil.get_data(__name__, 'data.json')\n",
+            "from pkgutil import get_data\n",
+            "import importlib.util\n",
+            "from importlib import util\n",
+            "from importlib.util import find_spec\n",
         ] {
             assert!(
                 ModuleResolver::python_source_blocks_bundling(source),
@@ -4372,7 +4508,6 @@ Import-Name: folded_module
         // Negative: importlib usage that does not touch installed-package data
         for source in [
             "import importlib\nimportlib.import_module('json')\n",
-            "from importlib import util\n",
             "'''docstring mentioning importlib.metadata and pkg_resources'''\n",
             "# comment: importlib.metadata\nVALUE = 1\n",
             "from .metadata import local_helper\n",
@@ -4855,20 +4990,28 @@ Import-Name: folded_module
     }
 
     /// The metadata-query scanner collects literal distribution names from the
-    /// supported query call forms.
+    /// supported query call forms, and only when the callee resolves through the
+    /// module's imports to a metadata API — unrelated callables sharing a final name
+    /// (e.g. `provider.version(...)`) record nothing.
     #[test]
     fn test_queried_distribution_names_collection() {
         let source = "\
 from importlib.metadata import version
+from importlib import metadata as md
 import importlib.metadata
 import pkg_resources
+import provider
 
 print(version('direct-name'))
 print(importlib.metadata.distribution('attr-name'))
+print(md.requires('module-alias-name'))
 print(pkg_resources.get_distribution('legacy-name'))
 print(importlib.metadata.version(distribution_name='keyword-name'))
 print(pkg_resources.require('constrained-name>=2', 'variadic-name[extra]<3'))
 print(unrelated('not', 'a', 'query'))
+print(provider.version('provider'))
+print(provider.metadata('provider'))
+files = provider.files('provider')
 ";
         let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
         let names = queried_distribution_names(parsed.syntax());
@@ -4877,6 +5020,7 @@ print(unrelated('not', 'a', 'query'))
             vec![
                 "direct-name",
                 "attr-name",
+                "module-alias-name",
                 "legacy-name",
                 "keyword-name",
                 "constrained-name",
@@ -5236,6 +5380,8 @@ print(unrelated('not', 'a', 'query'))
             ("strict_pkg", ">=3.13"),
             ("patch_pkg", "<3.10.1"),
             ("relaxed_pkg", ">=3.8"),
+            ("interior_pkg", ">=3.8,!=3.10.5"),
+            ("other_minor_pkg", ">=3.8,!=3.9.7"),
         ] {
             create_test_file(
                 &site_packages.join(format!("{package}/{}", crate::python::constants::INIT_FILE)),
@@ -5273,6 +5419,23 @@ print(unrelated('not', 'a', 'query'))
             relaxed.bundle,
             BundleDisposition::Include,
             "compatible Requires-Python must not prevent bundling"
+        );
+
+        // An exclusion inside the target minor range passes both endpoint probes but
+        // still rejects part of the range
+        let interior = resolver.classify_import("interior_pkg");
+        assert_eq!(
+            interior.bundle,
+            BundleDisposition::External,
+            "Requires-Python !=3.10.5 must conservatively stay external for a py310 target"
+        );
+
+        // Exclusions targeting a different minor are irrelevant to the target range
+        let other_minor = resolver.classify_import("other_minor_pkg");
+        assert_eq!(
+            other_minor.bundle,
+            BundleDisposition::Include,
+            "Requires-Python !=3.9.7 must not prevent bundling for a py310 target"
         );
 
         Ok(())
