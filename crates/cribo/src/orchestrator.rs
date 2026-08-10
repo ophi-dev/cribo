@@ -1772,7 +1772,7 @@ impl BundleOrchestrator {
                 if classification.should_bundle()
                     && matches!(classification.origin, ImportOrigin::ThirdParty)
                 {
-                    let extras = self.module_map_extras(&module_name);
+                    let extras = self.module_map_extras(&module_name)?;
                     bundled_third_party_imports
                         .entry(module_name)
                         .or_default()
@@ -1859,7 +1859,11 @@ impl BundleOrchestrator {
     /// Return the extras requested for a bundled import through a
     /// `requirements.module-map` entry (e.g. `provider = "provider[speed]"`), matched
     /// by longest prefix like requirement resolution itself.
-    fn module_map_extras(&self, import_name: &str) -> Vec<pep508_rs::ExtraName> {
+    ///
+    /// An invalid mapping is a hard error: bundled imports skip
+    /// `RequirementResolver::override_for`, so this is the only place the
+    /// configuration problem can surface for them.
+    fn module_map_extras(&self, import_name: &str) -> Result<Vec<pep508_rs::ExtraName>> {
         use std::str::FromStr;
         let mapping = self
             .config
@@ -1868,11 +1872,16 @@ impl BundleOrchestrator {
             .iter()
             .filter(|(prefix, _)| RequirementResolver::matches_prefix(prefix, import_name))
             .max_by_key(|(prefix, _)| prefix.split('.').count());
-        let Some((_, requirement)) = mapping else {
-            return Vec::new();
+        let Some((prefix, requirement)) = mapping else {
+            return Ok(Vec::new());
         };
-        pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(requirement)
-            .map(|parsed| parsed.extras)
-            .unwrap_or_default()
+        let parsed = pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(requirement)
+            .with_context(|| {
+                format!(
+                    "Invalid PEP 508 requirement '{requirement}' configured for import prefix \
+                     '{prefix}'"
+                )
+            })?;
+        Ok(parsed.extras)
     }
 }

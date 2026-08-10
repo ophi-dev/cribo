@@ -427,7 +427,9 @@ impl UnbundlablePatternDetector {
 
     /// Record every alias bound to `importlib.import_module` anywhere in the module
     /// (including inside `try`/`if` blocks and function bodies) before the detection
-    /// pass, so calls in functions defined above the alias import are still recognized.
+    /// pass, so calls in functions defined above the alias binding are still
+    /// recognized. Both import aliases (`from importlib import import_module as X`)
+    /// and assignment aliases (`X = importlib.import_module`) are collected.
     /// Over-collection is safe: it can only classify more packages as external.
     fn collect_dynamic_import_aliases(&mut self, body: &[ruff_python_ast::Stmt]) {
         struct AliasCollector<'aliases> {
@@ -436,11 +438,18 @@ impl UnbundlablePatternDetector {
 
         impl<'a> ruff_python_ast::visitor::Visitor<'a> for AliasCollector<'_> {
             fn visit_stmt(&mut self, stmt: &'a ruff_python_ast::Stmt) {
-                if let ruff_python_ast::Stmt::ImportFrom(import_from) = stmt
-                    && import_from.level == 0
-                    && import_from.module.as_deref() == Some("importlib")
-                {
-                    record_import_module_aliases(import_from, self.aliases);
+                use ruff_python_ast::Stmt;
+                match stmt {
+                    Stmt::ImportFrom(import_from)
+                        if import_from.level == 0
+                            && import_from.module.as_deref() == Some("importlib") =>
+                    {
+                        record_import_module_aliases(import_from, self.aliases);
+                    }
+                    Stmt::Assign(assign) => {
+                        record_assigned_import_module_aliases(assign, self.aliases);
+                    }
+                    _ => {}
                 }
                 ruff_python_ast::visitor::walk_stmt(self, stmt);
             }
@@ -469,6 +478,30 @@ fn record_import_module_aliases(
                 .as_ref()
                 .map_or_else(|| alias.name.as_str(), |name| name.as_str());
             aliases.insert(bound_name.to_owned());
+        }
+    }
+}
+
+/// Track callable aliases created by assignments such as
+/// `load = importlib.import_module` or `load = import_module`.
+fn record_assigned_import_module_aliases(
+    assign: &ruff_python_ast::StmtAssign,
+    aliases: &mut IndexSet<String>,
+) {
+    use ruff_python_ast::Expr;
+    let value_is_import_module = match assign.value.as_ref() {
+        Expr::Attribute(attribute) => attribute.attr.as_str() == "import_module",
+        Expr::Name(name) => {
+            name.id.as_str() == "import_module" || aliases.contains(name.id.as_str())
+        }
+        _ => false,
+    };
+    if !value_is_import_module {
+        return;
+    }
+    for target in &assign.targets {
+        if let Expr::Name(name) = target {
+            aliases.insert(name.id.to_string());
         }
     }
 }
@@ -1567,11 +1600,19 @@ impl ModuleResolver {
         false
     }
 
+    /// Return whether a file extension denotes a native binary artifact: Python
+    /// extension modules (`.so`/`.pyd`) or shared libraries loaded at runtime through
+    /// ctypes/CFFI (`.dll`/`.dylib`). Distinct from importable-extension matching in
+    /// [`Self::find_native_extension_module`], which covers only Python extensions.
+    fn is_native_artifact_extension(extension: &str) -> bool {
+        matches!(extension, "so" | "pyd" | "dll" | "dylib")
+    }
+
     /// Return whether a single file forces its package to stay external: a native
-    /// extension artifact or a Python source reading installed distribution metadata.
+    /// artifact or a Python source containing a bundling-blocking pattern.
     fn is_external_marker_file(path: &Path) -> bool {
         match path.extension().and_then(OsStr::to_str) {
-            Some("so" | "pyd") => true,
+            Some(extension) if Self::is_native_artifact_extension(extension) => true,
             Some("py") => Self::python_file_blocks_bundling(path),
             _ => false,
         }
@@ -1890,9 +1931,12 @@ impl ModuleResolver {
         let mut declared_requirements: IndexMap<String, Vec<pep508_rs::ExtraName>> =
             IndexMap::new();
 
-        let virtualenv_dirs = self.get_virtualenv_site_packages_search_directories(None);
+        // Distributions can be installed into the environment's site-packages or
+        // supplied through PYTHONPATH/source roots with adjacent dist-info metadata;
+        // search the same roots as requirement resolution itself
+        let metadata_dirs = self.get_distribution_metadata_search_directories();
         for (import_name, requested_extras) in bundled_imports {
-            for site_packages_dir in &virtualenv_dirs {
+            for site_packages_dir in &metadata_dirs {
                 // Aggregate over all owning distributions (shared namespaces can have
                 // several claimants; record-exact owners take precedence in the index)
                 let found = self.with_distribution_ownership_index(site_packages_dir, |index| {
@@ -2079,7 +2123,7 @@ impl ModuleResolver {
                 if Path::new(path_part.as_str())
                     .extension()
                     .and_then(OsStr::to_str)
-                    .is_some_and(|extension| matches!(extension, "so" | "pyd"))
+                    .is_some_and(Self::is_native_artifact_extension)
                 {
                     distribution.ships_native_artifacts = true;
                 }
@@ -2127,7 +2171,7 @@ impl ModuleResolver {
                 if Path::new(normalized)
                     .extension()
                     .and_then(OsStr::to_str)
-                    .is_some_and(|extension| matches!(extension, "so" | "pyd"))
+                    .is_some_and(Self::is_native_artifact_extension)
                 {
                     distribution.ships_native_artifacts = true;
                 }
@@ -3850,6 +3894,74 @@ Import-Name: injected_module
         Ok(())
     }
 
+    /// Shared libraries loaded through ctypes/CFFI (`.dll`/`.dylib`) also keep a
+    /// distribution external, not just Python extension modules.
+    #[test]
+    fn test_bundle_third_party_keeps_shared_library_distribution_external() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!(
+                "cffi_style_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(&site_packages.join("cffi_style_pkg/libhelper.dylib"), "")?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let classification = resolver.classify_import("cffi_style_pkg");
+        assert_eq!(
+            classification.bundle,
+            BundleDisposition::External,
+            "distributions shipping shared libraries must stay external"
+        );
+        assert!(resolver.resolve_module_path("cffi_style_pkg")?.is_none());
+
+        Ok(())
+    }
+
+    /// `Requires-Dist` metadata of bundled distributions supplied through PYTHONPATH
+    /// (dist-info beside the sources) is propagated like virtualenv installs.
+    #[test]
+    fn test_bundled_distribution_requirements_from_pythonpath_root() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let pythonpath_dir = temp_dir.path().join("vendored");
+        create_test_file(
+            &pythonpath_dir.join(format!(
+                "pythonpath_dist/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &pythonpath_dir.join("pythonpath_dist-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: pythonpath-dist\nVersion: 1.0\nImport-Name: \
+             pythonpath_dist\nRequires-Dist: pp-extra>=1\n",
+        )?;
+        let config = Config {
+            bundle_third_party: Some(true),
+            ..Default::default()
+        };
+        let pythonpath = pythonpath_dir.to_string_lossy();
+        let resolver =
+            ModuleResolver::new_with_overrides(config, Some(pythonpath.as_ref()), Some(""))?;
+
+        let mut bundled_imports: FxIndexMap<String, Vec<pep508_rs::ExtraName>> =
+            FxIndexMap::default();
+        bundled_imports.insert("pythonpath_dist".to_owned(), Vec::new());
+
+        let requirements = resolver.bundled_distribution_requirements(&bundled_imports);
+        assert_eq!(
+            requirements,
+            vec!["pp-extra>=1".to_owned()],
+            "dist-info metadata found through PYTHONPATH roots must be propagated"
+        );
+
+        Ok(())
+    }
+
     /// `RECORD` files are CSV: quoted paths with embedded commas (and `""` escapes)
     /// must be parsed whole so native artifacts inside them are still detected.
     #[test]
@@ -3991,6 +4103,9 @@ Import-Name: injected_module
              import_module as load\n",
             "def load_backend(name):\n    return load(name)\n\ntry:\n    from importlib import \
              import_module as load\nexcept ImportError:\n    load = None\n",
+            "import importlib\nload = importlib.import_module\nload(module_variable)\n",
+            "def load_backend(name):\n    return load(name)\n\nimport importlib\nload = \
+             importlib.import_module\n",
             "import importlib\nimportlib.import_module(name=module_variable)\n",
             "import importlib\nimportlib.import_module(name=f'.{name}', package=__package__)\n",
             "__import__(module_variable)\n",
@@ -4008,6 +4123,7 @@ Import-Name: injected_module
             "import importlib\nimportlib.import_module('.helper', 'pkg')\n",
             "import importlib\nimportlib.import_module(name='pkg.module')\n",
             "from importlib import import_module as load\nload('.helper', 'pkg')\n",
+            "import importlib\nload = importlib.import_module\nload('json')\n",
         ] {
             assert!(
                 !ModuleResolver::python_source_blocks_bundling(source),

@@ -587,6 +587,52 @@ fn test_bundle_third_party_detects_virtualenv_beside_entry() {
     );
 }
 
+/// An invalid `requirements.module-map` entry matching a bundled import is a hard
+/// configuration error: bundled imports skip the requirement resolver's own
+/// validation, so the orchestrator must surface the problem itself.
+#[test]
+fn test_bundle_third_party_rejects_invalid_module_map_for_bundled_import() {
+    let sandbox =
+        create_bundle_third_party_sandbox("import pure_helper\nprint(pure_helper.GREETING)\n");
+    write_test_distribution(
+        &sandbox.site_packages,
+        "pure_helper",
+        "pure-helper",
+        "GREETING = 'hello from pure_helper'\n",
+    );
+    let config_path = sandbox.output_dir.join("cribo.toml");
+    fs::write(
+        &config_path,
+        "[requirements]\nmodule-map = { pure_helper = \"not a valid requirement!!\" }\n",
+    )
+    .expect("Failed to write config");
+
+    let mut command = cribo_command();
+    command
+        .arg("--entry")
+        .arg(&sandbox.entry_path)
+        .arg("--output")
+        .arg(&sandbox.output_path)
+        .arg("--bundle-third-party")
+        .arg("--emit-requirements")
+        .arg("--config")
+        .arg(&config_path)
+        .env("VIRTUAL_ENV", &sandbox.environment)
+        .env_remove("PYTHONPATH")
+        .env_remove("CONDA_PREFIX");
+    let output = command.output().expect("Failed to execute cribo");
+
+    assert!(
+        !output.status.success(),
+        "invalid module-map entries for bundled imports must fail the build"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Invalid PEP 508 requirement"),
+        "error must identify the invalid mapping, got: {stderr}"
+    );
+}
+
 #[test]
 fn test_stdout_mode_preserves_bundled_structure() {
     let (stdout, _, exit_code) = run_cribo(&[

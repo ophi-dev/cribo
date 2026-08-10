@@ -1,0 +1,5 @@
+Metadata-Version: 2.5
+Name: pythonpath-dist
+Version: 1.0
+Requires-Dist: pp-extra>=1
+Import-Name: pythonpath_dist
