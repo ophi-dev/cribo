@@ -425,32 +425,50 @@ impl UnbundlablePatternDetector {
         }
     }
 
-    /// Record every module-level alias bound to `importlib.import_module` before the
-    /// detection pass, so calls inside functions defined above the import are still
-    /// recognized.
+    /// Record every alias bound to `importlib.import_module` anywhere in the module
+    /// (including inside `try`/`if` blocks and function bodies) before the detection
+    /// pass, so calls in functions defined above the alias import are still recognized.
+    /// Over-collection is safe: it can only classify more packages as external.
     fn collect_dynamic_import_aliases(&mut self, body: &[ruff_python_ast::Stmt]) {
-        use ruff_python_ast::Stmt;
-        for stmt in body {
-            if let Stmt::ImportFrom(import_from) = stmt
-                && import_from.level == 0
-                && import_from.module.as_deref() == Some("importlib")
-            {
-                self.record_import_module_aliases(import_from);
+        struct AliasCollector<'aliases> {
+            aliases: &'aliases mut IndexSet<String>,
+        }
+
+        impl<'a> ruff_python_ast::visitor::Visitor<'a> for AliasCollector<'_> {
+            fn visit_stmt(&mut self, stmt: &'a ruff_python_ast::Stmt) {
+                if let ruff_python_ast::Stmt::ImportFrom(import_from) = stmt
+                    && import_from.level == 0
+                    && import_from.module.as_deref() == Some("importlib")
+                {
+                    record_import_module_aliases(import_from, self.aliases);
+                }
+                ruff_python_ast::visitor::walk_stmt(self, stmt);
             }
         }
-    }
 
-    /// Track local names bound to `importlib.import_module` by a `from importlib
-    /// import ...` statement.
-    fn record_import_module_aliases(&mut self, import_from: &ruff_python_ast::StmtImportFrom) {
-        for alias in &import_from.names {
-            if alias.name.as_str() == "import_module" {
-                let bound_name = alias
-                    .asname
-                    .as_ref()
-                    .map_or_else(|| alias.name.as_str(), |name| name.as_str());
-                self.dynamic_import_aliases.insert(bound_name.to_owned());
-            }
+        use ruff_python_ast::visitor::Visitor as _;
+        let mut collector = AliasCollector {
+            aliases: &mut self.dynamic_import_aliases,
+        };
+        for stmt in body {
+            collector.visit_stmt(stmt);
+        }
+    }
+}
+
+/// Track local names bound to `importlib.import_module` by a `from importlib
+/// import ...` statement.
+fn record_import_module_aliases(
+    import_from: &ruff_python_ast::StmtImportFrom,
+    aliases: &mut IndexSet<String>,
+) {
+    for alias in &import_from.names {
+        if alias.name.as_str() == "import_module" {
+            let bound_name = alias
+                .asname
+                .as_ref()
+                .map_or_else(|| alias.name.as_str(), |name| name.as_str());
+            aliases.insert(bound_name.to_owned());
         }
     }
 }
@@ -496,7 +514,7 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
                     // Track aliases of importlib.import_module so aliased dynamic
                     // calls (e.g. `load(f".{name}")`) are recognized below
                     if module == "importlib" {
-                        self.record_import_module_aliases(import_from);
+                        record_import_module_aliases(import_from, &mut self.dynamic_import_aliases);
                     }
                 }
             }
@@ -3971,6 +3989,8 @@ Import-Name: injected_module
             "from importlib import (\n    import_module as _load,\n)\n_load(module_variable)\n",
             "def load_backend(name):\n    return load(name)\n\nfrom importlib import \
              import_module as load\n",
+            "def load_backend(name):\n    return load(name)\n\ntry:\n    from importlib import \
+             import_module as load\nexcept ImportError:\n    load = None\n",
             "import importlib\nimportlib.import_module(name=module_variable)\n",
             "import importlib\nimportlib.import_module(name=f'.{name}', package=__package__)\n",
             "__import__(module_variable)\n",
