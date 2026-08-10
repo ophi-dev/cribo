@@ -231,6 +231,13 @@ impl BundleOrchestrator {
         Vec<ParsedModuleData>,
         Option<CircularDependencyAnalysis>,
     )> {
+        // Discovery state from a previous bundle run on this orchestrator must not
+        // leak into this run's requirements
+        self.external_importlib_targets
+            .lock()
+            .expect("external importlib targets lock poisoned")
+            .clear();
+
         // Store the original entry path before transformation
         let original_entry_path = entry_path.to_path_buf();
 
@@ -1996,5 +2003,52 @@ impl BundleOrchestrator {
                 )
             })?;
         Ok(parsed.extras)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::TempDir;
+
+    use super::*;
+
+    /// External importlib targets recorded during one bundle run must not leak into a
+    /// later run on the same orchestrator instance.
+    #[test]
+    fn test_external_importlib_targets_cleared_between_runs() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let first_entry = temp_dir.path().join("first.py");
+        fs::write(
+            &first_entry,
+            "import importlib\n\ntry:\n    \
+             importlib.import_module(\"totally_unknown_dist\")\nexcept ImportError:\n    pass\n",
+        )?;
+        let second_entry = temp_dir.path().join("second.py");
+        fs::write(&second_entry, "print(\"plain\")\n")?;
+
+        let mut orchestrator = BundleOrchestrator::new(Config::default());
+        orchestrator.bundle_to_string(&first_entry, false)?;
+        assert!(
+            orchestrator
+                .external_importlib_targets
+                .lock()
+                .expect("lock")
+                .contains("totally_unknown_dist"),
+            "the first run must record its external importlib target"
+        );
+
+        orchestrator.bundle_to_string(&second_entry, false)?;
+        assert!(
+            orchestrator
+                .external_importlib_targets
+                .lock()
+                .expect("lock")
+                .is_empty(),
+            "run-specific discovery state must be cleared between bundle runs"
+        );
+
+        Ok(())
     }
 }

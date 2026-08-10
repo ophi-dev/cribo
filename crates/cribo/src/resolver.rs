@@ -2450,17 +2450,22 @@ impl ModuleResolver {
 
         for entry in entries.flatten() {
             let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-
             let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-            if dir_name.ends_with(".dist-info") {
-                index.distributions.push(Self::index_dist_info(&path));
+            if path.is_dir() {
+                if dir_name.ends_with(".dist-info") {
+                    index.distributions.push(Self::index_dist_info(&path));
+                } else if dir_name.ends_with(".egg-info") {
+                    index.distributions.push(Self::index_egg_info(&path));
+                }
             } else if dir_name.ends_with(".egg-info") {
-                index.distributions.push(Self::index_egg_info(&path));
+                // Legacy file-form egg-info: the file itself is PKG-INFO metadata
+                if let Ok(metadata) = std::fs::read_to_string(&path) {
+                    let mut distribution = DistributionInfo::default();
+                    Self::index_distribution_metadata(&metadata, &mut distribution);
+                    index.distributions.push(distribution);
+                }
             }
         }
 
@@ -5189,12 +5194,14 @@ print(unrelated('not', 'a', 'query'))
     }
 
     /// Legacy `.egg-info` installs are indexed too: their `PKG-INFO` `Requires-Python`
-    /// is enforced like a `.dist-info` `METADATA` one.
+    /// is enforced like a `.dist-info` `METADATA` one, including the file-form layout
+    /// where the `.egg-info` entry is itself the metadata file.
     #[test]
     fn test_bundle_third_party_enforces_requires_python_from_egg_info() -> Result<()> {
         let temp_dir = TempDir::new()?;
         let virtualenv = temp_dir.path().join("venv");
         let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        // Directory-form egg-info
         create_test_file(
             &site_packages.join(format!(
                 "legacy_pkg/{}",
@@ -5210,16 +5217,31 @@ print(unrelated('not', 'a', 'query'))
             &site_packages.join("legacy_pkg.egg-info/top_level.txt"),
             "legacy_pkg\n",
         )?;
+        // File-form egg-info: the entry is a regular file containing the metadata
+        create_test_file(
+            &site_packages.join(format!(
+                "file_form_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("file_form_pkg-1.0.egg-info"),
+            "Metadata-Version: 1.2\nName: file-form-pkg\nVersion: 1.0\nRequires-Python: \
+             >=3.13\nImport-Name: file_form_pkg\n",
+        )?;
         let resolver = bundle_third_party_resolver(&virtualenv)?;
 
-        let classification = resolver.classify_import("legacy_pkg");
-        assert_eq!(classification.origin, ImportOrigin::ThirdParty);
-        assert_eq!(
-            classification.bundle,
-            BundleDisposition::External,
-            "egg-info Requires-Python must be enforced like dist-info metadata"
-        );
-        assert!(resolver.resolve_module_path("legacy_pkg")?.is_none());
+        for package in ["legacy_pkg", "file_form_pkg"] {
+            let classification = resolver.classify_import(package);
+            assert_eq!(classification.origin, ImportOrigin::ThirdParty);
+            assert_eq!(
+                classification.bundle,
+                BundleDisposition::External,
+                "egg-info Requires-Python must be enforced like dist-info metadata: {package}"
+            );
+            assert!(resolver.resolve_module_path(package)?.is_none());
+        }
 
         Ok(())
     }
