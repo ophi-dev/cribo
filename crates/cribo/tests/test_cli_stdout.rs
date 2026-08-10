@@ -593,6 +593,42 @@ fn test_bundle_third_party_detects_virtualenv_beside_entry() {
     );
 }
 
+/// End-to-end: with no `VIRTUAL_ENV`/`CONDA_PREFIX` set and no virtualenv beside the
+/// working directory or entry file, `--python <env>/bin/python` designates the
+/// environment whose pure-Python dependencies are inlined.
+#[test]
+fn test_bundle_third_party_uses_configured_interpreter_environment() {
+    let sandbox =
+        create_bundle_third_party_sandbox("import pure_helper\nprint(pure_helper.GREETING)\n");
+    write_test_distribution(
+        &sandbox.site_packages,
+        "pure_helper",
+        "pure-helper",
+        "GREETING = 'hello from pure_helper'\n",
+    );
+    let interpreter = sandbox.environment.join(if cfg!(windows) {
+        "Scripts/python.exe"
+    } else {
+        "bin/python"
+    });
+    fs::write(&interpreter, "").expect("Failed to create placeholder interpreter");
+
+    run_bundle_third_party_cribo(&sandbox, |command| {
+        // No VIRTUAL_ENV and a CWD without any virtualenv: only --python names the
+        // environment (the interpreter is never spawned since nothing stays external)
+        command
+            .arg("--python")
+            .arg(&interpreter)
+            .current_dir(&sandbox.output_dir);
+    });
+
+    let bundle = fs::read_to_string(&sandbox.output_path).expect("Failed to read bundle");
+    assert!(
+        bundle.contains("hello from pure_helper"),
+        "dependency from the configured interpreter's environment must be inlined"
+    );
+}
+
 /// An invalid `requirements.module-map` entry matching a bundled import is a hard
 /// configuration error: bundled imports skip the requirement resolver's own
 /// validation, so the orchestrator must surface the problem itself.

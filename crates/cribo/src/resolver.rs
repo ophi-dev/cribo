@@ -4071,46 +4071,28 @@ Import-Name: injected_module
     }
 
     /// An explicitly configured interpreter (`requirements.python` / `--python`)
-    /// designates the environment for third-party bundling when no environment
-    /// variables are set, matching the environment requirement resolution inspects.
+    /// designates an environment for third-party bundling when no environment
+    /// variables are set. Site-packages discovery is covered end-to-end in
+    /// `test_bundle_third_party_uses_configured_interpreter_environment` (CLI test,
+    /// hermetic against ambient VIRTUAL_ENV); this covers the path derivation.
     #[test]
-    fn test_bundle_third_party_uses_configured_interpreter_environment() -> Result<()> {
-        let temp_dir = TempDir::new()?;
-        let virtualenv = temp_dir.path().join("venv");
-        let site_packages = create_bundle_third_party_virtualenv(&virtualenv)?;
-        create_test_file(&virtualenv.join("bin/python"), "")?;
-
-        let config = Config {
-            bundle_third_party: Some(true),
-            requirements: crate::config::RequirementsConfig {
-                python: Some(virtualenv.join("bin/python")),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        // No virtualenv override: the environment comes from the interpreter path
-        let resolver = ModuleResolver::new_with_overrides(config, Some(""), None)?;
-
-        let classification = resolver.classify_import("pure_package");
-        assert_eq!(classification.origin, ImportOrigin::ThirdParty);
+    fn test_environment_root_of_interpreter() {
         assert_eq!(
-            classification.bundle,
-            BundleDisposition::Include,
-            "packages from the configured interpreter's environment must be bundleable"
+            ModuleResolver::environment_root_of_interpreter(Path::new("/env/bin/python")),
+            Some(PathBuf::from("/env"))
         );
         assert_eq!(
-            resolver.resolve_module_path("pure_package")?,
-            Some(
-                site_packages
-                    .join(format!(
-                        "pure_package/{}",
-                        crate::python::constants::INIT_FILE
-                    ))
-                    .canonicalize()?
-            )
+            ModuleResolver::environment_root_of_interpreter(Path::new("C:/env/Scripts/python.exe")),
+            Some(PathBuf::from("C:/env"))
         );
-
-        Ok(())
+        assert_eq!(
+            ModuleResolver::environment_root_of_interpreter(Path::new("/usr/local/bin/python3")),
+            Some(PathBuf::from("/usr/local"))
+        );
+        assert_eq!(
+            ModuleResolver::environment_root_of_interpreter(Path::new("python3")),
+            None
+        );
     }
 
     /// Distribution-backed packages supplied through PYTHONPATH are subject to the
