@@ -332,6 +332,7 @@ impl ExpressionRewriter {
                 if DynamicHandler::is_importlib_import_module_call(
                     call_expr,
                     &transformer.state.import_aliases,
+                    &transformer.state.shadowed_bindings,
                 ) {
                     // Extract the state values we need to avoid borrow checker conflicts
                     let mut created_namespace_objects =

@@ -10,10 +10,15 @@ use crate::{
 pub(crate) struct DynamicHandler;
 
 impl DynamicHandler {
-    /// Check if this is an `importlib.import_module()` call
+    /// Check if this is an `importlib.import_module()` call.
+    ///
+    /// A callee whose base name is rebound by a local binding (function parameter,
+    /// assignment, loop variable) is not recognized: the call dispatches to that
+    /// binding's own `import_module` at runtime, not to `importlib`.
     pub(in crate::code_generator::import_transformer) fn is_importlib_import_module_call(
         call: &ExprCall,
         import_aliases: &FxIndexMap<String, String>,
+        shadowed_bindings: &FxIndexSet<String>,
     ) -> bool {
         match &call.func.as_ref() {
             // Direct call: importlib.import_module()
@@ -21,6 +26,9 @@ impl DynamicHandler {
                 match &attr.value.as_ref() {
                     Expr::Name(name) => {
                         let name_str = name.id.as_str();
+                        if shadowed_bindings.contains(name_str) {
+                            return false;
+                        }
                         // Check if it's 'importlib' directly or an alias that maps to 'importlib'
                         name_str == "importlib"
                             || import_aliases.get(name_str) == Some(&"importlib".to_owned())
@@ -30,9 +38,13 @@ impl DynamicHandler {
             }
             // Function call: im() where im is import_module
             Expr::Name(name) => {
+                let name_str = name.id.as_str();
+                if shadowed_bindings.contains(name_str) {
+                    return false;
+                }
                 // Check if this name is an alias for importlib.import_module
                 import_aliases
-                    .get(name.id.as_str())
+                    .get(name_str)
                     .is_some_and(|module| module == "importlib.import_module")
             }
             _ => false,

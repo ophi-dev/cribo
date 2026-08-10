@@ -28,6 +28,11 @@ pub(super) struct TransformerState<'a> {
     pub(super) is_wrapper_init: bool,
     /// Track local variable assignments to avoid treating them as module aliases
     pub(super) local_variables: FxIndexSet<String>,
+    /// Track names rebound by non-import local bindings (function parameters,
+    /// assignments, loop/with/except/match bindings). Unlike `local_variables`, this
+    /// never contains import aliases, so it can veto importlib-callee recognition
+    /// without disabling aliased imports.
+    pub(super) shadowed_bindings: FxIndexSet<String>,
     /// Track variables that were assigned from `importlib.import_module()` of inlined modules
     /// Maps variable name to the inlined module name
     pub(super) importlib_inlined_modules: FxIndexMap<String, String>,
@@ -65,6 +70,7 @@ impl<'a> TransformerState<'a> {
             import_aliases: FxIndexMap::default(),
             is_wrapper_init: params.is_wrapper_init,
             local_variables: FxIndexSet::default(),
+            shadowed_bindings: FxIndexSet::default(),
             importlib_inlined_modules: FxIndexMap::default(),
             created_namespace_objects: false,
             wrapper_module_imports: FxIndexMap::default(),

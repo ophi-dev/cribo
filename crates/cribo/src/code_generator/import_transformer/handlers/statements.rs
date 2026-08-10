@@ -89,6 +89,7 @@ impl StatementsHandler {
             }
             if let Some(name) = &eh.name {
                 t.state.local_variables.insert(name.as_str().to_owned());
+                t.state.shadowed_bindings.insert(name.as_str().to_owned());
                 log::debug!("Tracking except alias as local: {}", name.as_str());
             }
             t.transform_statements(&mut eh.body);
@@ -118,6 +119,7 @@ impl StatementsHandler {
                 );
                 for n in with_names {
                     t.state.local_variables.insert(n.clone());
+                    t.state.shadowed_bindings.insert(n.clone());
                     log::debug!("Tracking with-as variable as local: {n}");
                 }
                 t.transform_expr(vars);
@@ -139,6 +141,7 @@ impl StatementsHandler {
             );
             for n in loop_names {
                 t.state.local_variables.insert(n.clone());
+                t.state.shadowed_bindings.insert(n.clone());
                 log::debug!("Tracking for loop variable as local: {n}");
             }
         }
@@ -200,6 +203,7 @@ impl StatementsHandler {
         for case in &s.cases {
             crate::visitors::patterns::visit_binding_names(&case.pattern, &mut |name| {
                 t.state.local_variables.insert(name.to_owned());
+                t.state.shadowed_bindings.insert(name.to_owned());
                 log::debug!("Tracking match case variable as local: {name}");
             });
         }
@@ -292,6 +296,7 @@ impl StatementsHandler {
 
         // Save current local variables and create a new scope for the function
         let saved_locals = t.state.local_variables.clone();
+        let saved_shadowed_bindings = t.state.shadowed_bindings.clone();
 
         // Save the wrapper module imports - these should be scoped to each function
         // to prevent imports from one function affecting another
@@ -306,6 +311,9 @@ impl StatementsHandler {
             t.state
                 .local_variables
                 .insert(param.parameter.name.as_str().to_owned());
+            t.state
+                .shadowed_bindings
+                .insert(param.parameter.name.as_str().to_owned());
             log::debug!(
                 "Tracking function parameter as local (posonly): {}",
                 param.parameter.name.as_str()
@@ -316,6 +324,9 @@ impl StatementsHandler {
         for param in &s.parameters.args {
             t.state
                 .local_variables
+                .insert(param.parameter.name.as_str().to_owned());
+            t.state
+                .shadowed_bindings
                 .insert(param.parameter.name.as_str().to_owned());
             log::debug!(
                 "Tracking function parameter as local: {}",
@@ -328,6 +339,9 @@ impl StatementsHandler {
             t.state
                 .local_variables
                 .insert(vararg.name.as_str().to_owned());
+            t.state
+                .shadowed_bindings
+                .insert(vararg.name.as_str().to_owned());
             log::debug!(
                 "Tracking function parameter as local (vararg): {}",
                 vararg.name.as_str()
@@ -339,6 +353,9 @@ impl StatementsHandler {
             t.state
                 .local_variables
                 .insert(param.parameter.name.as_str().to_owned());
+            t.state
+                .shadowed_bindings
+                .insert(param.parameter.name.as_str().to_owned());
             log::debug!(
                 "Tracking function parameter as local (kwonly): {}",
                 param.parameter.name.as_str()
@@ -349,6 +366,9 @@ impl StatementsHandler {
         if let Some(kwarg) = &s.parameters.kwarg {
             t.state
                 .local_variables
+                .insert(kwarg.name.as_str().to_owned());
+            t.state
+                .shadowed_bindings
                 .insert(kwarg.name.as_str().to_owned());
             log::debug!(
                 "Tracking function parameter as local (kwarg): {}",
@@ -395,6 +415,7 @@ impl StatementsHandler {
 
         // Restore the previous scope's local variables
         t.state.local_variables = saved_locals;
+        t.state.shadowed_bindings = saved_shadowed_bindings;
     }
 
     /// Handle assignment statement. Returns whether the caller should advance `i` normally
@@ -425,6 +446,7 @@ impl StatementsHandler {
             && crate::code_generator::import_transformer::handlers::dynamic::DynamicHandler::is_importlib_import_module_call(
                 call,
                 &t.state.import_aliases,
+                &t.state.shadowed_bindings,
             )
         {
             // Get assigned names to pass to the handler
@@ -469,6 +491,14 @@ impl StatementsHandler {
 
         // Transform the RHS
         t.transform_expr(&mut s.value);
+
+        // Names rebound by this assignment shadow any same-named import alias for
+        // subsequent statements (the RHS above still saw the pre-assignment binding)
+        if let Some(targets) = &t.state.current_assignment_targets {
+            for name in targets {
+                t.state.shadowed_bindings.insert(name.clone());
+            }
+        }
 
         // Restore previous context
         t.state.current_assignment_targets = saved_targets;

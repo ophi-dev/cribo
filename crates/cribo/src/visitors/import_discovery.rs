@@ -118,6 +118,10 @@ pub(crate) struct ImportDiscoveryVisitor<'a> {
     scope_stack: Vec<ScopeElement>,
     /// Stack of scope-local maps from imported names to their module sources
     imported_names_stack: Vec<FxIndexMap<String, String>>,
+    /// Stack of scope-local names rebound by non-import bindings (function
+    /// parameters, assignments, loop/with targets); parallel to
+    /// `imported_names_stack` so shadowing can be resolved per scope
+    shadowed_names_stack: Vec<FxIndexSet<String>>,
     /// Track usage of each imported name
     name_usage: FxIndexMap<String, Vec<ImportUsage>>,
     /// Optional reference to semantic bundler for enhanced analysis
@@ -146,6 +150,7 @@ impl<'a> ImportDiscoveryVisitor<'a> {
             imports: Vec::new(),
             scope_stack: Vec::new(),
             imported_names_stack: vec![FxIndexMap::default()],
+            shadowed_names_stack: vec![FxIndexSet::default()],
             name_usage: FxIndexMap::default(),
             _semantic_bundler: None,
             _module_id: None,
@@ -164,6 +169,7 @@ impl<'a> ImportDiscoveryVisitor<'a> {
             imports: Vec::new(),
             scope_stack: Vec::new(),
             imported_names_stack: vec![FxIndexMap::default()],
+            shadowed_names_stack: vec![FxIndexSet::default()],
             name_usage: FxIndexMap::default(),
             _semantic_bundler: Some(conflict_resolver),
             _module_id: Some(module_id),
@@ -188,6 +194,55 @@ impl<'a> ImportDiscoveryVisitor<'a> {
             }
         }
         None
+    }
+
+    #[inline]
+    fn insert_shadowed_name(&mut self, name: String) {
+        if let Some(top) = self.shadowed_names_stack.last_mut() {
+            top.insert(name);
+        }
+    }
+
+    /// Return whether a non-import binding (function parameter, assignment, loop or
+    /// with-statement target) rebinds a name before any import of it is reached when
+    /// walking scopes innermost-first: such a name must not be treated as `importlib`
+    /// or one of its aliases.
+    fn is_name_shadowed(&self, name: &str) -> bool {
+        for (shadowed, imported) in self
+            .shadowed_names_stack
+            .iter()
+            .rev()
+            .zip(self.imported_names_stack.iter().rev())
+        {
+            if shadowed.contains(name) {
+                return true;
+            }
+            if imported.contains_key(name) {
+                return false;
+            }
+        }
+        false
+    }
+
+    /// Collect plain names bound by an assignment-like target expression (a name, or
+    /// tuple/list destructuring with optional starred elements). Attribute and
+    /// subscript targets do not rebind a plain name.
+    fn collect_binding_names(target: &Expr, record: &mut impl FnMut(String)) {
+        match target {
+            Expr::Name(name) => record(name.id.as_str().to_owned()),
+            Expr::Tuple(tuple) => {
+                for element in &tuple.elts {
+                    Self::collect_binding_names(element, record);
+                }
+            }
+            Expr::List(list) => {
+                for element in &list.elts {
+                    Self::collect_binding_names(element, record);
+                }
+            }
+            Expr::Starred(starred) => Self::collect_binding_names(&starred.value, record),
+            _ => {}
+        }
     }
 
     /// Get all discovered imports
@@ -368,7 +423,11 @@ impl<'a> ImportDiscoveryVisitor<'a> {
         ) || module_name.starts_with('_')
     }
 
-    /// Check if this is a static `importlib.import_module` call
+    /// Check if this is a static `importlib.import_module` call.
+    ///
+    /// A callee whose base name is rebound by a local binding (function parameter,
+    /// assignment, loop variable) is not recognized: the call dispatches to that
+    /// binding's own `import_module` at runtime, not to `importlib`.
     fn is_static_importlib_call(&self, call: &ExprCall) -> bool {
         match &*call.func {
             // importlib.import_module(...) or il.import_module(...) where il is an alias
@@ -377,6 +436,9 @@ impl<'a> ImportDiscoveryVisitor<'a> {
                     && let Expr::Name(ExprName { id, .. }) = &**value
                 {
                     let name = id.as_str();
+                    if self.is_name_shadowed(name) {
+                        return false;
+                    }
                     // Check if it's importlib directly or an alias to importlib
                     return name == "importlib"
                         || self
@@ -387,6 +449,9 @@ impl<'a> ImportDiscoveryVisitor<'a> {
             // import_module(...) or im(...) where im is an alias
             Expr::Name(ExprName { id, .. }) => {
                 let name = id.as_str();
+                if self.is_name_shadowed(name) {
+                    return false;
+                }
                 // Direct check for import_module
                 if name == "import_module" && self.has_importlib {
                     return true;
@@ -528,21 +593,66 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
                 self.scope_stack
                     .push(ScopeElement::Function(func.name.to_string()));
                 self.imported_names_stack.push(FxIndexMap::default());
+                // Parameters rebind their names for the function body, shadowing any
+                // same-named import from an enclosing scope
+                let mut parameter_names = FxIndexSet::default();
+                for param in func
+                    .parameters
+                    .posonlyargs
+                    .iter()
+                    .chain(&func.parameters.args)
+                    .chain(&func.parameters.kwonlyargs)
+                {
+                    parameter_names.insert(param.parameter.name.as_str().to_owned());
+                }
+                if let Some(vararg) = &func.parameters.vararg {
+                    parameter_names.insert(vararg.name.as_str().to_owned());
+                }
+                if let Some(kwarg) = &func.parameters.kwarg {
+                    parameter_names.insert(kwarg.name.as_str().to_owned());
+                }
+                self.shadowed_names_stack.push(parameter_names);
             }
             AnyNodeRef::StmtClassDef(class) => {
                 self.scope_stack
                     .push(ScopeElement::Class(class.name.to_string()));
                 self.imported_names_stack.push(FxIndexMap::default());
+                self.shadowed_names_stack.push(FxIndexSet::default());
+            }
+            // Non-import bindings rebind names in the current scope
+            AnyNodeRef::StmtAssign(assign) => {
+                for target in &assign.targets {
+                    Self::collect_binding_names(target, &mut |name| {
+                        self.insert_shadowed_name(name);
+                    });
+                }
+            }
+            AnyNodeRef::StmtAnnAssign(assign) => {
+                if assign.value.is_some() {
+                    Self::collect_binding_names(&assign.target, &mut |name| {
+                        self.insert_shadowed_name(name);
+                    });
+                }
+            }
+            AnyNodeRef::StmtFor(for_stmt) => {
+                self.scope_stack.push(ScopeElement::For);
+                Self::collect_binding_names(&for_stmt.target, &mut |name| {
+                    self.insert_shadowed_name(name);
+                });
+            }
+            AnyNodeRef::StmtWith(with_stmt) => {
+                self.scope_stack.push(ScopeElement::With);
+                for item in &with_stmt.items {
+                    if let Some(optional_vars) = &item.optional_vars {
+                        Self::collect_binding_names(optional_vars, &mut |name| {
+                            self.insert_shadowed_name(name);
+                        });
+                    }
+                }
             }
             // If handling moved to visit_stmt to distinguish body vs orelse TYPE_CHECKING
             AnyNodeRef::StmtWhile(_) => {
                 self.scope_stack.push(ScopeElement::While);
-            }
-            AnyNodeRef::StmtFor(_) => {
-                self.scope_stack.push(ScopeElement::For);
-            }
-            AnyNodeRef::StmtWith(_) => {
-                self.scope_stack.push(ScopeElement::With);
             }
             AnyNodeRef::StmtTry(_) => {
                 self.scope_stack.push(ScopeElement::Try);
@@ -558,10 +668,12 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
             AnyNodeRef::StmtFunctionDef(_) => {
                 self.scope_stack.pop();
                 self.imported_names_stack.pop();
+                self.shadowed_names_stack.pop();
             }
             AnyNodeRef::StmtClassDef(_) => {
                 self.scope_stack.pop();
                 self.imported_names_stack.pop();
+                self.shadowed_names_stack.pop();
             }
             // If handling moved to visit_stmt
             AnyNodeRef::StmtWhile(_)
