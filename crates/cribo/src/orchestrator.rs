@@ -1422,12 +1422,30 @@ impl BundleOrchestrator {
                 .resolver
                 .resolve_importlib_static_with_context(import, package_context.map(String::as_str))
             {
-                debug!(
-                    "Resolved ImportlibStatic '{import}' to module '{resolved_name}' at path: {}",
-                    import_path.display()
-                );
-                // Use the resolved name instead of the original import
-                self.add_to_discovery_queue_if_new(&resolved_name, import_path, params)?;
+                // The resolved target is subject to the same bundling policy as any
+                // other import: external classifications (known_third_party, native
+                // artifacts, metadata usage) must not be bypassed by literal calls
+                let classification = params.resolver.classify_import(&resolved_name);
+                if classification.should_bundle() {
+                    debug!(
+                        "Resolved ImportlibStatic '{import}' to module '{resolved_name}' at \
+                         path: {}",
+                        import_path.display()
+                    );
+                    // Use the resolved name instead of the original import
+                    self.add_to_discovery_queue_if_new(&resolved_name, import_path, params)?;
+                } else {
+                    debug!(
+                        "ImportlibStatic '{import}' resolved to '{resolved_name}' but classified \
+                         as external (preserving)"
+                    );
+                    if !resolved_name.starts_with('.') {
+                        self.external_importlib_targets
+                            .lock()
+                            .expect("external importlib targets lock poisoned")
+                            .insert(resolved_name);
+                    }
+                }
             } else {
                 // Try normal resolution in case it's a valid Python identifier
                 let classification = params.resolver.classify_import(import);

@@ -631,6 +631,17 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
                             self.found = true;
                             return;
                         }
+                        // Relative literal names are only discoverable when the package
+                        // context is a literal as well; `__package__` and other
+                        // expressions cannot be resolved statically
+                        Some(Expr::StringLiteral(literal))
+                            if literal.value.to_str().starts_with('.')
+                                && crate::python::importlib_call::literal_package_context(call)
+                                    .is_none() =>
+                        {
+                            self.found = true;
+                            return;
+                        }
                         Some(Expr::StringLiteral(_)) => {}
                         // Non-literal or missing names cannot be discovered statically
                         _ => {
@@ -2158,10 +2169,12 @@ impl ModuleResolver {
             }
         }
 
-        // Deduplicate by distribution name: `pip install -r` rejects files that name
-        // the same distribution twice ("Double requirement given")
+        // Deduplicate by distribution name and marker branch: same-branch duplicates
+        // merge their constraints, while differently-marked declarations stay on
+        // separate lines so one platform's constraints never leak into another's
+        // (pip evaluates each line's marker independently)
         let bundled_names: IndexSet<String> = bundled.keys().cloned().collect();
-        let mut merged: IndexMap<String, pep508_rs::Requirement<pep508_rs::VerbatimUrl>> =
+        let mut merged: IndexMap<String, Vec<pep508_rs::Requirement<pep508_rs::VerbatimUrl>>> =
             IndexMap::new();
         for record in bundled.values() {
             for entry in &record.requires_dist {
@@ -2189,34 +2202,33 @@ impl ModuleResolver {
                 if bundled_names.contains(&name) {
                     continue;
                 }
-                match merged.entry(name) {
-                    indexmap::map::Entry::Vacant(vacant) => {
-                        vacant.insert(parsed);
-                    }
-                    indexmap::map::Entry::Occupied(mut occupied) => {
-                        Self::merge_requirement_constraints(occupied.get_mut(), parsed);
-                    }
+                let branches = merged.entry(name).or_default();
+                if let Some(existing) = branches
+                    .iter_mut()
+                    .find(|existing| existing.marker == parsed.marker)
+                {
+                    Self::merge_requirement_constraints(existing, parsed);
+                } else {
+                    branches.push(parsed);
                 }
             }
         }
 
         let mut requirements: Vec<String> = merged
             .into_values()
+            .flatten()
             .map(|requirement| requirement.to_string())
             .collect();
         requirements.sort();
         requirements
     }
 
-    /// Merge a duplicate requirement declaration into an existing one: extras are
-    /// unioned, environment markers are OR-combined (each declaration's condition
-    /// independently requires the dependency), and version specifiers are combined
+    /// Merge a duplicate requirement declaration carrying the same environment marker
+    /// into an existing one: extras are unioned and version specifiers are combined
     /// (e.g. `dep<2` + `dep>=1` becomes `dep>=1,<2`).
     ///
     /// URL-based requirements cannot have their constraints merged soundly; the
-    /// existing constraint is kept in that case. Combining specifiers across
-    /// differently-marked declarations can over-constrain one branch, which is the
-    /// safe direction for an installer.
+    /// existing constraint is kept in that case.
     fn merge_requirement_constraints(
         existing: &mut pep508_rs::Requirement<pep508_rs::VerbatimUrl>,
         incoming: pep508_rs::Requirement<pep508_rs::VerbatimUrl>,
@@ -2227,7 +2239,6 @@ impl ModuleResolver {
                 existing.extras.push(extra.clone());
             }
         }
-        existing.marker.or(incoming.marker);
         match (&existing.version_or_url, incoming.version_or_url) {
             (None, incoming_version) => {
                 existing.version_or_url = incoming_version;
@@ -4574,6 +4585,8 @@ Import-Name: folded_module
             "from builtins import __import__ as dynamic_import\ndynamic_import('pkg')\n",
             "import importlib\nmeta = importlib.import_module('importlib.metadata')\n",
             "import importlib\nres = importlib.import_module(name='pkg_resources')\n",
+            "import importlib\nimportlib.import_module('.backend', __package__)\n",
+            "import importlib\nimportlib.import_module(name='.backend', package=__package__)\n",
             "def load_backend(name):\n    return load(name)\n\nimport importlib\nload = \
              importlib.import_module\n",
             "import importlib\nimportlib.import_module(name=module_variable)\n",
@@ -4696,16 +4709,17 @@ Import-Name: folded_module
         Ok(())
     }
 
-    /// Duplicate declarations under different environment markers OR their conditions
-    /// so neither platform loses the dependency.
+    /// Duplicate declarations under different environment markers stay on separate
+    /// lines (pip evaluates each line's marker), so branch-specific constraints never
+    /// leak across platforms.
     #[test]
     fn test_bundled_distribution_requirements_merge_marker_branches() -> Result<()> {
         let temp_dir = TempDir::new()?;
         let virtualenv = temp_dir.path().join("venv");
         let site_packages = virtualenv.join("lib/python3.12/site-packages");
-        for (package, marker) in [
-            ("win_pkg", "sys_platform == \"win32\""),
-            ("linux_pkg", "sys_platform == \"linux\""),
+        for (package, requirement) in [
+            ("win_pkg", "platform-dep<2; sys_platform == \"win32\""),
+            ("linux_pkg", "platform-dep>=2; sys_platform == \"linux\""),
         ] {
             create_test_file(
                 &site_packages.join(format!("{package}/{}", crate::python::constants::INIT_FILE)),
@@ -4715,7 +4729,7 @@ Import-Name: folded_module
                 &site_packages.join(format!("{package}-1.0.dist-info/METADATA")),
                 &format!(
                     "Metadata-Version: 2.5\nName: {package}\nVersion: 1.0\nImport-Name: \
-                     {package}\nRequires-Dist: platform-dep; {marker}\n"
+                     {package}\nRequires-Dist: {requirement}\n"
                 ),
             )?;
         }
@@ -4727,11 +4741,13 @@ Import-Name: folded_module
         bundled_imports.insert("linux_pkg".to_owned(), Vec::new());
 
         let requirements = resolver.bundled_distribution_requirements(&bundled_imports);
-        assert_eq!(requirements.len(), 1, "one merged entry: {requirements:?}");
-        let entry = &requirements[0];
-        assert!(
-            entry.contains("win32") && entry.contains("linux"),
-            "both marker branches must survive the merge: {entry}"
+        assert_eq!(
+            requirements,
+            vec![
+                "platform-dep<2 ; sys_platform == 'win32'".to_owned(),
+                "platform-dep>=2 ; sys_platform == 'linux'".to_owned(),
+            ],
+            "branch-specific constraints must stay scoped to their own markers"
         );
 
         Ok(())
