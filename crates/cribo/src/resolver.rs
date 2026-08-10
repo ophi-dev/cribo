@@ -775,6 +775,10 @@ pub(crate) fn queried_distribution_names(module: &ruff_python_ast::ModModule) ->
 #[derive(Debug, Default)]
 struct DistributionOwnershipIndex {
     distributions: Vec<DistributionInfo>,
+    /// Whether the metadata directory could not be fully enumerated (permission or
+    /// entry-level iteration errors): ownership answers may then miss distributions,
+    /// so bundling policy must treat packages from this root conservatively.
+    incomplete: bool,
 }
 
 impl DistributionOwnershipIndex {
@@ -1682,6 +1686,18 @@ impl ModuleResolver {
     /// distribution metadata at runtime (`importlib.metadata`, `pkg_resources`), which is
     /// unavailable once the source is inlined into a bundle.
     fn package_must_stay_external(&self, search_root: &Path, module_name: &str) -> bool {
+        // When the root's metadata directory cannot be fully enumerated, the import
+        // may be owned by a distribution whose policy (native artifacts, entry points,
+        // Requires-Python, Requires-Dist) is unknown; keep the package external so
+        // its installation and dependency constraints are preserved
+        if self.distribution_metadata_index_incomplete(search_root) {
+            debug!(
+                "Import '{module_name}' comes from a root whose distribution metadata cannot be \
+                 fully enumerated; keeping it external"
+            );
+            return true;
+        }
+
         // A distribution may install native artifacts outside the import's own package
         // directory (e.g. a pure `frontend` package plus a sibling `_backend.so`);
         // consult its RECORD before scanning the package directory itself
@@ -2153,6 +2169,12 @@ impl ModuleResolver {
         })
     }
 
+    /// Return whether a root's distribution metadata could not be fully enumerated,
+    /// in which case ownership answers may miss distributions entirely.
+    fn distribution_metadata_index_incomplete(&self, site_packages_dir: &Path) -> bool {
+        self.with_distribution_ownership_index(site_packages_dir, |index| index.incomplete)
+    }
+
     /// Return whether any distribution claiming an import declares a `Requires-Python`
     /// specifier that the configured target version does not satisfy.
     fn distribution_requires_incompatible_python(
@@ -2466,11 +2488,24 @@ impl ModuleResolver {
     /// `.dist-info` installs and legacy `.egg-info` installs.
     fn build_distribution_ownership_index(site_packages_dir: &Path) -> DistributionOwnershipIndex {
         let mut index = DistributionOwnershipIndex::default();
-        let Ok(entries) = std::fs::read_dir(site_packages_dir) else {
-            return index;
+        let entries = match std::fs::read_dir(site_packages_dir) {
+            Ok(entries) => entries,
+            Err(error) => {
+                // A missing root simply has no metadata; any other failure (e.g. a
+                // permission error) means metadata may exist but cannot be enumerated
+                index.incomplete = error.kind() != std::io::ErrorKind::NotFound;
+                return index;
+            }
         };
 
-        for entry in entries.flatten() {
+        for entry in entries {
+            // Entry-level iteration errors (network filesystems, concurrent removals)
+            // can hide a metadata directory, so the index must not be trusted to
+            // prove the absence of ownership or policy metadata
+            let Ok(entry) = entry else {
+                index.incomplete = true;
+                continue;
+            };
             let path = entry.path();
             let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) else {
                 continue;
@@ -4535,6 +4570,47 @@ Import-Name: folded_module
             classification.bundle,
             BundleDisposition::External,
             "packages that cannot be fully inspected must stay external"
+        );
+
+        Ok(())
+    }
+
+    /// When the root's distribution metadata cannot be enumerated (unreadable
+    /// site-packages listing), ownership and policy metadata may be missing entirely,
+    /// so packages from that root conservatively stay external.
+    #[cfg(unix)]
+    #[test]
+    fn test_bundle_third_party_keeps_packages_external_when_metadata_unenumerable() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!(
+                "opaque_meta_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("opaque_meta_pkg-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: opaque-meta-pkg\nVersion: 1.0\nImport-Name: \
+             opaque_meta_pkg\nRequires-Dist: hidden-dep>=1\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        // Traverse-only permissions: path probes still resolve the module, but the
+        // metadata listing cannot be enumerated
+        fs::set_permissions(&site_packages, fs::Permissions::from_mode(0o311))?;
+        let classification = resolver.classify_import("opaque_meta_pkg");
+        // Restore permissions before asserting so the tempdir can be cleaned up
+        fs::set_permissions(&site_packages, fs::Permissions::from_mode(0o755))?;
+        assert_eq!(classification.origin, ImportOrigin::ThirdParty);
+        assert_eq!(
+            classification.bundle,
+            BundleDisposition::External,
+            "packages from a root whose metadata cannot be enumerated must stay external"
         );
 
         Ok(())
