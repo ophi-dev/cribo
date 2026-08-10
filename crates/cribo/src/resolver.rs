@@ -637,6 +637,13 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
                     return;
                 }
                 Some(DynamicImportKind::ImportModule) => {
+                    // Arguments that cannot be safely discarded (e.g. a side-effectful
+                    // package expression) leave the call unrewritten, so the target
+                    // must stay installed for the runtime import to succeed
+                    if !crate::python::importlib_call::arguments_safely_discardable(call) {
+                        self.found = true;
+                        return;
+                    }
                     match crate::python::importlib_call::module_name_argument(call) {
                         // Literal imports of installed-package APIs are equivalent to
                         // their ordinary import statements and block bundling too
@@ -2273,6 +2280,33 @@ impl ModuleResolver {
             self.external_packages_cache.borrow_mut().clear();
             self.module_cache.borrow_mut().clear();
         }
+    }
+
+    /// Return the declared names of installed distributions whose metadata bundled
+    /// code queries at runtime (e.g. `importlib.metadata.version("provider")`).
+    ///
+    /// The query itself requires the installed dist-info, so these distributions must
+    /// appear in requirements even when no module of theirs is ever imported.
+    /// Recorded names that match no installed distribution are skipped: they raise
+    /// `PackageNotFoundError` in the source environment as well.
+    pub(crate) fn queried_installed_distribution_names(&self) -> Vec<String> {
+        let queried = self.queried_distributions.borrow();
+        if queried.is_empty() {
+            return Vec::new();
+        }
+        let mut names: IndexSet<String> = IndexSet::new();
+        for metadata_dir in self.get_distribution_metadata_search_directories() {
+            self.with_distribution_ownership_index(&metadata_dir, |index| {
+                for distribution in &index.distributions {
+                    if !distribution.name.is_empty()
+                        && queried.contains(&Self::normalize_distribution_name(&distribution.name))
+                    {
+                        names.insert(distribution.name.clone());
+                    }
+                }
+            });
+        }
+        names.into_iter().collect()
     }
 
     /// Return whether the configured target Python version satisfies a PEP 440

@@ -2053,6 +2053,14 @@ impl BundleOrchestrator {
         for entry in requirements {
             record_entry(entry, &mut entries_by_name);
         }
+        // Distributions whose metadata bundled code queries at runtime (e.g.
+        // `importlib.metadata.version("provider")`) need their dist-info installed
+        // even when no module of theirs is imported; the query alone is a dependency
+        if self.config.bundle_third_party() {
+            for name in resolver.queried_installed_distribution_names() {
+                record_entry(name, &mut entries_by_name);
+            }
+        }
         for declared in resolver.bundled_distribution_requirements(&bundled_third_party_imports) {
             record_entry(declared, &mut entries_by_name);
         }
