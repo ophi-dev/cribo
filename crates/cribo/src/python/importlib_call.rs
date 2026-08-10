@@ -7,20 +7,29 @@
 use ruff_python_ast::{Expr, ExprCall, ExprStringLiteral};
 
 /// Return a call argument supplied either at a positional index or through a keyword.
+///
+/// Returns `None` when the argument is bound both positionally and by keyword: such a
+/// call raises `TypeError` at runtime, so it must be preserved verbatim rather than
+/// treated as a static import.
 pub(crate) fn positional_or_keyword_argument<'c>(
     call: &'c ExprCall,
     position: usize,
     keyword_name: &str,
 ) -> Option<&'c Expr> {
-    call.arguments.args.get(position).or_else(|| {
-        call.arguments.keywords.iter().find_map(|keyword| {
-            keyword
-                .arg
-                .as_ref()
-                .is_some_and(|name| name.as_str() == keyword_name)
-                .then_some(&keyword.value)
-        })
-    })
+    let positional = call.arguments.args.get(position);
+    let keyword = call.arguments.keywords.iter().find_map(|keyword| {
+        keyword
+            .arg
+            .as_ref()
+            .is_some_and(|name| name.as_str() == keyword_name)
+            .then_some(&keyword.value)
+    });
+    match (positional, keyword) {
+        // Bound twice: an invalid call whose TypeError must survive bundling
+        (Some(_), Some(_)) => None,
+        (Some(argument), None) => Some(argument),
+        (None, keyword_argument) => keyword_argument,
+    }
 }
 
 /// Return the string-literal value of a positional-or-keyword call argument, if any.

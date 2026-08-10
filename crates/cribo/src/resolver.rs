@@ -2081,15 +2081,20 @@ impl ModuleResolver {
     }
 
     /// Return whether the configured target Python version satisfies a PEP 440
-    /// specifier set. Unparsable specifiers conservatively report as unsatisfied.
+    /// specifier set. The minor-only target is checked across its whole patch range
+    /// (both `3.X.0` and a high patch sentinel), so patch-sensitive bounds like
+    /// `<3.X.1` conservatively report as unsatisfied. Unparsable specifiers also
+    /// report as unsatisfied.
     fn target_python_satisfies(&self, specifiers: &str) -> bool {
         use std::str::FromStr;
         let Ok(specifiers) = pep508_rs::pep440_rs::VersionSpecifiers::from_str(specifiers) else {
             warn!("Ignoring unparsable Requires-Python specifier: {specifiers}");
             return false;
         };
-        let target = pep508_rs::pep440_rs::Version::new([3, u64::from(self.python_version)]);
-        specifiers.contains(&target)
+        let minor = u64::from(self.python_version);
+        let lowest_patch = pep508_rs::pep440_rs::Version::new([3, minor, 0]);
+        let highest_patch = pep508_rs::pep440_rs::Version::new([3, minor, u64::from(u16::MAX)]);
+        specifiers.contains(&lowest_patch) && specifiers.contains(&highest_patch)
     }
 
     /// Collect the PEP 508 `Requires-Dist` entries of the distributions owning the
@@ -4595,7 +4600,11 @@ Import-Name: folded_module
         let temp_dir = TempDir::new()?;
         let virtualenv = temp_dir.path().join("venv");
         let site_packages = virtualenv.join("lib/python3.12/site-packages");
-        for (package, requires_python) in [("strict_pkg", ">=3.13"), ("relaxed_pkg", ">=3.8")] {
+        for (package, requires_python) in [
+            ("strict_pkg", ">=3.13"),
+            ("patch_pkg", "<3.10.1"),
+            ("relaxed_pkg", ">=3.8"),
+        ] {
             create_test_file(
                 &site_packages.join(format!("{package}/{}", crate::python::constants::INIT_FILE)),
                 "VALUE = 1\n",
@@ -4618,6 +4627,14 @@ Import-Name: folded_module
             "Requires-Python >=3.13 must keep the distribution external for a py310 target"
         );
         assert!(resolver.resolve_module_path("strict_pkg")?.is_none());
+
+        // Patch-sensitive bounds cannot be verified against a minor-only target
+        let patch_sensitive = resolver.classify_import("patch_pkg");
+        assert_eq!(
+            patch_sensitive.bundle,
+            BundleDisposition::External,
+            "Requires-Python <3.10.1 must conservatively stay external for a py310 target"
+        );
 
         let relaxed = resolver.classify_import("relaxed_pkg");
         assert_eq!(
@@ -4681,6 +4698,7 @@ Import-Name: folded_module
             "import builtins\nload = builtins.__import__\nload(module_variable)\n",
             "import importlib\nmeta = importlib.import_module('importlib.metadata')\n",
             "import importlib\nres = importlib.import_module(name='pkg_resources')\n",
+            "import importlib\nimportlib.import_module('pkg', name='other')\n",
             "import importlib\nimportlib.import_module('.backend', __package__)\n",
             "import importlib\nimportlib.import_module(name='.backend', package=__package__)\n",
             "def load_backend(name):\n    return load(name)\n\nimport importlib\nload = \
