@@ -105,6 +105,10 @@ pub struct BundleOrchestrator {
     conflict_resolver: SymbolConflictResolver,
     /// Cache of processed modules to ensure we only parse and transform once
     module_cache: std::sync::Mutex<FxIndexMap<PathBuf, ProcessedModule>>,
+    /// Static `importlib.import_module` targets that stayed external during discovery;
+    /// they never enter the module graph as imports, but their distributions must
+    /// still reach requirements generation
+    external_importlib_targets: std::sync::Mutex<crate::types::FxIndexSet<String>>,
 }
 
 impl BundleOrchestrator {
@@ -114,6 +118,7 @@ impl BundleOrchestrator {
             config,
             conflict_resolver: SymbolConflictResolver::new(),
             module_cache: std::sync::Mutex::new(FxIndexMap::default()),
+            external_importlib_targets: std::sync::Mutex::new(crate::types::FxIndexSet::default()),
         }
     }
 
@@ -1442,6 +1447,14 @@ impl BundleOrchestrator {
                     }
                 } else {
                     debug!("ImportlibStatic '{import}' classified as external (preserving)");
+                    // The preserved runtime call never enters the module graph as an
+                    // import item; record it so requirements generation still sees it
+                    if !import.starts_with('.') {
+                        self.external_importlib_targets
+                            .lock()
+                            .expect("external importlib targets lock poisoned")
+                            .insert(import.to_owned());
+                    }
                 }
             }
         } else {
@@ -1807,6 +1820,26 @@ impl BundleOrchestrator {
                             .or_insert_with(|| resolver.get_import_search_root(import));
                     }
                 }
+            }
+        }
+
+        // Static importlib targets preserved as runtime calls never appear as graph
+        // import items; include the recorded ones in requirement collection
+        for import in self
+            .external_importlib_targets
+            .lock()
+            .expect("external importlib targets lock poisoned")
+            .iter()
+        {
+            let classification = resolver.classify_import(import);
+            if matches!(
+                classification.origin,
+                ImportOrigin::ThirdParty | ImportOrigin::Unknown
+            ) && !(self.config.bundle_third_party() && classification.should_bundle())
+            {
+                requirement_imports
+                    .entry(import.clone())
+                    .or_insert_with(|| resolver.get_import_search_root(import));
             }
         }
 

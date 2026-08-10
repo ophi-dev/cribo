@@ -1765,6 +1765,17 @@ impl ModuleResolver {
                 site_packages_dirs.insert(self.canonicalize_path(directory));
             }
         }
+        // A configured interpreter without a recognizable <env>/bin layout (a PATH
+        // command, pyenv shim, system Python) is asked for its purelib directly, so
+        // bundling inspects the same environment requirement resolution executes
+        if virtualenv_override.is_none()
+            && self.virtualenv_override.is_none()
+            && site_packages_dirs.is_empty()
+            && let Some(python) = &self.config.requirements.python
+            && let Some(purelib) = Self::interpreter_site_packages(python)
+        {
+            site_packages_dirs.insert(self.canonicalize_path(purelib));
+        }
         let directories: Vec<PathBuf> = site_packages_dirs.into_iter().collect();
 
         if virtualenv_override.is_none()
@@ -1773,6 +1784,27 @@ impl ModuleResolver {
             *cache = Some(directories.clone());
         }
         directories
+    }
+
+    /// Ask an interpreter for its `purelib` (site-packages) path via `sysconfig`.
+    fn interpreter_site_packages(python: &Path) -> Option<PathBuf> {
+        let output = std::process::Command::new(python)
+            .args([
+                "-c",
+                "import sysconfig; print(sysconfig.get_path('purelib'))",
+            ])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let purelib = String::from_utf8(output.stdout).ok()?;
+        let purelib = purelib.trim();
+        if purelib.is_empty() {
+            return None;
+        }
+        let path = PathBuf::from(purelib);
+        path.is_dir().then_some(path)
     }
 
     fn resolve_virtualenv_paths(&self, virtualenv_override: Option<&str>) -> Vec<PathBuf> {
@@ -2176,14 +2208,15 @@ impl ModuleResolver {
         requirements
     }
 
-    /// Merge a duplicate requirement declaration into an existing one by combining
-    /// their version specifiers (e.g. `dep<2` + `dep>=1` becomes `dep>=1,<2`) and
-    /// taking the union of their extras (e.g. `dep[speed]` + `dep[security]`).
+    /// Merge a duplicate requirement declaration into an existing one: extras are
+    /// unioned, environment markers are OR-combined (each declaration's condition
+    /// independently requires the dependency), and version specifiers are combined
+    /// (e.g. `dep<2` + `dep>=1` becomes `dep>=1,<2`).
     ///
-    /// URL-based requirements and marker-conditioned declarations cannot have their
-    /// constraints merged soundly; the existing constraint is kept in those cases,
-    /// but extras are always unioned since each declaration requests them
-    /// unconditionally for the installed distribution.
+    /// URL-based requirements cannot have their constraints merged soundly; the
+    /// existing constraint is kept in that case. Combining specifiers across
+    /// differently-marked declarations can over-constrain one branch, which is the
+    /// safe direction for an installer.
     fn merge_requirement_constraints(
         existing: &mut pep508_rs::Requirement<pep508_rs::VerbatimUrl>,
         incoming: pep508_rs::Requirement<pep508_rs::VerbatimUrl>,
@@ -2194,9 +2227,7 @@ impl ModuleResolver {
                 existing.extras.push(extra.clone());
             }
         }
-        if !existing.marker.is_true() || !incoming.marker.is_true() {
-            return;
-        }
+        existing.marker.or(incoming.marker);
         match (&existing.version_or_url, incoming.version_or_url) {
             (None, incoming_version) => {
                 existing.version_or_url = incoming_version;
@@ -2390,12 +2421,26 @@ impl ModuleResolver {
     /// Add Core Metadata declarations (import names, distribution name, requirement
     /// specifiers) to a distribution's ownership record. Parsing stops at the first
     /// empty line: Core Metadata is RFC 822, and the free-text description that follows
-    /// must not be parsed as headers.
+    /// must not be parsed as headers. Folded headers (continuation lines starting with
+    /// whitespace) are unfolded before parsing.
     fn index_distribution_metadata(metadata: &str, distribution: &mut DistributionInfo) {
+        let mut logical_lines: Vec<String> = Vec::new();
         for line in metadata.lines() {
             if line.is_empty() {
                 break;
             }
+            if line.starts_with([' ', '\t'])
+                && let Some(previous) = logical_lines.last_mut()
+            {
+                // RFC 822 folded header: the continuation belongs to the previous line
+                previous.push(' ');
+                previous.push_str(line.trim_start());
+                continue;
+            }
+            logical_lines.push(line.to_owned());
+        }
+
+        for line in &logical_lines {
             let Some((header, value)) = line.split_once(':') else {
                 continue;
             };
@@ -3080,6 +3125,29 @@ Import-Name: injected_module
         assert!(distribution.requires_dist.is_empty());
         assert!(distribution.owns_import("real_module"));
         assert!(!distribution.owns_import("injected_module"));
+    }
+
+    /// RFC 822 folded headers (continuation lines starting with whitespace) are
+    /// unfolded before parsing, so multi-line `Requires-Dist` markers survive.
+    #[test]
+    fn test_distribution_metadata_unfolds_continuation_lines() {
+        let metadata = "\
+Metadata-Version: 2.5
+Name: folded-name
+Requires-Dist: folded-dep;
+  python_version < \"3.12\"
+Import-Name: folded_module
+";
+
+        let mut distribution = DistributionInfo::default();
+        ModuleResolver::index_distribution_metadata(metadata, &mut distribution);
+
+        assert_eq!(
+            distribution.requires_dist,
+            vec!["folded-dep; python_version < \"3.12\""],
+            "folded Requires-Dist headers must be unfolded into one logical line"
+        );
+        assert!(distribution.owns_import("folded_module"));
     }
 
     #[test]
@@ -4626,6 +4694,80 @@ Import-Name: injected_module
         );
 
         Ok(())
+    }
+
+    /// Duplicate declarations under different environment markers OR their conditions
+    /// so neither platform loses the dependency.
+    #[test]
+    fn test_bundled_distribution_requirements_merge_marker_branches() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        for (package, marker) in [
+            ("win_pkg", "sys_platform == \"win32\""),
+            ("linux_pkg", "sys_platform == \"linux\""),
+        ] {
+            create_test_file(
+                &site_packages.join(format!("{package}/{}", crate::python::constants::INIT_FILE)),
+                "VALUE = 1\n",
+            )?;
+            create_test_file(
+                &site_packages.join(format!("{package}-1.0.dist-info/METADATA")),
+                &format!(
+                    "Metadata-Version: 2.5\nName: {package}\nVersion: 1.0\nImport-Name: \
+                     {package}\nRequires-Dist: platform-dep; {marker}\n"
+                ),
+            )?;
+        }
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let mut bundled_imports: FxIndexMap<String, Vec<pep508_rs::ExtraName>> =
+            FxIndexMap::default();
+        bundled_imports.insert("win_pkg".to_owned(), Vec::new());
+        bundled_imports.insert("linux_pkg".to_owned(), Vec::new());
+
+        let requirements = resolver.bundled_distribution_requirements(&bundled_imports);
+        assert_eq!(requirements.len(), 1, "one merged entry: {requirements:?}");
+        let entry = &requirements[0];
+        assert!(
+            entry.contains("win32") && entry.contains("linux"),
+            "both marker branches must survive the merge: {entry}"
+        );
+
+        Ok(())
+    }
+
+    /// A configured interpreter is asked for its `purelib` when its path has no
+    /// recognizable environment layout, so PATH-resolved commands still work.
+    #[test]
+    fn test_interpreter_site_packages_query() {
+        let python = test_python_executable();
+        let purelib = ModuleResolver::interpreter_site_packages(&python);
+        assert!(
+            purelib.is_some_and(|path| path.is_dir()),
+            "a real interpreter must report an existing purelib directory"
+        );
+        assert_eq!(
+            ModuleResolver::interpreter_site_packages(Path::new("/nonexistent/interpreter/python")),
+            None
+        );
+    }
+
+    /// Locate a Python interpreter for unit tests: the repository virtualenv when
+    /// present, otherwise the PATH-resolved interpreter.
+    fn test_python_executable() -> PathBuf {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        for ancestor in manifest_dir.ancestors() {
+            let candidate = if cfg!(windows) {
+                ancestor.join(".venv/Scripts/python.exe")
+            } else {
+                ancestor.join(".venv/bin/python")
+            };
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+        PathBuf::from(if cfg!(windows) { "python" } else { "python3" })
     }
 
     /// Legacy `.egg-info` installs are indexed too: their `PKG-INFO` `Requires-Python`
