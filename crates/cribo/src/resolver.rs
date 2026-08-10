@@ -1768,7 +1768,12 @@ impl ModuleResolver {
                 // Conservative: a package that cannot be fully inspected stays external
                 return true;
             };
-            for entry in entries.flatten() {
+            for entry in entries {
+                // Entry-level iteration errors (network filesystems, concurrent
+                // removals) also mean the package cannot be fully inspected
+                let Ok(entry) = entry else {
+                    return true;
+                };
                 let Ok(file_type) = entry.file_type() else {
                     return true;
                 };
@@ -4450,6 +4455,40 @@ Import-Name: folded_module
             resolver.classify_import("cached_pkg").bundle,
             BundleDisposition::Include,
             "__pycache__ artifacts beside sources must not prevent bundling"
+        );
+
+        Ok(())
+    }
+
+    /// A package whose contents cannot be fully inspected (unreadable subdirectory)
+    /// conservatively stays external.
+    #[cfg(unix)]
+    #[test]
+    fn test_bundle_third_party_keeps_uninspectable_package_external() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!(
+                "opaque_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        let hidden_dir = site_packages.join("opaque_pkg/hidden");
+        fs::create_dir_all(&hidden_dir)?;
+        fs::set_permissions(&hidden_dir, fs::Permissions::from_mode(0o000))?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let classification = resolver.classify_import("opaque_pkg");
+        // Restore permissions before asserting so the tempdir can be cleaned up
+        fs::set_permissions(&hidden_dir, fs::Permissions::from_mode(0o755))?;
+        assert_eq!(
+            classification.bundle,
+            BundleDisposition::External,
+            "packages that cannot be fully inspected must stay external"
         );
 
         Ok(())
