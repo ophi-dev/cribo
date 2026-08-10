@@ -70,7 +70,7 @@ def process_data():
 def test_shadowing():
     """Test what happens when we shadow an imported module."""
     os = _cribo.os
-    cwd = _cribo.os.getcwd()
+    cwd = os.getcwd()
     print(f"os.getcwd() works: {bool(cwd)}")
     os = "I'm not the os module!"
     print(f"Shadowed os: {os}")

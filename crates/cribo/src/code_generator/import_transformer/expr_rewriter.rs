@@ -78,6 +78,7 @@ impl ExpressionRewriter {
                         // In wrapper modules, we only track local_variables which includes imported
                         // names
                         let is_shadowed = transformer.state.local_variables.contains(name)
+                            || transformer.state.shadowed_bindings.contains(name)
                             || transformer.state.import_aliases.contains_key(name);
 
                         if !is_shadowed {
@@ -208,7 +209,8 @@ impl ExpressionRewriter {
                             transformer.state.import_aliases.get(&base)
                         {
                             // Check if this name is shadowed by a local variable
-                            let is_shadowed = transformer.state.local_variables.contains(&base);
+                            let is_shadowed = transformer.state.local_variables.contains(&base)
+                                || transformer.state.shadowed_bindings.contains(&base);
                             log::debug!(
                                 "Semantic check for attribute base '{}': shadowed={}, \
                                  at_module_level={}, local_vars={:?}",
@@ -552,7 +554,8 @@ impl ExpressionRewriter {
                         // Check if this name is shadowed by a local variable
                         // The transformer state tracks local variables to avoid treating them as
                         // module aliases
-                        let is_shadowed = transformer.state.local_variables.contains(name);
+                        let is_shadowed = transformer.state.local_variables.contains(name)
+                            || transformer.state.shadowed_bindings.contains(name);
                         log::debug!(
                             "Semantic check for '{}': shadowed={}, at_module_level={}, \
                              local_vars={:?}",

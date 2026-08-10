@@ -611,6 +611,16 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
                 if let Some(kwarg) = &func.parameters.kwarg {
                     parameter_names.insert(kwarg.name.as_str().to_owned());
                 }
+                // Python scoping makes any name assigned in the function local for
+                // the WHOLE body, so a call before the assignment must not be
+                // attributed to an enclosing import either (it raises
+                // UnboundLocalError at runtime)
+                {
+                    let no_globals = FxIndexSet::default();
+                    crate::visitors::LocalVarCollector::new(&mut parameter_names, &no_globals)
+                        .ignore_import_bindings()
+                        .collect_from_stmts(&func.body);
+                }
                 self.shadowed_names_stack.push(parameter_names);
             }
             AnyNodeRef::StmtClassDef(class) => {

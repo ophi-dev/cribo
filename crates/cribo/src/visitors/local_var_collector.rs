@@ -20,6 +20,9 @@ pub(crate) struct LocalVarCollector<'a> {
     local_vars: &'a mut FxIndexSet<String>,
     /// Set of global names to exclude from collection
     global_vars: &'a FxIndexSet<String>,
+    /// Whether import statements' bindings are collected; shadowing analyses
+    /// exclude them because import bindings are tracked separately
+    collect_import_bindings: bool,
 }
 
 impl<'a> LocalVarCollector<'a> {
@@ -31,7 +34,15 @@ impl<'a> LocalVarCollector<'a> {
         Self {
             local_vars,
             global_vars,
+            collect_import_bindings: true,
         }
+    }
+
+    /// Skip names bound by import statements: shadowing analyses track import
+    /// bindings separately and must only see non-import rebindings.
+    pub(crate) const fn ignore_import_bindings(mut self) -> Self {
+        self.collect_import_bindings = false;
+        self
     }
 
     /// Collect local variable names from a list of statements
@@ -129,7 +140,7 @@ impl<'a> SourceOrderVisitor<'a> for LocalVarCollector<'a> {
                     self.insert_if_not_global(name);
                 }
             }
-            Stmt::Import(import_stmt) => {
+            Stmt::Import(import_stmt) if self.collect_import_bindings => {
                 for alias in &import_stmt.names {
                     let name = alias.asname.as_ref().map_or_else(
                         || {
@@ -142,7 +153,7 @@ impl<'a> SourceOrderVisitor<'a> for LocalVarCollector<'a> {
                     self.insert_if_not_global(&name);
                 }
             }
-            Stmt::ImportFrom(from_stmt) => {
+            Stmt::ImportFrom(from_stmt) if self.collect_import_bindings => {
                 for alias in &from_stmt.names {
                     // Skip wildcard imports (from m import *)
                     if alias.name.as_str() == "*" {

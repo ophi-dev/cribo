@@ -376,6 +376,22 @@ impl StatementsHandler {
             );
         }
 
+        // Python scoping makes any name assigned in the function local for the WHOLE
+        // body: collect all non-import bindings up front so a call placed before the
+        // assignment is not treated as referring to a module-level import alias
+        // (executing it raises UnboundLocalError, which bundling must preserve)
+        {
+            let mut body_bindings = crate::types::FxIndexSet::default();
+            let no_globals = crate::types::FxIndexSet::default();
+            crate::visitors::LocalVarCollector::new(&mut body_bindings, &no_globals)
+                .ignore_import_bindings()
+                .collect_from_stmts(&s.body);
+            for name in body_bindings {
+                log::debug!("Tracking function-body binding as shadowing: {name}");
+                t.state.shadowed_bindings.insert(name);
+            }
+        }
+
         // Save the current scope level and mark that we're entering a local scope
         let saved_at_module_level = t.state.at_module_level;
         t.state.at_module_level = false;
