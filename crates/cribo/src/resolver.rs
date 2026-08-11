@@ -540,6 +540,12 @@ fn record_import_module_aliases(
 /// Track callable aliases created by (annotated) assignments such as
 /// `load = importlib.import_module`, `load = __import__`, or
 /// `load = builtins.__import__`.
+///
+/// Higher-order wrappers are tracked conservatively: when the assigned value is a
+/// call that receives an import callable as an argument (e.g.
+/// `load = functools.partial(import_module, package=__package__)`), the resulting
+/// callable can import dynamically selected modules, so the assigned name is
+/// recorded as an undiscoverable import alias too.
 fn record_assigned_import_module_aliases(
     targets: &[ruff_python_ast::Expr],
     value: &ruff_python_ast::Expr,
@@ -547,16 +553,38 @@ fn record_assigned_import_module_aliases(
     assigned_aliases: &mut IndexSet<String>,
 ) {
     use ruff_python_ast::Expr;
+
+    fn is_import_callable(
+        expr: &Expr,
+        import_aliases: &IndexSet<String>,
+        assigned_aliases: &IndexSet<String>,
+    ) -> bool {
+        match expr {
+            Expr::Attribute(attribute) => {
+                matches!(attribute.attr.as_str(), "import_module" | "__import__")
+            }
+            Expr::Name(name) => {
+                matches!(name.id.as_str(), "import_module" | "__import__")
+                    || import_aliases.contains(name.id.as_str())
+                    || assigned_aliases.contains(name.id.as_str())
+            }
+            _ => false,
+        }
+    }
+
     let value_is_import_callable = match value {
-        Expr::Attribute(attribute) => {
-            matches!(attribute.attr.as_str(), "import_module" | "__import__")
+        Expr::Call(call) => {
+            // A wrapper receiving an import callable (functools.partial and
+            // friends) yields a callable that still performs dynamic imports
+            call.arguments
+                .args
+                .iter()
+                .any(|argument| is_import_callable(argument, import_aliases, assigned_aliases))
+                || call.arguments.keywords.iter().any(|keyword| {
+                    is_import_callable(&keyword.value, import_aliases, assigned_aliases)
+                })
         }
-        Expr::Name(name) => {
-            matches!(name.id.as_str(), "import_module" | "__import__")
-                || import_aliases.contains(name.id.as_str())
-                || assigned_aliases.contains(name.id.as_str())
-        }
-        _ => false,
+        _ => is_import_callable(value, import_aliases, assigned_aliases),
     };
     if !value_is_import_callable {
         return;
@@ -625,9 +653,11 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
         }
         // A module referencing its own `__file__` locates filesystem resources
         // relative to its installed source; after inlining, `__file__` points at the
-        // generated bundle and the adjacent assets are not shipped
+        // generated bundle and the adjacent assets are not shipped. `__spec__` is the
+        // same class of import-global: its `origin`/`submodule_search_locations`
+        // describe the installed layout, and the bundle cannot reproduce them.
         if let Expr::Name(name) = expr
-            && name.id.as_str() == "__file__"
+            && matches!(name.id.as_str(), "__file__" | "__spec__")
         {
             self.found = true;
             return;
@@ -880,28 +910,37 @@ pub(crate) fn queried_distribution_requirements(
         shadows
     }
 
+    /// One lexical scope on the resolution stack.
+    struct Scope {
+        bindings: IndexMap<String, String>,
+        shadows: FxIndexSet<String>,
+        /// Python excludes class namespaces from the lexical lookup of functions
+        /// nested inside them, and class bodies bind names in source order rather
+        /// than hoisting them
+        is_class: bool,
+    }
+
     struct QueryCollector {
         requirements: Vec<String>,
         enumerates_distributions: bool,
-        /// Innermost-last stacks, parallel per scope
-        binding_scopes: Vec<IndexMap<String, String>>,
-        shadow_scopes: Vec<FxIndexSet<String>>,
+        /// Innermost-last scope stack
+        scopes: Vec<Scope>,
     }
 
     impl QueryCollector {
-        /// Resolve a base name through the scope stacks, innermost first: an import
+        /// Resolve a base name through the scope stack, innermost first: an import
         /// binding wins in its scope, and a non-import rebinding blocks resolution.
+        /// Class scopes participate only when they are the direct execution context
+        /// (the innermost scope): Python skips them for nested functions.
         fn resolve_base(&self, name: &str) -> Option<&String> {
-            for (bindings, shadows) in self
-                .binding_scopes
-                .iter()
-                .rev()
-                .zip(self.shadow_scopes.iter().rev())
-            {
-                if let Some(target) = bindings.get(name) {
+            for (depth_from_top, scope) in self.scopes.iter().rev().enumerate() {
+                if scope.is_class && depth_from_top > 0 {
+                    continue;
+                }
+                if let Some(target) = scope.bindings.get(name) {
                     return Some(target);
                 }
-                if shadows.contains(name) {
+                if scope.shadows.contains(name) {
                     return None;
                 }
             }
@@ -975,7 +1014,8 @@ pub(crate) fn queried_distribution_requirements(
                     }
 
                     // Parameters and body-wide non-import bindings shadow outer
-                    // aliases for the WHOLE function body (Python scoping)
+                    // aliases for the WHOLE function body (Python scoping hoists
+                    // function-local bindings)
                     let mut shadows = collect_scope_shadows(&function_def.body);
                     for param in function_def
                         .parameters
@@ -992,14 +1032,15 @@ pub(crate) fn queried_distribution_requirements(
                     if let Some(kwarg) = &function_def.parameters.kwarg {
                         shadows.insert(kwarg.name.as_str().to_owned());
                     }
-                    self.binding_scopes
-                        .push(collect_scope_bindings(&function_def.body));
-                    self.shadow_scopes.push(shadows);
+                    self.scopes.push(Scope {
+                        bindings: collect_scope_bindings(&function_def.body),
+                        shadows,
+                        is_class: false,
+                    });
                     for body_stmt in &function_def.body {
                         self.visit_stmt(body_stmt);
                     }
-                    self.binding_scopes.pop();
-                    self.shadow_scopes.pop();
+                    self.scopes.pop();
                 }
                 Stmt::ClassDef(class_def) => {
                     // Decorators and base-class expressions execute in the enclosing
@@ -1016,15 +1057,25 @@ pub(crate) fn queried_distribution_requirements(
                         }
                     }
 
-                    self.binding_scopes
-                        .push(collect_scope_bindings(&class_def.body));
-                    self.shadow_scopes
-                        .push(collect_scope_shadows(&class_def.body));
+                    // Class namespaces bind names in source order (no hoisting): a
+                    // use of an enclosing alias BEFORE the class rebinds the same
+                    // name must still resolve to the enclosing binding
+                    self.scopes.push(Scope {
+                        bindings: IndexMap::new(),
+                        shadows: FxIndexSet::default(),
+                        is_class: true,
+                    });
                     for body_stmt in &class_def.body {
                         self.visit_stmt(body_stmt);
+                        let statement = std::slice::from_ref(body_stmt);
+                        let stmt_bindings = collect_scope_bindings(statement);
+                        let stmt_shadows = collect_scope_shadows(statement);
+                        if let Some(scope) = self.scopes.last_mut() {
+                            scope.bindings.extend(stmt_bindings);
+                            scope.shadows.extend(stmt_shadows);
+                        }
                     }
-                    self.binding_scopes.pop();
-                    self.shadow_scopes.pop();
+                    self.scopes.pop();
                 }
                 _ => ruff_python_ast::visitor::walk_stmt(self, stmt),
             }
@@ -1067,8 +1118,11 @@ pub(crate) fn queried_distribution_requirements(
         enumerates_distributions: false,
         // Module-scope bindings are collected up front: a function body may query
         // through an alias imported after the function definition
-        binding_scopes: vec![collect_scope_bindings(&module.body)],
-        shadow_scopes: vec![FxIndexSet::default()],
+        scopes: vec![Scope {
+            bindings: collect_scope_bindings(&module.body),
+            shadows: FxIndexSet::default(),
+            is_class: false,
+        }],
     };
     for stmt in &module.body {
         collector.visit_stmt(stmt);
@@ -2210,6 +2264,7 @@ impl ModuleResolver {
             && !source.contains("find_spec")
             && !source.contains("__import__")
             && !source.contains("__file__")
+            && !source.contains("__spec__")
         {
             return false;
         }
@@ -2936,7 +2991,7 @@ impl ModuleResolver {
                 if let Some(metadata) = Self::read_metadata_sidecar(&path, &mut index.incomplete) {
                     let mut distribution = DistributionInfo::default();
                     Self::index_distribution_metadata(&metadata, &mut distribution);
-                    Self::infer_egg_info_import_root(&mut distribution);
+                    Self::infer_import_root_from_name(&mut distribution);
                     index.distributions.push(distribution);
                 }
             }
@@ -2976,6 +3031,19 @@ impl ModuleResolver {
             }
         }
 
+        // A dist-info without RECORD, top_level.txt, or Import-Name declarations
+        // (system-managed or damaged installations) still names a distribution:
+        // infer its conventional import root from the name like egg-info indexing
+        // does. When even the name is unreadable, ownership is unknowable and the
+        // index must not be trusted to prove absence of ownership.
+        if distribution.declared_prefixes.is_empty() && distribution.record_imports.is_empty() {
+            if distribution.name.is_empty() {
+                *incomplete = true;
+            } else {
+                Self::infer_import_root_from_name(&mut distribution);
+            }
+        }
+
         distribution
     }
 
@@ -2993,7 +3061,7 @@ impl ModuleResolver {
         Self::index_top_level_declarations(egg_info_dir, &mut distribution, incomplete);
         Self::index_entry_points(egg_info_dir, &mut distribution, incomplete);
         Self::index_requires_txt(egg_info_dir, &mut distribution, incomplete);
-        Self::infer_egg_info_import_root(&mut distribution);
+        Self::infer_import_root_from_name(&mut distribution);
 
         // installed-files.txt paths are relative to the egg-info directory itself
         // (e.g. "../package/module.py"); resolve them against the site-packages root
@@ -3081,11 +3149,11 @@ impl ModuleResolver {
         }
     }
 
-    /// Infer an egg-info distribution's import root from its name when the metadata
-    /// declares none (no `Import-Name`, `top_level.txt`, or installed-files listing):
-    /// setuptools conventionally installs `name-version.egg-info` beside a module
-    /// matching the underscore-normalized distribution name.
-    fn infer_egg_info_import_root(distribution: &mut DistributionInfo) {
+    /// Infer a distribution's import root from its name when the metadata declares
+    /// none (no `Import-Name`, `top_level.txt`, or installed-files listing):
+    /// installers conventionally place a module matching the underscore-normalized
+    /// distribution name beside the metadata directory.
+    fn infer_import_root_from_name(distribution: &mut DistributionInfo) {
         if distribution.declared_prefixes.is_empty()
             && distribution.record_imports.is_empty()
             && !distribution.name.is_empty()
@@ -5254,6 +5322,13 @@ def default_query(md=md.version('default-name')):
     return md.version('body-shadowed-name')
 
 
+class ClassOrder:
+    # Class namespaces bind in source order: this use precedes the rebinding
+    class_version = md.version('class-order-name')
+    md = str
+    hidden = md.version('class-hidden-name')
+
+
 print(local_collision(), local_shadow(str))
 print(md.version('post-collision-name'))
 ";
@@ -5270,6 +5345,7 @@ print(md.version('post-collision-name'))
                 "constrained-name>=2",
                 "variadic-name[extra]<3",
                 "default-name",
+                "class-order-name",
                 "post-collision-name"
             ]
         );
@@ -6149,6 +6225,43 @@ print(provider.distributions())
             ],
             "requires.txt base and marker-section entries must carry over; extra-only \
              sections must stay dropped"
+        );
+
+        Ok(())
+    }
+
+    /// A dist-info without `RECORD`, `top_level.txt`, or `Import-Name` (system-managed
+    /// or damaged installations) still names its distribution: the conventional import
+    /// root is inferred from the name, so ownership and `Requires-Dist` constraints
+    /// survive instead of being dropped.
+    #[test]
+    fn test_bundled_distribution_requirements_infer_root_without_record() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!("bare_pkg/{}", crate::python::constants::INIT_FILE)),
+            "VALUE = 1\n",
+        )?;
+        // No RECORD, no top_level.txt, no Import-Name header
+        create_test_file(
+            &site_packages.join("bare_pkg-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: bare-pkg\nVersion: 1.0\nRequires-Dist: hidden-dep>=1\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        assert_eq!(
+            resolver.classify_import("bare_pkg").bundle,
+            BundleDisposition::Include,
+            "a bare dist-info must not block bundling: its root is inferred from the name"
+        );
+        let mut bundled_imports: FxIndexMap<String, Vec<pep508_rs::ExtraName>> =
+            FxIndexMap::default();
+        bundled_imports.insert("bare_pkg".to_owned(), Vec::new());
+        assert_eq!(
+            resolver.bundled_distribution_requirements(&bundled_imports),
+            vec!["hidden-dep>=1".to_owned()],
+            "name-inferred ownership must carry the distribution's Requires-Dist constraints"
         );
 
         Ok(())
