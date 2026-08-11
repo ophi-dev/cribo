@@ -48,7 +48,7 @@ def _cribo_init___cribo_da5146_alias_pkg(self):
         self.loaded = _cribo.sys.modules
         self.__initialized__ = True
         self.__initializing__ = False
-        return self
+        return _sys.modules.get(self.__name__, self)
     except BaseException:
         self.__initializing__ = False
         if _sys.modules.get(self.__name__) is self:
@@ -72,7 +72,7 @@ def _cribo_init___cribo_447ffd_alias_pkg_system(self):
         self.REGISTERED = REGISTERED
         self.__initialized__ = True
         self.__initializing__ = False
-        return self
+        return _sys.modules.get(self.__name__, self)
     except BaseException:
         self.__initializing__ = False
         if _sys.modules.get(self.__name__) is self:

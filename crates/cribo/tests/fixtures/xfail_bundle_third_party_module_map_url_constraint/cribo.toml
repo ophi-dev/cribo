@@ -1,0 +1,2 @@
+[requirements]
+module-map = { external_dep = "external-dep @ https://example.invalid/external_dep-1.0-py3-none-any.whl" }

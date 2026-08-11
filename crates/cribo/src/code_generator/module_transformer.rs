@@ -306,6 +306,17 @@ pub(crate) fn process_statements_for_init_function(
                         SELF_PARAM, // Use "self" instead of module_var_name inside init function
                         ctx.python_version,
                     );
+                    // Targets can carry Load-context subexpressions too (e.g. the
+                    // subscript in `sys.modules[__name__] = replacement`); simple
+                    // Store-context names are left untouched by the transform
+                    for target in &mut assign_clone.targets {
+                        transform_expr_for_module_vars(
+                            target,
+                            &module_level_vars,
+                            SELF_PARAM,
+                            ctx.python_version,
+                        );
+                    }
 
                     // For simple assignments, also set as module attribute if it should be
                     // exported

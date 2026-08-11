@@ -427,6 +427,16 @@ impl UnbundlablePatternDetector {
             Expr::Attribute(attribute) if attribute.attr.as_str() == "__import__" => {
                 Some(DynamicImportKind::Undiscoverable)
             }
+            // importlib.reload cannot operate on bundled namespaces: they carry no
+            // usable spec/loader, so reloading them would fail where the installed
+            // module reloads fine. Only the importlib-qualified form is matched:
+            // unrelated `x.reload()` methods are common and harmless.
+            Expr::Attribute(attribute)
+                if attribute.attr.as_str() == "reload"
+                    && matches!(&*attribute.value, Expr::Name(name) if name.id.as_str() == "importlib") =>
+            {
+                Some(DynamicImportKind::Undiscoverable)
+            }
             Expr::Attribute(attribute) if attribute.attr.as_str() == "import_module" => {
                 Some(DynamicImportKind::ImportModule)
             }
@@ -468,6 +478,18 @@ impl UnbundlablePatternDetector {
                             && import_from.module.as_deref() == Some("importlib") =>
                     {
                         record_import_module_aliases(import_from, self.import_aliases);
+                        // Aliases of importlib.reload are undiscoverable callables:
+                        // bundled namespaces cannot be reloaded through the import
+                        // machinery
+                        for alias in &import_from.names {
+                            if alias.name.as_str() == "reload" {
+                                let bound_name = alias
+                                    .asname
+                                    .as_ref()
+                                    .map_or_else(|| alias.name.as_str(), |name| name.as_str());
+                                self.assigned_aliases.insert(bound_name.to_owned());
+                            }
+                        }
                     }
                     // Aliases of builtins.__import__ are undiscoverable callables
                     Stmt::ImportFrom(import_from)
@@ -825,6 +847,10 @@ pub(crate) fn queried_distribution_requirements(
         "importlib_metadata.distributions",
         "importlib_metadata.packages_distributions",
     ];
+    /// Canonical dotted paths of legacy enumeration OBJECTS (not calls): iterating
+    /// `pkg_resources.working_set` observes every installed distribution too.
+    const ENUMERATION_OBJECTS: [&str; 2] =
+        ["pkg_resources.working_set", "pkg_resources.Environment"];
 
     /// Collect the import bindings of ONE lexical scope (local name -> canonical
     /// dotted path): control-flow blocks are traversed, while nested function and
@@ -1059,7 +1085,12 @@ pub(crate) fn queried_distribution_requirements(
 
                     // Class namespaces bind names in source order (no hoisting): a
                     // use of an enclosing alias BEFORE the class rebinds the same
-                    // name must still resolve to the enclosing binding
+                    // name must still resolve to the enclosing binding. Bindings
+                    // inside conditional statements may never execute, so they
+                    // neither rebind nor shadow: outer resolution is conservatively
+                    // retained across branches (over-collection is the safe
+                    // direction). Function-local bindings hoist instead, so this
+                    // treatment is specific to class scopes.
                     self.scopes.push(Scope {
                         bindings: IndexMap::new(),
                         shadows: FxIndexSet::default(),
@@ -1067,12 +1098,24 @@ pub(crate) fn queried_distribution_requirements(
                     });
                     for body_stmt in &class_def.body {
                         self.visit_stmt(body_stmt);
-                        let statement = std::slice::from_ref(body_stmt);
-                        let stmt_bindings = collect_scope_bindings(statement);
-                        let stmt_shadows = collect_scope_shadows(statement);
-                        if let Some(scope) = self.scopes.last_mut() {
-                            scope.bindings.extend(stmt_bindings);
-                            scope.shadows.extend(stmt_shadows);
+                        let binds_unconditionally = matches!(
+                            body_stmt,
+                            Stmt::Assign(_)
+                                | Stmt::AnnAssign(_)
+                                | Stmt::AugAssign(_)
+                                | Stmt::Import(_)
+                                | Stmt::ImportFrom(_)
+                                | Stmt::FunctionDef(_)
+                                | Stmt::ClassDef(_)
+                        );
+                        if binds_unconditionally {
+                            let statement = std::slice::from_ref(body_stmt);
+                            let stmt_bindings = collect_scope_bindings(statement);
+                            let stmt_shadows = collect_scope_shadows(statement);
+                            if let Some(scope) = self.scopes.last_mut() {
+                                scope.bindings.extend(stmt_bindings);
+                                scope.shadows.extend(stmt_shadows);
+                            }
                         }
                     }
                     self.scopes.pop();
@@ -1083,6 +1126,15 @@ pub(crate) fn queried_distribution_requirements(
 
         fn visit_expr(&mut self, expr: &'a ruff_python_ast::Expr) {
             use ruff_python_ast::Expr;
+            // Legacy enumeration objects are observed by mere attribute access
+            // (e.g. iterating `pkg_resources.working_set`)
+            if matches!(expr, Expr::Attribute(_))
+                && self
+                    .canonical_callee_path(expr)
+                    .is_some_and(|path| ENUMERATION_OBJECTS.contains(&path.as_str()))
+            {
+                self.enumerates_distributions = true;
+            }
             if let Expr::Call(call) = expr
                 && let Some(path) = self.canonical_callee_path(&call.func)
             {
@@ -2899,8 +2951,10 @@ impl ModuleResolver {
     /// into an existing one: extras are unioned and version specifiers are combined
     /// (e.g. `dep<2` + `dep>=1` becomes `dep>=1,<2`).
     ///
-    /// URL-based requirements cannot have their constraints merged soundly; the
-    /// existing constraint is kept in that case.
+    /// PEP 508 cannot express a direct URL and a version specifier on one line, so a
+    /// URL-based declaration wins and the conflicting constraint is reported: the
+    /// pinned artifact is what the environment actually resolved, and emitting the
+    /// specifier as a second line would make the requirements file self-conflicting.
     pub(crate) fn merge_requirement_constraints(
         existing: &mut pep508_rs::Requirement<pep508_rs::VerbatimUrl>,
         incoming: pep508_rs::Requirement<pep508_rs::VerbatimUrl>,
@@ -2922,6 +2976,23 @@ impl ModuleResolver {
                 let combined: pep508_rs::pep440_rs::VersionSpecifiers =
                     current.iter().cloned().chain(additional).collect();
                 existing.version_or_url = Some(VersionOrUrl::VersionSpecifier(combined));
+            }
+            (Some(VersionOrUrl::Url(url)), Some(VersionOrUrl::VersionSpecifier(dropped))) => {
+                warn!(
+                    "Requirement '{}' uses a direct URL ({url}); the version constraint \
+                     '{dropped}' declared elsewhere cannot be combined with it and is not \
+                     enforced — ensure the pinned artifact satisfies it",
+                    existing.name
+                );
+            }
+            (Some(VersionOrUrl::VersionSpecifier(current)), Some(VersionOrUrl::Url(url))) => {
+                warn!(
+                    "Requirement '{}' declares both a version constraint '{current}' and a \
+                     direct URL ({url}); the URL wins and the constraint is not enforced — \
+                     ensure the pinned artifact satisfies it",
+                    existing.name
+                );
+                existing.version_or_url = Some(VersionOrUrl::Url(url));
             }
             _ => {}
         }
@@ -2991,7 +3062,11 @@ impl ModuleResolver {
                 if let Some(metadata) = Self::read_metadata_sidecar(&path, &mut index.incomplete) {
                     let mut distribution = DistributionInfo::default();
                     Self::index_distribution_metadata(&metadata, &mut distribution);
-                    Self::infer_import_root_from_name(&mut distribution);
+                    Self::infer_import_root_from_name(
+                        &mut distribution,
+                        &path,
+                        &mut index.incomplete,
+                    );
                     index.distributions.push(distribution);
                 }
             }
@@ -3040,7 +3115,7 @@ impl ModuleResolver {
             if distribution.name.is_empty() {
                 *incomplete = true;
             } else {
-                Self::infer_import_root_from_name(&mut distribution);
+                Self::infer_import_root_from_name(&mut distribution, dist_info_dir, incomplete);
             }
         }
 
@@ -3061,7 +3136,6 @@ impl ModuleResolver {
         Self::index_top_level_declarations(egg_info_dir, &mut distribution, incomplete);
         Self::index_entry_points(egg_info_dir, &mut distribution, incomplete);
         Self::index_requires_txt(egg_info_dir, &mut distribution, incomplete);
-        Self::infer_import_root_from_name(&mut distribution);
 
         // installed-files.txt paths are relative to the egg-info directory itself
         // (e.g. "../package/module.py"); resolve them against the site-packages root
@@ -3083,6 +3157,10 @@ impl ModuleResolver {
                 }
             }
         }
+
+        // Inference runs last so declared ownership (top_level.txt, Import-Name,
+        // installed-files.txt) always takes precedence
+        Self::infer_import_root_from_name(&mut distribution, egg_info_dir, incomplete);
 
         distribution
     }
@@ -3153,14 +3231,32 @@ impl ModuleResolver {
     /// none (no `Import-Name`, `top_level.txt`, or installed-files listing):
     /// installers conventionally place a module matching the underscore-normalized
     /// distribution name beside the metadata directory.
-    fn infer_import_root_from_name(distribution: &mut DistributionInfo) {
-        if distribution.declared_prefixes.is_empty()
-            && distribution.record_imports.is_empty()
-            && !distribution.name.is_empty()
+    ///
+    /// The inference is verified against the filesystem: when no matching package
+    /// directory or module file exists beside the metadata (project and import names
+    /// differ, e.g. `beautifulsoup4` providing `bs4`), ownership is unknowable and
+    /// the index is marked incomplete instead of claiming a wrong prefix.
+    fn infer_import_root_from_name(
+        distribution: &mut DistributionInfo,
+        metadata_dir: &Path,
+        incomplete: &mut bool,
+    ) {
+        if !distribution.declared_prefixes.is_empty()
+            || !distribution.record_imports.is_empty()
+            || distribution.name.is_empty()
         {
-            use cow_utils::CowUtils;
-            let inferred = distribution.name.cow_replace('-', "_").into_owned();
+            return;
+        }
+        use cow_utils::CowUtils;
+        let inferred = distribution.name.cow_replace('-', "_").into_owned();
+        let root = metadata_dir.parent().unwrap_or(metadata_dir);
+        if root.join(&inferred).is_dir() || root.join(format!("{inferred}.py")).is_file() {
             distribution.declared_prefixes.insert(inferred);
+        } else {
+            // The distribution provides an import name that cannot be derived from
+            // its project name; the index must not be trusted to prove absence of
+            // ownership for any package in this root
+            *incomplete = true;
         }
     }
 

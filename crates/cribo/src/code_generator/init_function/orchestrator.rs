@@ -163,7 +163,7 @@ impl<'a> InitFunctionBuilder<'a> {
         if function_def.body.len() <= PROLOGUE_STATEMENTS {
             return function_stmt;
         }
-        let guarded_body: Vec<Stmt> = function_def
+        let mut guarded_body: Vec<Stmt> = function_def
             .body
             .split_off(PROLOGUE_STATEMENTS)
             .into_iter()
@@ -183,6 +183,21 @@ impl<'a> InitFunctionBuilder<'a> {
                 ExprContext::Load,
             )
         };
+        // On success, honor the final sys.modules entry: a module may deliberately
+        // replace itself (`sys.modules[__name__] = replacement`), and Python's import
+        // machinery returns that replacement to importers.
+        // return _sys.modules.get(self.__name__, self)
+        if matches!(guarded_body.last(), Some(Stmt::Return(_))) {
+            guarded_body.pop();
+        }
+        guarded_body.push(statements::return_stmt(Some(expressions::call(
+            expressions::attribute(sys_modules(), "get", ExprContext::Load),
+            vec![
+                self_name_attribute(),
+                expressions::name(SELF_PARAM, ExprContext::Load),
+            ],
+            vec![],
+        ))));
         // self.__initializing__ = False
         // if _sys.modules.get(self.__name__) is self:
         //     del _sys.modules[self.__name__]

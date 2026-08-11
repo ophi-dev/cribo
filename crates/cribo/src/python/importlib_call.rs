@@ -147,3 +147,31 @@ pub(crate) fn statically_raises_type_error(call: &ExprCall) -> bool {
             None => false,
         })
 }
+
+/// Resolve a relative module name against a literal package anchor exactly like
+/// CPython's `importlib._bootstrap._resolve_name`: the anchor string is used
+/// verbatim (level 1) or stripped of `level - 1` trailing components, WITHOUT any
+/// module-vs-package adjustment — `import_module(".sub", "pkg.mod")` targets
+/// `pkg.mod.sub` even when `pkg.mod` is a plain module (and then fails at runtime).
+///
+/// Returns `None` when the anchor has fewer components than the relative level
+/// requires; CPython raises `ImportError` for that call, so it must be preserved
+/// verbatim.
+pub(crate) fn resolve_relative_name(name: &str, package: &str) -> Option<String> {
+    let level = name.chars().take_while(|&c| c == '.').count();
+    if level == 0 {
+        return Some(name.to_owned());
+    }
+    let name_part = name.trim_start_matches('.');
+    let mut anchor_parts: Vec<&str> = package.split('.').collect();
+    if anchor_parts.len() < level {
+        return None;
+    }
+    anchor_parts.truncate(anchor_parts.len() - (level - 1));
+    let base = anchor_parts.join(".");
+    if name_part.is_empty() {
+        Some(base)
+    } else {
+        Some(format!("{base}.{name_part}"))
+    }
+}

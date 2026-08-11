@@ -47,7 +47,7 @@ def _cribo_init___cribo_1e8e84_helper(self):
         raise RuntimeError("helper failed to initialize")
         self.__initialized__ = True
         self.__initializing__ = False
-        return self
+        return _sys.modules.get(self.__name__, self)
     except BaseException:
         self.__initializing__ = False
         if _sys.modules.get(self.__name__) is self:

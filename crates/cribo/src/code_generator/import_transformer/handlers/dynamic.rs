@@ -60,7 +60,7 @@ impl DynamicHandler {
     /// expression the rewrite must still evaluate (see
     /// [`Self::transform_importlib_import_module`]). Anything else stays a runtime
     /// call.
-    fn resolve_importlib_target(call: &ExprCall, bundler: &Bundler<'_>) -> Option<String> {
+    fn resolve_importlib_target(call: &ExprCall) -> Option<String> {
         if !(crate::python::importlib_call::arguments_safely_discardable(call)
             || crate::python::importlib_call::evaluable_package_argument(call).is_some())
         {
@@ -68,43 +68,17 @@ impl DynamicHandler {
         }
         let module_name = crate::python::importlib_call::literal_module_name(call)?;
 
-        // Handle relative imports with package context
+        // Handle relative imports with package context, exactly like CPython's
+        // `_resolve_name`: the literal package string is the verbatim anchor. No
+        // path-based module-vs-package adjustment is applied — Python computes the
+        // target textually and only then validates it, so a call anchored at a plain
+        // module (e.g. `import_module(".sub", "pkg.mod")` → `pkg.mod.sub`) resolves
+        // to a name that is not bundled, stays preserved, and raises at runtime like
+        // the original.
         let package_argument = crate::python::importlib_call::literal_package_context(call);
-        let resolved_name = if module_name.starts_with('.')
-            && let Some(package) = package_argument
-        {
-            // Resolve package to path, then use resolver
-            if let Ok(Some(package_path)) = bundler.resolver.resolve_module_path(package) {
-                let level = module_name.chars().take_while(|&c| c == '.').count() as u32;
-                let name_part = module_name.trim_start_matches('.');
-
-                bundler
-                    .resolver
-                    .resolve_relative_to_absolute_module_name(
-                        level,
-                        if name_part.is_empty() {
-                            None
-                        } else {
-                            Some(name_part)
-                        },
-                        &package_path,
-                    )
-                    .unwrap_or_else(|| module_name.to_owned())
-            } else {
-                // Use resolver's method for package name resolution when path not found
-                let level = module_name.chars().take_while(|&c| c == '.').count() as u32;
-                let name_part = module_name.trim_start_matches('.');
-
-                bundler.resolver.resolve_relative_import_from_package_name(
-                    level,
-                    if name_part.is_empty() {
-                        None
-                    } else {
-                        Some(name_part)
-                    },
-                    package,
-                )
-            }
+        let resolved_name = if module_name.starts_with('.') {
+            let package = package_argument?;
+            crate::python::importlib_call::resolve_relative_name(module_name, package)?
         } else {
             module_name.to_owned()
         };
@@ -125,7 +99,7 @@ impl DynamicHandler {
         create_module_access_expr: impl Fn(&str) -> Expr,
     ) -> Option<Expr> {
         // Get the module name and resolve relative imports
-        if let Some(resolved_name) = Self::resolve_importlib_target(call, bundler) {
+        if let Some(resolved_name) = Self::resolve_importlib_target(call) {
             // Check if this module is part of the bundle (wrapper or inlined)
             if bundler.get_module_id(&resolved_name).is_some_and(|id| {
                 bundler.bundled_modules.contains(&id) || bundler.inlined_modules.contains(&id)
@@ -215,7 +189,7 @@ impl DynamicHandler {
         importlib_inlined_modules: &mut FxIndexMap<String, String>,
     ) {
         // Get the module name and resolve relative imports
-        if let Some(resolved_name) = Self::resolve_importlib_target(call, bundler)
+        if let Some(resolved_name) = Self::resolve_importlib_target(call)
             && bundler
                 .get_module_id(&resolved_name)
                 .is_some_and(|id| bundler.inlined_modules.contains(&id))
