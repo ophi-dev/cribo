@@ -57,7 +57,7 @@ use crate::{
 const SYS_MODULE: &str = "sys";
 use super::CRIBO_PREFIX;
 
-const SYS_ALIAS: &str = "_sys";
+const SYS_ALIAS: &str = super::CRIBO_SYS_ALIAS;
 const IMPORTLIB_MODULE: &str = "importlib";
 const IMPORTLIB_ALIAS: &str = "_importlib";
 const CRIBO_MODULE_CLASS: &str = "_CriboModule";

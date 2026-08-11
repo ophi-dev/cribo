@@ -206,7 +206,18 @@ impl<'a> ModuleClassifier<'a> {
             let has_invalid_identifier =
                 !ruff_python_stdlib::identifiers::is_identifier(module_base_name);
 
-            if has_side_effects || has_invalid_identifier || needs_wrapping_for_circular {
+            // Modules inspecting sys.modules (e.g. `sys.modules[__name__]`, even
+            // inside function bodies) need a real module object registered under
+            // their original name: the wrapper approach provides one and its init
+            // registers it in sys.modules
+            let accesses_own_sys_modules =
+                crate::visitors::utils::accesses_own_sys_modules_entry(&ast.body);
+
+            if has_side_effects
+                || has_invalid_identifier
+                || needs_wrapping_for_circular
+                || accesses_own_sys_modules
+            {
                 if has_invalid_identifier {
                     debug!(
                         "Module '{module_name}' has invalid Python identifier - using wrapper \
@@ -216,8 +227,13 @@ impl<'a> ModuleClassifier<'a> {
                     debug!(
                         "Module '{module_name}' is in circular dependency - using wrapper approach"
                     );
-                } else {
+                } else if has_side_effects {
                     debug!("Module '{module_name}' has side effects - using wrapper approach");
+                } else {
+                    debug!(
+                        "Module '{module_name}' inspects sys.modules - using wrapper approach so \
+                         it is registered under its original name"
+                    );
                 }
 
                 wrapper_modules.push((

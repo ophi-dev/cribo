@@ -80,6 +80,42 @@ impl InitializationPhase {
             ast_builder::expressions::bool_literal(true),
         ));
 
+        // Register the module in sys.modules before executing its body, exactly like
+        // Python's import machinery, but ONLY for modules that inspect sys.modules
+        // (self-references such as `sys.modules[__name__]`, membership checks):
+        // registering every bundled module would shadow installed distributions that
+        // native extensions re-import while the bundled copy is still initializing.
+        // The import machinery reads `__spec__` unguarded on registered parents when
+        // resolving real submodule imports, so it must exist (None is valid).
+        // self.__spec__ = None
+        // _sys.modules[self.__name__] = self
+        if crate::visitors::utils::accesses_own_sys_modules_entry(&ast.body) {
+            state.body.push(ast_builder::statements::assign_attribute(
+                SELF_PARAM,
+                "__spec__",
+                ast_builder::expressions::none_literal(),
+            ));
+            state.body.push(ast_builder::statements::assign(
+                vec![ast_builder::expressions::subscript(
+                    ast_builder::expressions::attribute(
+                        ast_builder::expressions::name(
+                            ast_builder::CRIBO_SYS_ALIAS,
+                            ExprContext::Load,
+                        ),
+                        "modules",
+                        ExprContext::Load,
+                    ),
+                    ast_builder::expressions::attribute(
+                        ast_builder::expressions::name(SELF_PARAM, ExprContext::Load),
+                        "__name__",
+                        ExprContext::Load,
+                    ),
+                    ExprContext::Store,
+                )],
+                ast_builder::expressions::name(SELF_PARAM, ExprContext::Load),
+            ));
+        }
+
         // NOTE: We do NOT call parent init from child modules
         // In Python, the import machinery ensures parent is initialized before child,
         // but this happens OUTSIDE the child module's code.
