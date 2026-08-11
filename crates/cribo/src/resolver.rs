@@ -940,6 +940,40 @@ pub(crate) fn queried_distribution_requirements(
         fn visit_stmt(&mut self, stmt: &'a Stmt) {
             match stmt {
                 Stmt::FunctionDef(function_def) => {
+                    // Decorators, parameter defaults, and annotations execute in the
+                    // ENCLOSING scope at definition time; visit them before the
+                    // function scope is installed
+                    for decorator in &function_def.decorator_list {
+                        self.visit_expr(&decorator.expression);
+                    }
+                    for param in function_def
+                        .parameters
+                        .posonlyargs
+                        .iter()
+                        .chain(&function_def.parameters.args)
+                        .chain(&function_def.parameters.kwonlyargs)
+                    {
+                        if let Some(annotation) = &param.parameter.annotation {
+                            self.visit_expr(annotation);
+                        }
+                        if let Some(default) = &param.default {
+                            self.visit_expr(default);
+                        }
+                    }
+                    if let Some(vararg) = &function_def.parameters.vararg
+                        && let Some(annotation) = &vararg.annotation
+                    {
+                        self.visit_expr(annotation);
+                    }
+                    if let Some(kwarg) = &function_def.parameters.kwarg
+                        && let Some(annotation) = &kwarg.annotation
+                    {
+                        self.visit_expr(annotation);
+                    }
+                    if let Some(returns) = &function_def.returns {
+                        self.visit_expr(returns);
+                    }
+
                     // Parameters and body-wide non-import bindings shadow outer
                     // aliases for the WHOLE function body (Python scoping)
                     let mut shadows = collect_scope_shadows(&function_def.body);
@@ -961,16 +995,34 @@ pub(crate) fn queried_distribution_requirements(
                     self.binding_scopes
                         .push(collect_scope_bindings(&function_def.body));
                     self.shadow_scopes.push(shadows);
-                    ruff_python_ast::visitor::walk_stmt(self, stmt);
+                    for body_stmt in &function_def.body {
+                        self.visit_stmt(body_stmt);
+                    }
                     self.binding_scopes.pop();
                     self.shadow_scopes.pop();
                 }
                 Stmt::ClassDef(class_def) => {
+                    // Decorators and base-class expressions execute in the enclosing
+                    // scope at definition time
+                    for decorator in &class_def.decorator_list {
+                        self.visit_expr(&decorator.expression);
+                    }
+                    if let Some(arguments) = &class_def.arguments {
+                        for base in &arguments.args {
+                            self.visit_expr(base);
+                        }
+                        for keyword in &arguments.keywords {
+                            self.visit_expr(&keyword.value);
+                        }
+                    }
+
                     self.binding_scopes
                         .push(collect_scope_bindings(&class_def.body));
                     self.shadow_scopes
                         .push(collect_scope_shadows(&class_def.body));
-                    ruff_python_ast::visitor::walk_stmt(self, stmt);
+                    for body_stmt in &class_def.body {
+                        self.visit_stmt(body_stmt);
+                    }
                     self.binding_scopes.pop();
                     self.shadow_scopes.pop();
                 }
@@ -5195,6 +5247,13 @@ def local_shadow(version):
     return version('shadowed-name')
 
 
+def default_query(md=md.version('default-name')):
+    # The default expression executes in the enclosing scope at definition
+    # time, where ``md`` is still the metadata alias; the parameter shadows it
+    # only inside the body
+    return md.version('body-shadowed-name')
+
+
 print(local_collision(), local_shadow(str))
 print(md.version('post-collision-name'))
 ";
@@ -5210,6 +5269,7 @@ print(md.version('post-collision-name'))
                 "keyword-name",
                 "constrained-name>=2",
                 "variadic-name[extra]<3",
+                "default-name",
                 "post-collision-name"
             ]
         );
