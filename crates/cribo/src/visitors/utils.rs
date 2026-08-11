@@ -102,9 +102,10 @@ fn collect_names_recursive<'a>(expr: &'a Expr, out: &mut Vec<&'a str>) {
 
 /// Return whether a statement body accesses its OWN `sys.modules` entry — e.g.
 /// `sys.modules[__name__]`, `__name__ in sys.modules`, or
-/// `sys.modules.get(__name__)` — through `sys.modules`, a dotted access ending in
-/// `.sys.modules` (the bundled `_cribo.sys.modules` rewrite), or a `from sys import
-/// modules` binding.
+/// `sys.modules.get(__name__)` — through `sys.modules`, an aliased `sys` import
+/// (`import sys as system`), a dotted access ending in `.sys.modules` (the bundled
+/// `_cribo.sys.modules` rewrite), or a possibly aliased `from sys import modules`
+/// binding (`from sys import modules as loaded`).
 ///
 /// Such modules rely on being registered with the import machinery under their
 /// original name, so the bundler wraps them and their init registers the wrapper
@@ -119,10 +120,52 @@ pub(crate) fn accesses_own_sys_modules_entry(body: &[ruff_python_ast::Stmt]) -> 
         visitor::{Visitor, walk_expr, walk_stmt},
     };
 
+    use crate::types::FxIndexSet;
+
+    /// Collect every alias bound to `sys` or to `sys.modules`, anywhere in the body
+    /// (aliases may be imported after the use site inside functions).
+    struct AliasCollector {
+        sys_aliases: FxIndexSet<String>,
+        modules_aliases: FxIndexSet<String>,
+    }
+
+    impl<'ast> Visitor<'ast> for AliasCollector {
+        fn visit_stmt(&mut self, stmt: &'ast Stmt) {
+            match stmt {
+                Stmt::Import(import_stmt) => {
+                    for alias in &import_stmt.names {
+                        if alias.name.as_str() == "sys" {
+                            let bound_name = alias
+                                .asname
+                                .as_ref()
+                                .map_or_else(|| alias.name.as_str(), |name| name.as_str());
+                            self.sys_aliases.insert(bound_name.to_owned());
+                        }
+                    }
+                }
+                Stmt::ImportFrom(import_from)
+                    if import_from.level == 0 && import_from.module.as_deref() == Some("sys") =>
+                {
+                    for alias in &import_from.names {
+                        if alias.name.as_str() == "modules" {
+                            let bound_name = alias
+                                .asname
+                                .as_ref()
+                                .map_or_else(|| alias.name.as_str(), |name| name.as_str());
+                            self.modules_aliases.insert(bound_name.to_owned());
+                        }
+                    }
+                }
+                _ => {}
+            }
+            walk_stmt(self, stmt);
+        }
+    }
+
     struct SelfEntryDetector {
         found: bool,
-        /// Whether `from sys import modules` binds a bare `modules` name
-        modules_from_import: bool,
+        sys_aliases: FxIndexSet<String>,
+        modules_aliases: FxIndexSet<String>,
     }
 
     impl SelfEntryDetector {
@@ -130,12 +173,14 @@ pub(crate) fn accesses_own_sys_modules_entry(body: &[ruff_python_ast::Stmt]) -> 
             match expr {
                 Expr::Attribute(attribute) if attribute.attr.as_str() == "modules" => {
                     match &*attribute.value {
-                        Expr::Name(name) => name.id.as_str() == "sys",
+                        Expr::Name(name) => self.sys_aliases.contains(name.id.as_str()),
+                        // Dotted access ending in `.sys.modules` (e.g. the bundled
+                        // `_cribo.sys.modules` rewrite)
                         Expr::Attribute(inner) => inner.attr.as_str() == "sys",
                         _ => false,
                     }
                 }
-                Expr::Name(name) => self.modules_from_import && name.id.as_str() == "modules",
+                Expr::Name(name) => self.modules_aliases.contains(name.id.as_str()),
                 _ => false,
             }
         }
@@ -146,23 +191,6 @@ pub(crate) fn accesses_own_sys_modules_entry(body: &[ruff_python_ast::Stmt]) -> 
     }
 
     impl<'ast> Visitor<'ast> for SelfEntryDetector {
-        fn visit_stmt(&mut self, stmt: &'ast Stmt) {
-            if self.found {
-                return;
-            }
-            if let Stmt::ImportFrom(import_from) = stmt
-                && import_from.level == 0
-                && import_from.module.as_deref() == Some("sys")
-                && import_from
-                    .names
-                    .iter()
-                    .any(|alias| alias.name.as_str() == "modules" && alias.asname.is_none())
-            {
-                self.modules_from_import = true;
-            }
-            walk_stmt(self, stmt);
-        }
-
         fn visit_expr(&mut self, expr: &'ast Expr) {
             if self.found {
                 return;
@@ -206,27 +234,29 @@ pub(crate) fn accesses_own_sys_modules_entry(body: &[ruff_python_ast::Stmt]) -> 
         }
     }
 
-    // `from sys import modules` may appear after the use site inside functions;
-    // collect it first
+    // Aliases may be bound after the use site (inside functions), so collect them
+    // over the whole body first
+    let mut alias_collector = AliasCollector {
+        sys_aliases: FxIndexSet::default(),
+        modules_aliases: FxIndexSet::default(),
+    };
+    // `sys` itself is always recognized: the bundled rewrite may reference it
+    // without a surviving import statement
+    alias_collector.sys_aliases.insert("sys".to_owned());
+    for stmt in body {
+        alias_collector.visit_stmt(stmt);
+    }
+
     let mut detector = SelfEntryDetector {
         found: false,
-        modules_from_import: false,
+        sys_aliases: alias_collector.sys_aliases,
+        modules_aliases: alias_collector.modules_aliases,
     };
     for stmt in body {
+        use ruff_python_ast::visitor::Visitor as _;
         detector.visit_stmt(stmt);
     }
-    if detector.found {
-        return true;
-    }
-    // Second pass with complete from-import knowledge
-    if detector.modules_from_import {
-        detector.found = false;
-        for stmt in body {
-            detector.visit_stmt(stmt);
-        }
-        return detector.found;
-    }
-    false
+    detector.found
 }
 
 #[cfg(test)]
