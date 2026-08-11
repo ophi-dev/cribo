@@ -91,3 +91,59 @@ pub(crate) fn arguments_safely_discardable(call: &ExprCall) -> bool {
         Some(_) => false,
     }
 }
+
+/// Return the non-literal `package` argument of an `import_module` call whose
+/// import target is nevertheless statically known and WILL be imported at runtime.
+///
+/// This is the "evaluable extra argument" form, e.g.
+/// `import_module("pkg", package=touch())`: the name is an absolute string literal,
+/// only the supported arguments are present (no unpacking, no unknown keywords, no
+/// double binding), and the package expression — which CPython evaluates but ignores
+/// for absolute names — is not a discardable literal. Rewrites must evaluate the
+/// returned expression before yielding the bundled module.
+pub(crate) fn evaluable_package_argument(call: &ExprCall) -> Option<&Expr> {
+    if arguments_safely_discardable(call) || statically_raises_type_error(call) {
+        return None;
+    }
+    // No unpacking: *args could rebind the name, **kwargs could add arguments
+    if call.arguments.args.iter().any(Expr::is_starred_expr)
+        || call.arguments.keywords.iter().any(|kw| kw.arg.is_none())
+    {
+        return None;
+    }
+    // The target must be an absolute literal: relative names actually consume the
+    // package context, so a non-literal one makes the target unknowable
+    let name = literal_module_name(call)?;
+    if name.starts_with('.') {
+        return None;
+    }
+    positional_or_keyword_argument(call, 1, "package")
+}
+
+/// Return whether an `import_module` call's arguments are opaque (`*args`/`**kwargs`
+/// unpacking): neither its target nor its runtime behavior can be determined
+/// statically.
+pub(crate) fn has_opaque_arguments(call: &ExprCall) -> bool {
+    call.arguments.args.iter().any(Expr::is_starred_expr)
+        || call.arguments.keywords.iter().any(|kw| kw.arg.is_none())
+}
+
+/// Return whether an `import_module` call is statically known to raise `TypeError`
+/// before importing anything: extra positional arguments, unknown keywords, or an
+/// argument bound both positionally and by keyword. `*args`/`**kwargs` unpacking is
+/// opaque and not reported.
+pub(crate) fn statically_raises_type_error(call: &ExprCall) -> bool {
+    let positional_count = call.arguments.args.len();
+    if positional_count > 2 && !call.arguments.args.iter().any(Expr::is_starred_expr) {
+        return true;
+    }
+    call.arguments
+        .keywords
+        .iter()
+        .any(|keyword| match keyword.arg.as_deref() {
+            Some("name") => positional_count >= 1,
+            Some("package") => positional_count >= 2,
+            Some(_) => true,
+            None => false,
+        })
+}

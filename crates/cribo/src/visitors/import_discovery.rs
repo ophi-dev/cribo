@@ -52,6 +52,11 @@ pub(crate) enum ImportType {
     Relative { level: u32 },
     /// `importlib.import_module("module`") with static string
     ImportlibStatic,
+    /// `importlib.import_module("module")` whose remaining arguments cannot be
+    /// safely discarded (e.g. a side-effectful `package=touch()` expression): the
+    /// call stays a runtime import, so its literal target must stay installed and
+    /// reach requirements generation instead of being bundled
+    ImportlibPreserved,
 }
 
 /// An import discovered during AST traversal
@@ -769,44 +774,80 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
     fn visit_expr(&mut self, expr: &'a Expr) {
         match expr {
             Expr::Call(call) => {
-                // Check for importlib.import_module("literal"); calls whose remaining
-                // arguments cannot be safely discarded (e.g. package=touch()) are left
-                // for runtime and must not be recorded as static imports
-                if self.is_static_importlib_call(call)
-                    && crate::python::importlib_call::arguments_safely_discardable(call)
-                    && let Some(module_name) = self.extract_literal_module_name(call)
-                {
-                    let package_context = self.extract_package_context(call);
-                    log::debug!(
-                        "Found static importlib call for module: {module_name}, package: \
-                         {package_context:?}"
-                    );
+                // Check for importlib.import_module("literal"). Two statically
+                // resolvable shapes bundle their target: fully discardable arguments
+                // (the call is replaced by module access) and the evaluable-package
+                // form (`import_module("pkg", package=touch())`, rewritten so the
+                // extra argument is still evaluated). Opaque argument shapes with a
+                // literal absolute name keep the call verbatim but record the target
+                // as a preserved runtime dependency.
+                if self.is_static_importlib_call(call) {
+                    if crate::python::importlib_call::arguments_safely_discardable(call)
+                        || crate::python::importlib_call::evaluable_package_argument(call).is_some()
+                    {
+                        if let Some(module_name) = self.extract_literal_module_name(call) {
+                            let package_context = self.extract_package_context(call);
+                            log::debug!(
+                                "Found static importlib call for module: {module_name}, package: \
+                                 {package_context:?}"
+                            );
 
-                    // Determine import level for relative imports
-                    let level = if module_name.starts_with('.') {
-                        module_name.chars().take_while(|&c| c == '.').count() as u32
-                    } else {
-                        0
-                    };
+                            // Determine import level for relative imports
+                            let level = if module_name.starts_with('.') {
+                                module_name.chars().take_while(|&c| c == '.').count() as u32
+                            } else {
+                                0
+                            };
 
-                    // Track this as an import
-                    let import = DiscoveredImport {
-                        module_name: Some(module_name),
-                        names: vec![], // No specific names for direct module import
-                        location: self.current_location(),
-                        range: call.range,
-                        level,
-                        import_type: ImportType::ImportlibStatic,
-                        execution_contexts: FxIndexSet::default(),
-                        is_used_in_init: false,
-                        is_movable: false,
-                        is_type_checking_only: self.in_type_checking(),
-                        package_context,
-                    };
-                    self.imports.push(import);
+                            // Track this as an import
+                            let import = DiscoveredImport {
+                                module_name: Some(module_name),
+                                names: vec![], // No specific names for direct module import
+                                location: self.current_location(),
+                                range: call.range,
+                                level,
+                                import_type: ImportType::ImportlibStatic,
+                                execution_contexts: FxIndexSet::default(),
+                                is_used_in_init: false,
+                                is_movable: false,
+                                is_type_checking_only: self.in_type_checking(),
+                                package_context,
+                            };
+                            self.imports.push(import);
 
-                    // Do not add to imported_names: importlib.import_module returns a value
-                    // assigned to a variable, but it does not bind `module_name` in scope.
+                            // Do not add to imported_names: importlib.import_module returns a
+                            // value assigned to a variable, but it does not bind `module_name`
+                            // in scope.
+                        }
+                    } else if !crate::python::importlib_call::statically_raises_type_error(call)
+                        && let Some(module_name) = self.extract_literal_module_name(call)
+                        && !module_name.starts_with('.')
+                    {
+                        // Opaque argument shapes (e.g. `import_module("pkg", **kw)`)
+                        // keep the call verbatim, but the literal absolute target is
+                        // still a runtime dependency: it must stay installed and
+                        // reach requirements generation. Calls statically known to
+                        // raise TypeError never import their target and record
+                        // nothing.
+                        log::debug!(
+                            "Found preserved importlib call for module: {module_name} (arguments \
+                             not safely discardable)"
+                        );
+                        let import = DiscoveredImport {
+                            module_name: Some(module_name),
+                            names: vec![],
+                            location: self.current_location(),
+                            range: call.range,
+                            level: 0,
+                            import_type: ImportType::ImportlibPreserved,
+                            execution_contexts: FxIndexSet::default(),
+                            is_used_in_init: false,
+                            is_movable: false,
+                            is_type_checking_only: self.in_type_checking(),
+                            package_context: None,
+                        };
+                        self.imports.push(import);
+                    }
                 }
             }
             Expr::Name(ExprName { id, range, .. }) => {

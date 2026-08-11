@@ -55,11 +55,15 @@ impl DynamicHandler {
     /// Both argument forms are supported: positional (`import_module(".m", "pkg")`) and
     /// keyword (`import_module(name=".m", package="pkg")`).
     ///
-    /// Calls whose remaining arguments cannot be safely discarded (e.g. a
-    /// side-effectful `package=touch()` expression) are not resolved: replacing them
-    /// with module access would skip evaluating those arguments.
+    /// Two argument shapes resolve: fully discardable arguments, and the
+    /// evaluable-package form (`import_module("pkg", package=touch())`), whose extra
+    /// expression the rewrite must still evaluate (see
+    /// [`Self::transform_importlib_import_module`]). Anything else stays a runtime
+    /// call.
     fn resolve_importlib_target(call: &ExprCall, bundler: &Bundler<'_>) -> Option<String> {
-        if !crate::python::importlib_call::arguments_safely_discardable(call) {
+        if !(crate::python::importlib_call::arguments_safely_discardable(call)
+            || crate::python::importlib_call::evaluable_package_argument(call).is_some())
+        {
             return None;
         }
         let module_name = crate::python::importlib_call::literal_module_name(call)?;
@@ -108,7 +112,12 @@ impl DynamicHandler {
         Some(resolved_name)
     }
 
-    /// Transform importlib.import_module("module-name") to direct module reference
+    /// Transform importlib.import_module("module-name") to direct module reference.
+    ///
+    /// For the evaluable-package form (`import_module("pkg", package=touch())`), the
+    /// package expression is evaluated but ignored by CPython for absolute names, so
+    /// the rewrite preserves its evaluation (and any exception or side effect) with
+    /// `(touch(), <module access>)[1]`.
     pub(in crate::code_generator::import_transformer) fn transform_importlib_import_module(
         call: &ExprCall,
         bundler: &Bundler<'_>,
@@ -134,7 +143,23 @@ impl DynamicHandler {
                 }
 
                 // Use common logic for module access
-                return Some(create_module_access_expr(&resolved_name));
+                let access = create_module_access_expr(&resolved_name);
+                // Preserve the evaluation of a non-literal package expression:
+                // Python evaluates it before importing, so its side effects and
+                // exceptions must survive the rewrite
+                if let Some(package_expr) =
+                    crate::python::importlib_call::evaluable_package_argument(call)
+                {
+                    use ruff_python_ast::ExprContext;
+
+                    use crate::ast_builder::expressions;
+                    return Some(expressions::subscript(
+                        expressions::tuple(vec![package_expr.clone(), access]),
+                        expressions::integer_literal(1),
+                        ExprContext::Load,
+                    ));
+                }
+                return Some(access);
             }
         }
         None

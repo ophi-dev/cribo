@@ -109,6 +109,10 @@ pub struct BundleOrchestrator {
     /// they never enter the module graph as imports, but their distributions must
     /// still reach requirements generation
     external_importlib_targets: std::sync::Mutex<crate::types::FxIndexSet<String>>,
+    /// Absolute literal targets of preserved `import_module` calls (arguments not
+    /// safely discardable): the call executes as a real runtime import even when the
+    /// target is also bundled, so its distribution must stay installed
+    preserved_importlib_targets: std::sync::Mutex<crate::types::FxIndexSet<String>>,
 }
 
 impl BundleOrchestrator {
@@ -119,6 +123,7 @@ impl BundleOrchestrator {
             conflict_resolver: SymbolConflictResolver::new(),
             module_cache: std::sync::Mutex::new(FxIndexMap::default()),
             external_importlib_targets: std::sync::Mutex::new(crate::types::FxIndexSet::default()),
+            preserved_importlib_targets: std::sync::Mutex::new(crate::types::FxIndexSet::default()),
         }
     }
 
@@ -236,6 +241,10 @@ impl BundleOrchestrator {
         self.external_importlib_targets
             .lock()
             .expect("external importlib targets lock poisoned")
+            .clear();
+        self.preserved_importlib_targets
+            .lock()
+            .expect("preserved importlib targets lock poisoned")
             .clear();
 
         // Store the original entry path before transformation
@@ -802,9 +811,13 @@ impl BundleOrchestrator {
                 && (processed.source.contains("importlib")
                     || processed.source.contains("pkg_resources"))
             {
-                params.resolver.record_queried_distributions(
-                    crate::resolver::queried_distribution_requirements(&processed.ast),
-                );
+                let usage = crate::resolver::queried_distribution_requirements(&processed.ast);
+                params
+                    .resolver
+                    .record_queried_distributions(usage.requirements);
+                if usage.enumerates_distributions {
+                    params.resolver.record_global_distribution_enumeration();
+                }
             }
 
             // Extract imports from the processed AST
@@ -1140,6 +1153,7 @@ impl BundleOrchestrator {
             let extracted_imports = if matches!(
                 import.import_type,
                 crate::visitors::ImportType::ImportlibStatic
+                    | crate::visitors::ImportType::ImportlibPreserved
             ) {
                 self.handle_importlib_static(import, is_in_error_handler)
             } else if import.level > 0 {
@@ -1550,6 +1564,17 @@ impl BundleOrchestrator {
         params: &mut DiscoveryParams<'_>,
     ) -> Result<()> {
         // Special handling for ImportlibStatic imports that might have invalid Python identifiers
+        if import_type == Some(crate::visitors::ImportType::ImportlibPreserved) {
+            // The call is preserved verbatim and executes as a real runtime import:
+            // its target is never bundled through this call, but its distribution
+            // must reach requirements generation
+            debug!("Recording preserved importlib target: {import}");
+            self.preserved_importlib_targets
+                .lock()
+                .expect("preserved importlib targets lock poisoned")
+                .insert(import.to_owned());
+            return Ok(());
+        }
         if import_type == Some(crate::visitors::ImportType::ImportlibStatic) {
             debug!("Processing ImportlibStatic import: {import}");
 
@@ -2001,6 +2026,26 @@ impl BundleOrchestrator {
                 ImportOrigin::ThirdParty | ImportOrigin::Unknown
             ) && !(self.config.bundle_third_party() && classification.should_bundle())
             {
+                requirement_imports
+                    .entry(import.clone())
+                    .or_insert_with(|| resolver.get_import_search_root(import));
+            }
+        }
+
+        // Targets of preserved import_module calls execute as real runtime imports
+        // even when their source is also bundled, so their distributions must stay
+        // installed regardless of the target's own bundling classification
+        for import in self
+            .preserved_importlib_targets
+            .lock()
+            .expect("preserved importlib targets lock poisoned")
+            .iter()
+        {
+            let classification = resolver.classify_import(import);
+            if matches!(
+                classification.origin,
+                ImportOrigin::ThirdParty | ImportOrigin::Unknown
+            ) {
                 requirement_imports
                     .entry(import.clone())
                     .or_insert_with(|| resolver.get_import_search_root(import));

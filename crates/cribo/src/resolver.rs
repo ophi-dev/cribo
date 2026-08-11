@@ -657,38 +657,48 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
                     return;
                 }
                 Some(DynamicImportKind::ImportModule) => {
-                    // Arguments that cannot be safely discarded (e.g. a side-effectful
-                    // package expression) leave the call unrewritten, so the target
-                    // must stay installed for the runtime import to succeed
-                    if !crate::python::importlib_call::arguments_safely_discardable(call) {
+                    // Opaque unpacked arguments (`*args`/`**kwargs`) make the call's
+                    // target unknowable, so the loaded module could be missing from
+                    // the bundle
+                    if crate::python::importlib_call::has_opaque_arguments(call) {
                         self.found = true;
                         return;
                     }
-                    match crate::python::importlib_call::module_name_argument(call) {
-                        // Literal imports of installed-package APIs are equivalent to
-                        // their ordinary import statements and block bundling too
-                        Some(Expr::StringLiteral(literal))
-                            if Self::module_is_metadata_api(literal.value.to_str()) =>
-                        {
-                            self.found = true;
-                            return;
-                        }
-                        // Relative literal names are only discoverable when the package
-                        // context is a literal as well; `__package__` and other
-                        // expressions cannot be resolved statically
-                        Some(Expr::StringLiteral(literal))
-                            if literal.value.to_str().starts_with('.')
-                                && crate::python::importlib_call::literal_package_context(call)
+                    // Calls statically known to raise TypeError never import their
+                    // target: they are preserved verbatim and are safe to bundle
+                    if crate::python::importlib_call::statically_raises_type_error(call) {
+                        // Nested expressions are still walked below
+                    } else {
+                        match crate::python::importlib_call::module_name_argument(call) {
+                            // Literal imports of installed-package APIs are equivalent
+                            // to their ordinary import statements and block bundling
+                            // too
+                            Some(Expr::StringLiteral(literal))
+                                if Self::module_is_metadata_api(literal.value.to_str()) =>
+                            {
+                                self.found = true;
+                                return;
+                            }
+                            // Relative literal names are only discoverable when the
+                            // package context is a literal as well; `__package__` and
+                            // other expressions cannot be resolved statically
+                            Some(Expr::StringLiteral(literal))
+                                if literal.value.to_str().starts_with('.')
+                                    && crate::python::importlib_call::literal_package_context(
+                                        call,
+                                    )
                                     .is_none() =>
-                        {
-                            self.found = true;
-                            return;
-                        }
-                        Some(Expr::StringLiteral(_)) => {}
-                        // Non-literal or missing names cannot be discovered statically
-                        _ => {
-                            self.found = true;
-                            return;
+                            {
+                                self.found = true;
+                                return;
+                            }
+                            Some(Expr::StringLiteral(_)) => {}
+                            // Non-literal or missing names cannot be discovered
+                            // statically
+                            _ => {
+                                self.found = true;
+                                return;
+                            }
                         }
                     }
                 }
@@ -734,10 +744,21 @@ impl DistributionInfo {
 }
 
 /// All installed distributions discovered under one search root.
+/// Result of scanning a module for runtime distribution-metadata usage.
+pub(crate) struct DistributionMetadataUsage {
+    /// Verbatim requirement literals of name-taking query calls
+    pub(crate) requirements: Vec<String>,
+    /// Whether a global enumeration API (`importlib.metadata.distributions()`,
+    /// `packages_distributions()`) is called: it observes every installed
+    /// distribution, so bundled distributions would vanish from its results
+    pub(crate) enumerates_distributions: bool,
+}
+
 /// Collect literal requirement strings whose distribution metadata a module queries
 /// at runtime, e.g. `importlib.metadata.version("provider")`,
 /// `metadata.distribution("provider")`, `pkg_resources.get_distribution("provider")`,
-/// or `pkg_resources.require("provider[speed]>=2")`.
+/// or `pkg_resources.require("provider[speed]>=2")`, along with whether the module
+/// enumerates installed distributions globally.
 ///
 /// A call is recognized only when its callee resolves through the enclosing scopes'
 /// import bindings to one of the metadata APIs (`importlib.metadata`,
@@ -748,7 +769,7 @@ impl DistributionInfo {
 /// version specifiers and extras (`"provider[speed]>=2"`) survive into requirements.
 pub(crate) fn queried_distribution_requirements(
     module: &ruff_python_ast::ModModule,
-) -> Vec<String> {
+) -> DistributionMetadataUsage {
     use ruff_python_ast::Stmt;
 
     /// Canonical dotted paths of the query functions that take a distribution name.
@@ -765,6 +786,14 @@ pub(crate) fn queried_distribution_requirements(
         "importlib_metadata.files",
         "pkg_resources.get_distribution",
         "pkg_resources.require",
+    ];
+    /// Canonical dotted paths of the enumeration functions that observe every
+    /// installed distribution without naming one.
+    const ENUMERATION_FUNCTIONS: [&str; 4] = [
+        "importlib.metadata.distributions",
+        "importlib.metadata.packages_distributions",
+        "importlib_metadata.distributions",
+        "importlib_metadata.packages_distributions",
     ];
 
     /// Collect the import bindings of ONE lexical scope (local name -> canonical
@@ -853,6 +882,7 @@ pub(crate) fn queried_distribution_requirements(
 
     struct QueryCollector {
         requirements: Vec<String>,
+        enumerates_distributions: bool,
         /// Innermost-last stacks, parallel per scope
         binding_scopes: Vec<IndexMap<String, String>>,
         shadow_scopes: Vec<FxIndexSet<String>>,
@@ -951,24 +981,27 @@ pub(crate) fn queried_distribution_requirements(
         fn visit_expr(&mut self, expr: &'a ruff_python_ast::Expr) {
             use ruff_python_ast::Expr;
             if let Expr::Call(call) = expr
-                && self
-                    .canonical_callee_path(&call.func)
-                    .is_some_and(|path| QUERY_FUNCTIONS.contains(&path.as_str()))
+                && let Some(path) = self.canonical_callee_path(&call.func)
             {
-                // `require` is variadic; collecting every positional literal is
-                // safe for the other APIs too
-                for argument in &call.arguments.args {
-                    if let Expr::StringLiteral(literal) = argument {
-                        self.requirements.push(literal.value.to_str().to_owned());
-                    }
+                if ENUMERATION_FUNCTIONS.contains(&path.as_str()) {
+                    self.enumerates_distributions = true;
                 }
-                // Keyword forms differ per API (`distribution_name=`, `dist=`);
-                // over-collection is safe, so accept any literal keyword value
-                for keyword in &call.arguments.keywords {
-                    if keyword.arg.is_some()
-                        && let Expr::StringLiteral(literal) = &keyword.value
-                    {
-                        self.requirements.push(literal.value.to_str().to_owned());
+                if QUERY_FUNCTIONS.contains(&path.as_str()) {
+                    // `require` is variadic; collecting every positional literal is
+                    // safe for the other APIs too
+                    for argument in &call.arguments.args {
+                        if let Expr::StringLiteral(literal) = argument {
+                            self.requirements.push(literal.value.to_str().to_owned());
+                        }
+                    }
+                    // Keyword forms differ per API (`distribution_name=`, `dist=`);
+                    // over-collection is safe, so accept any literal keyword value
+                    for keyword in &call.arguments.keywords {
+                        if keyword.arg.is_some()
+                            && let Expr::StringLiteral(literal) = &keyword.value
+                        {
+                            self.requirements.push(literal.value.to_str().to_owned());
+                        }
                     }
                 }
             }
@@ -979,6 +1012,7 @@ pub(crate) fn queried_distribution_requirements(
     use ruff_python_ast::visitor::Visitor as _;
     let mut collector = QueryCollector {
         requirements: Vec::new(),
+        enumerates_distributions: false,
         // Module-scope bindings are collected up front: a function body may query
         // through an alias imported after the function definition
         binding_scopes: vec![collect_scope_bindings(&module.body)],
@@ -987,7 +1021,10 @@ pub(crate) fn queried_distribution_requirements(
     for stmt in &module.body {
         collector.visit_stmt(stmt);
     }
-    collector.requirements
+    DistributionMetadataUsage {
+        requirements: collector.requirements,
+        enumerates_distributions: collector.enumerates_distributions,
+    }
 }
 
 #[derive(Debug, Default)]
@@ -1056,6 +1093,10 @@ pub struct ModuleResolver {
     /// `provider[speed]>=2` from `pkg_resources.require`), preserved so requirements
     /// generation keeps their extras and version constraints
     queried_requirement_literals: RefCell<IndexSet<String>>,
+    /// Whether bundled code enumerates installed distributions globally
+    /// (`importlib.metadata.distributions()`, `packages_distributions()`): every
+    /// distribution is then observable and bundled ones would vanish from results
+    global_distribution_enumeration: std::cell::Cell<bool>,
     /// Cache of resolved environment site-packages roots (hot path for resolution)
     site_packages_dirs_cache: RefCell<Option<Vec<PathBuf>>>,
     /// Distribution ownership indexed once for each searched filesystem root
@@ -1107,6 +1148,7 @@ impl ModuleResolver {
             external_packages_cache: RefCell::new(IndexMap::new()),
             queried_distributions: RefCell::new(IndexSet::new()),
             queried_requirement_literals: RefCell::new(IndexSet::new()),
+            global_distribution_enumeration: std::cell::Cell::new(false),
             site_packages_dirs_cache: RefCell::new(None),
             distribution_ownership_cache: RefCell::new(IndexMap::new()),
             entry_dir: None,
@@ -2447,14 +2489,17 @@ impl ModuleResolver {
     }
 
     /// Return whether any distribution claiming an import has its metadata queried at
-    /// runtime by bundled code.
+    /// runtime by bundled code. When bundled code enumerates installed distributions
+    /// globally, every owned import counts as queried: the enumeration would no
+    /// longer observe the distribution once its source is inlined.
     fn queried_distribution_owns_import(
         &self,
         site_packages_dir: &Path,
         import_name: &str,
     ) -> bool {
+        let enumerated = self.global_distribution_enumeration.get();
         let queried = self.queried_distributions.borrow();
-        if queried.is_empty() {
+        if queried.is_empty() && !enumerated {
             return false;
         }
         self.with_distribution_ownership_index(site_packages_dir, |index| {
@@ -2463,9 +2508,22 @@ impl ModuleResolver {
                 .iter()
                 .any(|distribution| {
                     !distribution.name.is_empty()
-                        && queried.contains(&Self::normalize_distribution_name(&distribution.name))
+                        && (enumerated
+                            || queried
+                                .contains(&Self::normalize_distribution_name(&distribution.name)))
                 })
         })
+    }
+
+    /// Record that bundled code enumerates installed distributions globally
+    /// (`importlib.metadata.distributions()`, `packages_distributions()`): every
+    /// distribution must then stay observable, so none may be inlined.
+    pub(crate) fn record_global_distribution_enumeration(&self) {
+        if !self.global_distribution_enumeration.replace(true) {
+            self.classification_cache.borrow_mut().clear();
+            self.external_packages_cache.borrow_mut().clear();
+            self.module_cache.borrow_mut().clear();
+        }
     }
 
     /// Record requirement literals whose distribution metadata bundled code queries
@@ -5141,9 +5199,9 @@ print(local_collision(), local_shadow(str))
 print(md.version('post-collision-name'))
 ";
         let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
-        let requirements = queried_distribution_requirements(parsed.syntax());
+        let usage = queried_distribution_requirements(parsed.syntax());
         assert_eq!(
-            requirements,
+            usage.requirements,
             vec![
                 "direct-name",
                 "attr-name",
@@ -5155,6 +5213,40 @@ print(md.version('post-collision-name'))
                 "post-collision-name"
             ]
         );
+        assert!(
+            !usage.enumerates_distributions,
+            "name-taking queries are not global enumeration"
+        );
+    }
+
+    /// Global metadata enumeration (`distributions()`, `packages_distributions()`)
+    /// is detected through the same scoped callee resolution, while unrelated
+    /// same-named callables are ignored.
+    #[test]
+    fn test_global_distribution_enumeration_detection() {
+        let source = "\
+import importlib.metadata
+
+print(importlib.metadata.packages_distributions())
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        assert!(queried_distribution_requirements(parsed.syntax()).enumerates_distributions);
+
+        let source = "\
+from importlib.metadata import distributions
+
+print(list(distributions()))
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        assert!(queried_distribution_requirements(parsed.syntax()).enumerates_distributions);
+
+        let source = "\
+import provider
+
+print(provider.distributions())
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        assert!(!queried_distribution_requirements(parsed.syntax()).enumerates_distributions);
     }
 
     /// Shared libraries loaded through ctypes/CFFI (`.dll`/`.dylib`) and versioned
@@ -5621,13 +5713,14 @@ print(md.version('post-collision-name'))
             "import builtins\nload = builtins.__import__\nload(module_variable)\n",
             "import importlib\nmeta = importlib.import_module('importlib.metadata')\n",
             "import importlib\nres = importlib.import_module(name='pkg_resources')\n",
-            "import importlib\nimportlib.import_module('pkg', name='other')\n",
             "import importlib\nimportlib.import_module('.backend', __package__)\n",
             "import importlib\nimportlib.import_module(name='.backend', package=__package__)\n",
             "def load_backend(name):\n    return load(name)\n\nimport importlib\nload = \
              importlib.import_module\n",
             "import importlib\nimportlib.import_module(name=module_variable)\n",
             "import importlib\nimportlib.import_module(name=f'.{name}', package=__package__)\n",
+            "import importlib\nimportlib.import_module(*module_args)\n",
+            "import importlib\nimportlib.import_module('pkg', **kwargs)\n",
             "__import__(module_variable)\n",
             "__import__('json')\n",
             "backend = __import__('pkg.backend', fromlist=['KIND'])\n",
@@ -5643,6 +5736,14 @@ print(md.version('post-collision-name'))
             "import importlib\nimportlib.import_module('.helper', 'pkg')\n",
             "import importlib\nimportlib.import_module(name='pkg.module')\n",
             "from importlib import import_module as load\nload('.helper', 'pkg')\n",
+            // The package argument is evaluated but ignored for absolute names: the
+            // target is statically known and the evaluation is preserved by codegen
+            "import importlib\nimportlib.import_module('pkg.module', __package__)\n",
+            "import importlib\nimportlib.import_module('pkg.module', package=touch())\n",
+            // Statically known TypeErrors never import anything; the preserved call
+            // raises exactly like the original
+            "import importlib\nimportlib.import_module('pkg', name='other')\n",
+            "import importlib\nimportlib.import_module('pkg', invalid_keyword=1)\n",
         ] {
             assert!(
                 !ModuleResolver::python_source_blocks_bundling(source),

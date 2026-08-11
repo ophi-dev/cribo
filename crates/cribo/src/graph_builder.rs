@@ -2075,7 +2075,9 @@ impl<'a> GraphBuilder<'a> {
                 _ => false,
             };
 
-            if is_import_module && crate::python::importlib_call::arguments_safely_discardable(call)
+            if is_import_module
+                && (crate::python::importlib_call::arguments_safely_discardable(call)
+                    || crate::python::importlib_call::evaluable_package_argument(call).is_some())
             {
                 // Extract the module name if it's a static string, from either the
                 // first positional argument or the `name=` keyword argument
