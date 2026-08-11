@@ -82,14 +82,20 @@ impl InitializationPhase {
 
         // Register the module in sys.modules before executing its body, exactly like
         // Python's import machinery, but ONLY for modules that inspect sys.modules
-        // (self-references such as `sys.modules[__name__]`, membership checks):
-        // registering every bundled module would shadow installed distributions that
-        // native extensions re-import while the bundled copy is still initializing.
+        // (self-references such as `sys.modules[__name__]`, membership checks) or
+        // that are targets of preserved import_module calls, which resolve them
+        // through sys.modules at runtime: registering every bundled module would
+        // shadow installed distributions that native extensions re-import while the
+        // bundled copy is still initializing.
         // The import machinery reads `__spec__` unguarded on registered parents when
         // resolving real submodule imports, so it must exist (None is valid).
         // self.__spec__ = None
         // _sys.modules[self.__name__] = self
-        if crate::visitors::utils::accesses_own_sys_modules_entry(&ast.body) {
+        if crate::visitors::utils::accesses_own_sys_modules_entry(&ast.body)
+            || bundler
+                .resolver
+                .is_preserved_importlib_target(ctx.module_name)
+        {
             state.registers_in_sys_modules = true;
             state.body.push(ast_builder::statements::assign_attribute(
                 SELF_PARAM,

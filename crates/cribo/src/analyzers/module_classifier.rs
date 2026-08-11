@@ -209,9 +209,11 @@ impl<'a> ModuleClassifier<'a> {
             // Modules inspecting sys.modules (e.g. `sys.modules[__name__]`, even
             // inside function bodies) need a real module object registered under
             // their original name: the wrapper approach provides one and its init
-            // registers it in sys.modules
+            // registers it in sys.modules. Targets of preserved import_module calls
+            // need the same registration so the runtime call resolves them.
             let accesses_own_sys_modules =
-                crate::visitors::utils::accesses_own_sys_modules_entry(&ast.body);
+                crate::visitors::utils::accesses_own_sys_modules_entry(&ast.body)
+                    || self.resolver.is_preserved_importlib_target(&module_name);
 
             if has_side_effects
                 || has_invalid_identifier

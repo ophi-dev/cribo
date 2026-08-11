@@ -1565,14 +1565,31 @@ impl BundleOrchestrator {
     ) -> Result<()> {
         // Special handling for ImportlibStatic imports that might have invalid Python identifiers
         if import_type == Some(crate::visitors::ImportType::ImportlibPreserved) {
-            // The call is preserved verbatim and executes as a real runtime import:
-            // its target is never bundled through this call, but its distribution
-            // must reach requirements generation
-            debug!("Recording preserved importlib target: {import}");
-            self.preserved_importlib_targets
-                .lock()
-                .expect("preserved importlib targets lock poisoned")
-                .insert(import.to_owned());
+            // The call is preserved verbatim and executes as a real runtime import.
+            // A bundleable target (first-party module or pure third-party package)
+            // must be BUNDLED and registered in sys.modules so the runtime call
+            // resolves it inside the single-file bundle; anything else must reach
+            // requirements generation instead.
+            let classification = params.resolver.classify_import(import);
+            if classification.should_bundle()
+                && let Ok(Some(import_path)) = params.resolver.resolve_module_path(import)
+            {
+                debug!(
+                    "Preserved importlib target '{import}' is bundleable; queueing it and \
+                     registering it in sys.modules"
+                );
+                params
+                    .resolver
+                    .record_preserved_importlib_target(import.to_owned());
+                self.add_to_discovery_queue_if_new(import, import_path, params)?;
+                self.add_parent_packages_to_discovery(import, params)?;
+            } else {
+                debug!("Recording preserved importlib target as external: {import}");
+                self.preserved_importlib_targets
+                    .lock()
+                    .expect("preserved importlib targets lock poisoned")
+                    .insert(import.to_owned());
+            }
             return Ok(());
         }
         if import_type == Some(crate::visitors::ImportType::ImportlibStatic) {
