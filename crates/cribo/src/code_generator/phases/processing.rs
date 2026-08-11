@@ -681,17 +681,6 @@ impl ProcessingPhase {
         }
 
         bundler.create_namespace_chain_for_module(module_name, &module_var, all_inlined_stmts);
-
-        // Targets of preserved import_module calls may have no rewritten import that
-        // would trigger their initialization; initialize them eagerly so their init
-        // registers them in sys.modules before the preserved runtime call executes
-        // (init functions are guarded, so a duplicate call is a no-op)
-        if bundler.resolver.is_preserved_importlib_target(module_name) {
-            log::debug!("Eagerly initializing preserved importlib target module '{module_name}'");
-            all_inlined_stmts.push(
-                crate::ast_builder::module_wrapper::create_wrapper_module_init_call(&module_var),
-            );
-        }
     }
 }
 

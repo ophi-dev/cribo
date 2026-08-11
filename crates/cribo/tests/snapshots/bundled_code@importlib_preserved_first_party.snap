@@ -49,8 +49,7 @@ def _cribo_init___cribo_640e92_helper(self):
             del _sys.modules[self.__name__]
         raise
 helper.__init__ = _cribo_init___cribo_640e92_helper
-helper = helper.__init__(helper)
 importlib = _cribo.importlib
 options = {}
-helper = importlib.import_module("helper", **options)
+helper = (_cribo_init___cribo_640e92_helper(helper), importlib.import_module("helper", **options))[1]
 print(helper.VALUE)
