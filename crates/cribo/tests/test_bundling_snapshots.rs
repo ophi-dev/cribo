@@ -677,9 +677,11 @@ fn check_for_duplicate_lines_with_result(
             occurrences.len() > 1
                 && (
                     // Definitely report duplicate sys.modules assignments, except the
-                    // per-init registration idiom that every wrapper module emits
+                    // per-init registration/cleanup idioms every self-registering
+                    // wrapper module emits
                     (line.contains("sys.modules[")
-                        && line.trim_start() != "_sys.modules[self.__name__] = self") ||
+                        && line.trim_start() != "_sys.modules[self.__name__] = self"
+                        && line.trim_start() != "del _sys.modules[self.__name__]") ||
                 // Report duplicate imports
                 line.trim_start().starts_with("import ") ||
                 line.trim_start().starts_with("from ") ||

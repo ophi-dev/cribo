@@ -90,6 +90,7 @@ impl InitializationPhase {
         // self.__spec__ = None
         // _sys.modules[self.__name__] = self
         if crate::visitors::utils::accesses_own_sys_modules_entry(&ast.body) {
+            state.registers_in_sys_modules = true;
             state.body.push(ast_builder::statements::assign_attribute(
                 SELF_PARAM,
                 "__spec__",

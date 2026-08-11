@@ -123,6 +123,116 @@ impl<'a> InitFunctionBuilder<'a> {
         CleanupPhase::execute(self.bundler, self.ctx, &mut state);
 
         // Phase 11: Finalization
-        FinalizationPhase::build_function_stmt(self.bundler, self.ctx, state)
+        let registers_in_sys_modules = state.registers_in_sys_modules;
+        let function_stmt = FinalizationPhase::build_function_stmt(self.bundler, self.ctx, state)?;
+
+        // For modules registered in sys.modules, mirror Python's failure semantics:
+        // an exception during module execution unregisters the module and clears the
+        // initializing guard so a later import retries instead of observing a stale,
+        // partially initialized namespace
+        Ok(Self::wrap_registered_init_with_failure_cleanup(
+            function_stmt,
+            registers_in_sys_modules,
+        ))
+    }
+
+    /// Wrap a registered init function's body (everything after the registration
+    /// prologue) in `try/except BaseException` that resets `__initializing__`,
+    /// removes the `sys.modules` entry when it still points to `self`, and
+    /// re-raises.
+    fn wrap_registered_init_with_failure_cleanup(
+        mut function_stmt: Stmt,
+        registers_in_sys_modules: bool,
+    ) -> Stmt {
+        use ruff_python_ast::{CmpOp, ExceptHandler, ExceptHandlerExceptHandler, ExprContext};
+
+        use crate::{
+            ast_builder::{CRIBO_SYS_ALIAS, expressions, statements},
+            code_generator::module_transformer::SELF_PARAM,
+        };
+
+        if !registers_in_sys_modules {
+            return function_stmt;
+        }
+        let Stmt::FunctionDef(function_def) = &mut function_stmt else {
+            return function_stmt;
+        };
+        // The registration prologue: __initialized__ guard, __initializing__ guard,
+        // __initializing__ = True, __spec__ = None, sys.modules registration
+        const PROLOGUE_STATEMENTS: usize = 5;
+        if function_def.body.len() <= PROLOGUE_STATEMENTS {
+            return function_stmt;
+        }
+        let guarded_body: Vec<Stmt> = function_def
+            .body
+            .split_off(PROLOGUE_STATEMENTS)
+            .into_iter()
+            .collect();
+
+        let sys_modules = || {
+            expressions::attribute(
+                expressions::name(CRIBO_SYS_ALIAS, ExprContext::Load),
+                "modules",
+                ExprContext::Load,
+            )
+        };
+        let self_name_attribute = || {
+            expressions::attribute(
+                expressions::name(SELF_PARAM, ExprContext::Load),
+                "__name__",
+                ExprContext::Load,
+            )
+        };
+        // self.__initializing__ = False
+        // if _sys.modules.get(self.__name__) is self:
+        //     del _sys.modules[self.__name__]
+        // raise
+        let registration_is_current =
+            ruff_python_ast::Expr::Compare(ruff_python_ast::ExprCompare {
+                node_index: ruff_python_ast::AtomicNodeIndex::NONE,
+                left: Box::new(expressions::call(
+                    expressions::attribute(sys_modules(), "get", ExprContext::Load),
+                    vec![self_name_attribute()],
+                    vec![],
+                )),
+                ops: Box::new([CmpOp::Is]),
+                comparators: Box::new([expressions::name(SELF_PARAM, ExprContext::Load)]),
+                range: ruff_text_size::TextRange::default(),
+            });
+        let unregister = Stmt::Delete(ruff_python_ast::StmtDelete {
+            node_index: ruff_python_ast::AtomicNodeIndex::NONE,
+            targets: vec![expressions::subscript(
+                sys_modules(),
+                self_name_attribute(),
+                ExprContext::Del,
+            )],
+            range: ruff_text_size::TextRange::default(),
+        });
+        let cleanup = vec![
+            statements::assign_attribute(
+                SELF_PARAM,
+                "__initializing__",
+                expressions::bool_literal(false),
+            ),
+            statements::if_stmt(registration_is_current, vec![unregister], vec![]),
+            statements::raise(None, None),
+        ];
+        let handler = ExceptHandler::ExceptHandler(ExceptHandlerExceptHandler {
+            node_index: ruff_python_ast::AtomicNodeIndex::NONE,
+            type_: Some(Box::new(expressions::name(
+                "BaseException",
+                ExprContext::Load,
+            ))),
+            name: None,
+            body: cleanup.into(),
+            range: ruff_text_size::TextRange::default(),
+        });
+        function_def.body.push(statements::try_stmt(
+            guarded_body,
+            vec![handler],
+            vec![],
+            vec![],
+        ));
+        function_stmt
     }
 }

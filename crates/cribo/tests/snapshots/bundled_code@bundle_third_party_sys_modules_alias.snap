@@ -37,17 +37,23 @@ def _cribo_init___cribo_da5146_alias_pkg(self):
     self.__initializing__ = True
     self.__spec__ = None
     _sys.modules[self.__name__] = self
-    """Package capturing its own module object through aliased sys.modules access."""
-    loaded = _cribo.sys.modules
-    self.loaded = loaded
-    SELF = _cribo.sys.modules[self.__name__]
-    self.SELF = SELF
-    VALUE = "alias-aware"
-    self.VALUE = VALUE
-    self.loaded = _cribo.sys.modules
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+    try:
+        """Package capturing its own module object through aliased sys.modules access."""
+        loaded = _cribo.sys.modules
+        self.loaded = loaded
+        SELF = _cribo.sys.modules[self.__name__]
+        self.SELF = SELF
+        VALUE = "alias-aware"
+        self.VALUE = VALUE
+        self.loaded = _cribo.sys.modules
+        self.__initialized__ = True
+        self.__initializing__ = False
+        return self
+    except BaseException:
+        self.__initializing__ = False
+        if _sys.modules.get(self.__name__) is self:
+            del _sys.modules[self.__name__]
+        raise
 alias_pkg.__init__ = _cribo_init___cribo_da5146_alias_pkg
 alias_pkg_system = _cribo.types.SimpleNamespace(__name__='alias_pkg.system', __initializing__=False, __initialized__=False)
 def _cribo_init___cribo_447ffd_alias_pkg_system(self):
@@ -58,14 +64,20 @@ def _cribo_init___cribo_447ffd_alias_pkg_system(self):
     self.__initializing__ = True
     self.__spec__ = None
     _sys.modules[self.__name__] = self
-    system = _cribo.sys
-    self.system = system
-    self.system = system
-    REGISTERED = self.__name__ in _cribo.sys.modules
-    self.REGISTERED = REGISTERED
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+    try:
+        system = _cribo.sys
+        self.system = system
+        self.system = system
+        REGISTERED = self.__name__ in _cribo.sys.modules
+        self.REGISTERED = REGISTERED
+        self.__initialized__ = True
+        self.__initializing__ = False
+        return self
+    except BaseException:
+        self.__initializing__ = False
+        if _sys.modules.get(self.__name__) is self:
+            del _sys.modules[self.__name__]
+        raise
 alias_pkg_system.__init__ = _cribo_init___cribo_447ffd_alias_pkg_system
 alias_pkg.system = alias_pkg_system
 __cribo_init_result = _cribo_init___cribo_da5146_alias_pkg(alias_pkg)

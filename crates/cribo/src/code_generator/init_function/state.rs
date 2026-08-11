@@ -44,6 +44,10 @@ pub(crate) struct InitFunctionState {
 
     /// Track which lifted globals have been initialized
     pub initialized_lifted_globals: FxIndexSet<String>,
+
+    /// Whether the init prologue registered the module in `sys.modules` (the module
+    /// accesses its own entry); failure cleanup must then unregister it
+    pub registers_in_sys_modules: bool,
 }
 
 impl InitFunctionState {
@@ -58,6 +62,7 @@ impl InitFunctionState {
             stdlib_reexports: FxIndexSet::default(),
             lifted_names: None,
             initialized_lifted_globals: FxIndexSet::default(),
+            registers_in_sys_modules: false,
         }
     }
 }
