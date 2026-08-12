@@ -392,6 +392,10 @@ struct UnbundlablePatternDetector {
     /// `load = importlib.import_module`. Import discovery cannot rewrite calls through
     /// these, so any call blocks bundling, literal or not.
     assigned_import_aliases: IndexSet<String>,
+    /// Names bound to the `importlib` module itself (`import importlib`,
+    /// `import importlib as il`), so qualified reload calls through aliases
+    /// (`il.reload(mod)`) are recognized too.
+    importlib_module_aliases: IndexSet<String>,
 }
 
 impl UnbundlablePatternDetector {
@@ -429,11 +433,12 @@ impl UnbundlablePatternDetector {
             }
             // importlib.reload cannot operate on bundled namespaces: they carry no
             // usable spec/loader, so reloading them would fail where the installed
-            // module reloads fine. Only the importlib-qualified form is matched:
-            // unrelated `x.reload()` methods are common and harmless.
+            // module reloads fine. Matched through the importlib module and any of
+            // its aliases (`import importlib as il; il.reload(mod)`); unrelated
+            // `x.reload()` methods are common and harmless.
             Expr::Attribute(attribute)
                 if attribute.attr.as_str() == "reload"
-                    && matches!(&*attribute.value, Expr::Name(name) if name.id.as_str() == "importlib") =>
+                    && matches!(&*attribute.value, Expr::Name(name) if self.importlib_module_aliases.contains(name.id.as_str())) =>
             {
                 Some(DynamicImportKind::Undiscoverable)
             }
@@ -461,23 +466,43 @@ impl UnbundlablePatternDetector {
     /// pass, so calls in functions defined above the alias binding are still
     /// recognized. Import aliases (`from importlib import import_module as X`) and
     /// (annotated) assignment aliases (`X = importlib.import_module`) are collected
-    /// separately because only import aliases support static discovery.
+    /// separately because only import aliases support static discovery. Aliases of
+    /// the `importlib` module itself are tracked for qualified reload detection.
+    ///
+    /// Collection iterates to a FIXED POINT: an alias chain may cross a function
+    /// defined before its source binding (`def run(): load = late; ...` followed by
+    /// `late = importlib.import_module`), so a single source-order pass would miss
+    /// links established earlier in the file than their referent.
     /// Over-collection is safe: it can only classify more packages as external.
     fn collect_dynamic_import_aliases(&mut self, body: &[ruff_python_ast::Stmt]) {
         struct AliasCollector<'detector> {
-            import_aliases: &'detector mut IndexSet<String>,
-            assigned_aliases: &'detector mut IndexSet<String>,
+            from_imports: &'detector mut IndexSet<String>,
+            assigned: &'detector mut IndexSet<String>,
+            importlib_modules: &'detector mut IndexSet<String>,
         }
 
         impl<'a> ruff_python_ast::visitor::Visitor<'a> for AliasCollector<'_> {
             fn visit_stmt(&mut self, stmt: &'a ruff_python_ast::Stmt) {
                 use ruff_python_ast::{Expr, Stmt};
                 match stmt {
+                    // `import importlib` / `import importlib as il` binds the module
+                    // itself; qualified reload calls resolve through these names
+                    Stmt::Import(import_stmt) => {
+                        for alias in &import_stmt.names {
+                            if alias.name.as_str() == "importlib" {
+                                let bound_name = alias
+                                    .asname
+                                    .as_ref()
+                                    .map_or_else(|| alias.name.as_str(), |name| name.as_str());
+                                self.importlib_modules.insert(bound_name.to_owned());
+                            }
+                        }
+                    }
                     Stmt::ImportFrom(import_from)
                         if import_from.level == 0
                             && import_from.module.as_deref() == Some("importlib") =>
                     {
-                        record_import_module_aliases(import_from, self.import_aliases);
+                        record_import_module_aliases(import_from, self.from_imports);
                         // Aliases of importlib.reload are undiscoverable callables:
                         // bundled namespaces cannot be reloaded through the import
                         // machinery
@@ -487,7 +512,7 @@ impl UnbundlablePatternDetector {
                                     .asname
                                     .as_ref()
                                     .map_or_else(|| alias.name.as_str(), |name| name.as_str());
-                                self.assigned_aliases.insert(bound_name.to_owned());
+                                self.assigned.insert(bound_name.to_owned());
                             }
                         }
                     }
@@ -502,7 +527,7 @@ impl UnbundlablePatternDetector {
                                     .asname
                                     .as_ref()
                                     .map_or_else(|| alias.name.as_str(), |name| name.as_str());
-                                self.assigned_aliases.insert(bound_name.to_owned());
+                                self.assigned.insert(bound_name.to_owned());
                             }
                         }
                     }
@@ -510,8 +535,8 @@ impl UnbundlablePatternDetector {
                         record_assigned_import_module_aliases(
                             &assign.targets,
                             &assign.value,
-                            self.import_aliases,
-                            self.assigned_aliases,
+                            self.from_imports,
+                            self.assigned,
                         );
                     }
                     Stmt::AnnAssign(ann_assign) => {
@@ -520,8 +545,8 @@ impl UnbundlablePatternDetector {
                             record_assigned_import_module_aliases(
                                 std::slice::from_ref(target),
                                 value,
-                                self.import_aliases,
-                                self.assigned_aliases,
+                                self.from_imports,
+                                self.assigned,
                             );
                         }
                     }
@@ -532,12 +557,32 @@ impl UnbundlablePatternDetector {
         }
 
         use ruff_python_ast::visitor::Visitor as _;
-        let mut collector = AliasCollector {
-            import_aliases: &mut self.dynamic_import_aliases,
-            assigned_aliases: &mut self.assigned_import_aliases,
-        };
-        for stmt in body {
-            collector.visit_stmt(stmt);
+        // `importlib` itself always names the module when it is in scope
+        self.importlib_module_aliases.insert("importlib".to_owned());
+        // Iterate to a fixed point: each pass may resolve alias links whose
+        // referent is bound later in source order than the alias assignment
+        loop {
+            let sizes_before = (
+                self.dynamic_import_aliases.len(),
+                self.assigned_import_aliases.len(),
+                self.importlib_module_aliases.len(),
+            );
+            let mut collector = AliasCollector {
+                from_imports: &mut self.dynamic_import_aliases,
+                assigned: &mut self.assigned_import_aliases,
+                importlib_modules: &mut self.importlib_module_aliases,
+            };
+            for stmt in body {
+                collector.visit_stmt(stmt);
+            }
+            let sizes_after = (
+                self.dynamic_import_aliases.len(),
+                self.assigned_import_aliases.len(),
+                self.importlib_module_aliases.len(),
+            );
+            if sizes_after == sizes_before {
+                break;
+            }
         }
     }
 }
@@ -780,6 +825,10 @@ struct DistributionInfo {
     declared_prefixes: IndexSet<String>,
     /// Import names implied by installed `RECORD` files
     record_imports: IndexSet<String>,
+    /// Whether an installed-files listing (`RECORD` / `installed-files.txt`) was
+    /// read: without one, the distribution's full file set is unknown and purity
+    /// cannot be proven distribution-wide
+    has_file_listing: bool,
 }
 
 impl DistributionInfo {
@@ -3122,6 +3171,9 @@ impl ModuleResolver {
     /// `.dist-info` installs and legacy `.egg-info` installs.
     fn build_distribution_ownership_index(site_packages_dir: &Path) -> DistributionOwnershipIndex {
         let mut index = DistributionOwnershipIndex::default();
+        // Top-level native artifact modules seen beside the metadata directories;
+        // used to attribute unclaimed native siblings to listing-less distributions
+        let mut top_level_native_modules: Vec<String> = Vec::new();
         let entries = match std::fs::read_dir(site_packages_dir) {
             Ok(entries) => entries,
             Err(error) => {
@@ -3164,6 +3216,59 @@ impl ModuleResolver {
                     );
                     index.distributions.push(distribution);
                 }
+            } else if Self::is_native_artifact_file_name(dir_name) {
+                // A top-level native module (e.g. `_backend.cpython-312.so`); its
+                // module name is the file-name stem before the first dot
+                if let Some((module_name, _)) = dir_name.split_once('.')
+                    && !module_name.is_empty()
+                {
+                    top_level_native_modules.push(module_name.to_owned());
+                }
+            }
+        }
+
+        // Attribute top-level native modules to distributions. A record-claimed
+        // owner already carries the native flag from its listing scan; a
+        // prefix-claimed owner without a listing learns it now; an UNCLAIMED
+        // native module may belong to ANY distribution lacking an installed-files
+        // listing, so none of those can be proven pure (the conventional example
+        // is a name-inferred `frontend/` whose wheel also installed a top-level
+        // `_backend.so` that no RECORD mentions).
+        for module_name in top_level_native_modules {
+            let record_owners: Vec<usize> = index
+                .distributions
+                .iter()
+                .enumerate()
+                .filter(|(_, distribution)| distribution.record_imports.contains(&module_name))
+                .map(|(position, _)| position)
+                .collect();
+            let owners = if record_owners.is_empty() {
+                index
+                    .distributions
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, distribution)| distribution.owns_import(&module_name))
+                    .map(|(position, _)| position)
+                    .collect()
+            } else {
+                record_owners
+            };
+            if owners.is_empty() {
+                for distribution in &mut index.distributions {
+                    if !distribution.has_file_listing && !distribution.ships_native_artifacts {
+                        log::debug!(
+                            "Distribution '{}' has no installed-files listing and the unclaimed \
+                             native sibling '{module_name}' exists: treating the distribution as \
+                             shipping native artifacts",
+                            distribution.name
+                        );
+                        distribution.ships_native_artifacts = true;
+                    }
+                }
+            } else {
+                for position in owners {
+                    index.distributions[position].ships_native_artifacts = true;
+                }
             }
         }
 
@@ -3188,6 +3293,7 @@ impl ModuleResolver {
 
         let record_file = dist_info_dir.join("RECORD");
         if let Some(record) = Self::read_metadata_sidecar(&record_file, incomplete) {
+            distribution.has_file_listing = true;
             for line in record.lines() {
                 let path_part = Self::record_line_first_field(line);
                 Self::index_record_path(&path_part, &mut distribution);
@@ -3236,6 +3342,7 @@ impl ModuleResolver {
         // (e.g. "../package/module.py"); resolve them against the site-packages root
         let installed_files = egg_info_dir.join("installed-files.txt");
         if let Some(listing) = Self::read_metadata_sidecar(&installed_files, incomplete) {
+            distribution.has_file_listing = true;
             for line in listing.lines() {
                 let record_path = line.trim();
                 let normalized = record_path
@@ -6255,6 +6362,15 @@ print(query('assigned-name'))
             "__import__(module_variable)\n",
             "__import__('json')\n",
             "backend = __import__('pkg.backend', fromlist=['KIND'])\n",
+            // Reload through the importlib module or any alias of it: bundled
+            // namespaces carry no usable spec/loader
+            "import importlib\nimportlib.reload(config)\n",
+            "import importlib as il\nil.reload(config)\n",
+            "from importlib import reload\nreload(config)\n",
+            // Alias chains resolve to a FIXED POINT even when a link appears in a
+            // function defined before its referent's source binding
+            "def run(name):\n    load = late\n    return load(name)\n\nimport importlib\nlate = \
+             importlib.import_module\nrun('pkg.backend')\n",
         ] {
             assert!(
                 ModuleResolver::python_source_blocks_bundling(source),
@@ -6697,6 +6813,75 @@ print(query('assigned-name'))
             resolver.bundled_distribution_requirements(&bundled_imports),
             vec!["hidden-dep>=1".to_owned()],
             "name-inferred ownership must carry the distribution's Requires-Dist constraints"
+        );
+
+        Ok(())
+    }
+
+    /// A distribution without an installed-files listing cannot be proven pure when
+    /// an UNCLAIMED native module sits beside the metadata: the listing-less
+    /// distribution may own that sibling (e.g. `frontend/` plus `_backend.so` from
+    /// the same RECORD-less wheel), so it must stay external. A native sibling
+    /// claimed by another distribution's listing does not taint it.
+    #[test]
+    fn test_bundle_third_party_keeps_listing_less_distribution_with_native_sibling_external()
+    -> Result<()> {
+        // Unclaimed native sibling: the listing-less distribution stays external
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!("frontend/{}", crate::python::constants::INIT_FILE)),
+            "VALUE = 1\n",
+        )?;
+        // No RECORD, no top_level.txt, no Import-Name header
+        create_test_file(
+            &site_packages.join("frontend-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: frontend\nVersion: 1.0\n",
+        )?;
+        create_test_file(
+            &site_packages.join("_backend.cpython-312-x86_64-linux-gnu.so"),
+            "",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+        assert_eq!(
+            resolver.classify_import("frontend").bundle,
+            BundleDisposition::External,
+            "a listing-less distribution beside an unclaimed native module may own it and \
+             cannot be proven pure"
+        );
+
+        // Control: the same native sibling CLAIMED by another distribution's RECORD
+        // leaves the listing-less pure distribution bundleable
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!("frontend/{}", crate::python::constants::INIT_FILE)),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("frontend-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: frontend\nVersion: 1.0\n",
+        )?;
+        create_test_file(
+            &site_packages.join("_backend.cpython-312-x86_64-linux-gnu.so"),
+            "",
+        )?;
+        create_test_file(
+            &site_packages.join("native_owner-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: native-owner\nVersion: 1.0\n",
+        )?;
+        create_test_file(
+            &site_packages.join("native_owner-1.0.dist-info/RECORD"),
+            "_backend.cpython-312-x86_64-linux-gnu.so,,\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+        assert_eq!(
+            resolver.classify_import("frontend").bundle,
+            BundleDisposition::Include,
+            "a native sibling claimed by another distribution's listing must not taint pure \
+             listing-less distributions"
         );
 
         Ok(())
