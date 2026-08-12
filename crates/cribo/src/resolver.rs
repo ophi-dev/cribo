@@ -795,60 +795,102 @@ impl DistributionInfo {
     }
 }
 
-/// Collect the import bindings of ONE lexical scope (local name -> canonical
-/// dotted path): control-flow blocks are traversed, while nested function and
-/// class bodies are skipped — their bindings belong to those scopes.
-fn collect_scope_bindings(stmts: &[ruff_python_ast::Stmt]) -> IndexMap<String, String> {
+/// Canonical dotted paths of the query functions that take a distribution name.
+const QUERY_FUNCTIONS: [&str; 12] = [
+    "importlib.metadata.version",
+    "importlib.metadata.distribution",
+    "importlib.metadata.metadata",
+    "importlib.metadata.requires",
+    "importlib.metadata.files",
+    "importlib_metadata.version",
+    "importlib_metadata.distribution",
+    "importlib_metadata.metadata",
+    "importlib_metadata.requires",
+    "importlib_metadata.files",
+    "pkg_resources.get_distribution",
+    "pkg_resources.require",
+];
+/// Canonical dotted paths of the enumeration functions that observe every
+/// installed distribution without naming one. `entry_points` belongs here: it
+/// observes groups (including script shims) that provider policy deliberately
+/// ignores, so its results must reflect the full installed environment.
+const ENUMERATION_FUNCTIONS: [&str; 7] = [
+    "importlib.metadata.distributions",
+    "importlib.metadata.packages_distributions",
+    "importlib.metadata.entry_points",
+    "importlib_metadata.distributions",
+    "importlib_metadata.packages_distributions",
+    "importlib_metadata.entry_points",
+    "pkg_resources.iter_entry_points",
+];
+/// Canonical dotted paths of legacy enumeration OBJECTS (not calls): iterating
+/// `pkg_resources.working_set` observes every installed distribution too.
+const ENUMERATION_OBJECTS: [&str; 2] = ["pkg_resources.working_set", "pkg_resources.Environment"];
+/// Modules whose wildcard import binds the metadata query API.
+const METADATA_API_MODULES: [&str; 3] =
+    ["importlib.metadata", "importlib_metadata", "pkg_resources"];
+
+/// Collect every import binding a name EVER holds anywhere in a module —
+/// module level, function bodies, class bodies, and all conditional branches —
+/// as a union: local name -> set of canonical dotted paths.
+///
+/// The metadata-query scanner is conservative by construction: emulating Python
+/// scoping precisely (shadowing, source order, `global`/`nonlocal`, call timing)
+/// can only fail towards MISSING a query, which silently drops a needed
+/// distribution. Unioning every plausible binding makes under-collection
+/// impossible; over-collection merely keeps an extra distribution installed.
+fn collect_import_binding_candidates(
+    module: &ruff_python_ast::ModModule,
+) -> IndexMap<String, Vec<String>> {
     use ruff_python_ast::{
-        AnyNodeRef,
-        visitor::source_order::{self, SourceOrderVisitor, TraversalSignal},
+        Stmt,
+        visitor::source_order::{self, SourceOrderVisitor},
     };
 
-    struct ScopeBindingCollector {
-        bindings: IndexMap<String, String>,
+    struct BindingCollector {
+        bindings: IndexMap<String, Vec<String>>,
+        /// Wildcard-imported modules: `from importlib.metadata import *` binds the
+        /// module's whole public API
+        wildcard_modules: Vec<String>,
     }
 
-    impl<'a> SourceOrderVisitor<'a> for ScopeBindingCollector {
-        fn enter_node(&mut self, node: AnyNodeRef<'a>) -> TraversalSignal {
-            match node {
-                AnyNodeRef::StmtFunctionDef(_) | AnyNodeRef::StmtClassDef(_) => {
-                    TraversalSignal::Skip
-                }
-                _ => TraversalSignal::Traverse,
+    impl BindingCollector {
+        fn record(&mut self, name: &str, target: String) {
+            let candidates = self.bindings.entry(name.to_owned()).or_default();
+            if !candidates.contains(&target) {
+                candidates.push(target);
             }
         }
+    }
 
-        fn visit_stmt(&mut self, stmt: &'a ruff_python_ast::Stmt) {
+    impl<'a> SourceOrderVisitor<'a> for BindingCollector {
+        fn visit_stmt(&mut self, stmt: &'a Stmt) {
             match stmt {
-                ruff_python_ast::Stmt::Import(import_stmt) => {
+                Stmt::Import(import_stmt) => {
                     for alias in &import_stmt.names {
                         let module_name = alias.name.as_str();
                         if let Some(asname) = &alias.asname {
                             // `import importlib.metadata as md` binds the full path
-                            self.bindings
-                                .insert(asname.as_str().to_owned(), module_name.to_owned());
+                            self.record(asname.as_str(), module_name.to_owned());
                         } else {
                             // `import importlib.metadata` binds only `importlib`
                             let top_level = module_name.split('.').next().unwrap_or(module_name);
-                            self.bindings
-                                .insert(top_level.to_owned(), top_level.to_owned());
+                            self.record(top_level, top_level.to_owned());
                         }
                     }
                 }
-                ruff_python_ast::Stmt::ImportFrom(import_from) if import_from.level == 0 => {
+                Stmt::ImportFrom(import_from) if import_from.level == 0 => {
                     if let Some(module) = import_from.module.as_deref() {
                         for alias in &import_from.names {
                             if alias.name.as_str() == "*" {
+                                self.wildcard_modules.push(module.to_owned());
                                 continue;
                             }
                             let bound_name = alias
                                 .asname
                                 .as_ref()
                                 .map_or_else(|| alias.name.as_str(), |name| name.as_str());
-                            self.bindings.insert(
-                                bound_name.to_owned(),
-                                format!("{module}.{}", alias.name.as_str()),
-                            );
+                            self.record(bound_name, format!("{module}.{}", alias.name.as_str()));
                         }
                     }
                 }
@@ -858,75 +900,40 @@ fn collect_scope_bindings(stmts: &[ruff_python_ast::Stmt]) -> IndexMap<String, S
         }
     }
 
-    let mut collector = ScopeBindingCollector {
+    let mut collector = BindingCollector {
         bindings: IndexMap::new(),
+        wildcard_modules: Vec::new(),
     };
-    for stmt in stmts {
+    for stmt in &module.body {
         collector.visit_stmt(stmt);
+    }
+    // `from <metadata module> import *` binds every query and enumeration function
+    for module_name in collector.wildcard_modules {
+        if METADATA_API_MODULES.contains(&module_name.as_str()) {
+            for function in QUERY_FUNCTIONS.iter().chain(&ENUMERATION_FUNCTIONS) {
+                if let Some(member) = function.strip_prefix(&format!("{module_name}.")) {
+                    collector
+                        .bindings
+                        .entry(member.to_owned())
+                        .or_default()
+                        .push((*function).to_owned());
+                }
+            }
+        }
     }
     collector.bindings
 }
 
-/// Collect the names declared `global` in one scope (nested function and class
-/// bodies excluded): assignments to them bind the MODULE scope, not this one.
-fn collect_scope_globals(stmts: &[ruff_python_ast::Stmt]) -> FxIndexSet<String> {
+/// Collect every single-value string constant of a module (union across all
+/// scopes): names only ever assigned one literal string value. Names assigned
+/// anything else anywhere are excluded — a query argument that could hold several
+/// values is unresolvable and triggers the conservative enumeration fallback.
+fn collect_string_constant_candidates(
+    module: &ruff_python_ast::ModModule,
+) -> IndexMap<String, String> {
     use ruff_python_ast::{
-        AnyNodeRef,
-        visitor::source_order::{self, SourceOrderVisitor, TraversalSignal},
-    };
-
-    struct GlobalCollector {
-        names: FxIndexSet<String>,
-    }
-
-    impl<'a> SourceOrderVisitor<'a> for GlobalCollector {
-        fn enter_node(&mut self, node: AnyNodeRef<'a>) -> TraversalSignal {
-            match node {
-                AnyNodeRef::StmtFunctionDef(_) | AnyNodeRef::StmtClassDef(_) => {
-                    TraversalSignal::Skip
-                }
-                _ => TraversalSignal::Traverse,
-            }
-        }
-
-        fn visit_stmt(&mut self, stmt: &'a ruff_python_ast::Stmt) {
-            if let ruff_python_ast::Stmt::Global(global_stmt) = stmt {
-                for name in &global_stmt.names {
-                    self.names.insert(name.id.to_string());
-                }
-            }
-            source_order::walk_stmt(self, stmt);
-        }
-    }
-
-    let mut collector = GlobalCollector {
-        names: FxIndexSet::default(),
-    };
-    for stmt in stmts {
-        collector.visit_stmt(stmt);
-    }
-    collector.names
-}
-
-/// Collect the names a scope rebinds outside of imports (parameters are added by
-/// the caller): such names shadow outer metadata aliases for the whole scope.
-/// Names declared `global` bind the module scope instead and never shadow.
-fn collect_scope_shadows(stmts: &[ruff_python_ast::Stmt]) -> FxIndexSet<String> {
-    let mut shadows = FxIndexSet::default();
-    let globals = collect_scope_globals(stmts);
-    crate::visitors::LocalVarCollector::new(&mut shadows, &globals)
-        .ignore_import_bindings()
-        .collect_from_stmts(stmts);
-    shadows
-}
-
-/// Collect the string constants of one scope (nested function and class bodies
-/// excluded): names assigned exactly once, from a plain string literal. Names
-/// assigned more than once are ambiguous and excluded.
-fn collect_scope_constants(stmts: &[ruff_python_ast::Stmt]) -> IndexMap<String, String> {
-    use ruff_python_ast::{
-        AnyNodeRef,
-        visitor::source_order::{self, SourceOrderVisitor, TraversalSignal},
+        Expr, Stmt,
+        visitor::source_order::{self, SourceOrderVisitor},
     };
 
     struct ConstantCollector {
@@ -936,8 +943,8 @@ fn collect_scope_constants(stmts: &[ruff_python_ast::Stmt]) -> IndexMap<String, 
     impl ConstantCollector {
         fn record_target(&mut self, name: &str, value: Option<String>) {
             match self.values.get_mut(name) {
-                // Reassigned: ambiguous, never resolvable
-                Some(existing) => *existing = None,
+                Some(existing) if *existing != value => *existing = None,
+                Some(_) => {}
                 None => {
                     self.values.insert(name.to_owned(), value);
                 }
@@ -946,27 +953,58 @@ fn collect_scope_constants(stmts: &[ruff_python_ast::Stmt]) -> IndexMap<String, 
     }
 
     impl<'a> SourceOrderVisitor<'a> for ConstantCollector {
-        fn enter_node(&mut self, node: AnyNodeRef<'a>) -> TraversalSignal {
-            match node {
-                AnyNodeRef::StmtFunctionDef(_) | AnyNodeRef::StmtClassDef(_) => {
-                    TraversalSignal::Skip
-                }
-                _ => TraversalSignal::Traverse,
-            }
-        }
-
-        fn visit_stmt(&mut self, stmt: &'a ruff_python_ast::Stmt) {
-            if let ruff_python_ast::Stmt::Assign(assign) = stmt {
-                use ruff_python_ast::Expr;
-                let literal = match &*assign.value {
-                    Expr::StringLiteral(literal) => Some(literal.value.to_str().to_owned()),
-                    _ => None,
-                };
-                for target in &assign.targets {
-                    if let Expr::Name(name) = target {
-                        self.record_target(name.id.as_str(), literal.clone());
+        fn visit_stmt(&mut self, stmt: &'a Stmt) {
+            match stmt {
+                Stmt::Assign(assign) => {
+                    let literal = match &*assign.value {
+                        Expr::StringLiteral(literal) => Some(literal.value.to_str().to_owned()),
+                        _ => None,
+                    };
+                    for target in &assign.targets {
+                        if let Expr::Name(name) = target {
+                            self.record_target(name.id.as_str(), literal.clone());
+                        }
                     }
                 }
+                Stmt::AnnAssign(ann_assign) => {
+                    if let Expr::Name(name) = &*ann_assign.target {
+                        let literal = ann_assign.value.as_deref().and_then(|value| match value {
+                            Expr::StringLiteral(literal) => Some(literal.value.to_str().to_owned()),
+                            _ => None,
+                        });
+                        self.record_target(name.id.as_str(), literal);
+                    }
+                }
+                Stmt::AugAssign(aug_assign) => {
+                    if let Expr::Name(name) = &*aug_assign.target {
+                        self.record_target(name.id.as_str(), None);
+                    }
+                }
+                Stmt::FunctionDef(function_def) => {
+                    // Parameters hold caller-supplied values: they invalidate any
+                    // same-named constant
+                    for param in function_def
+                        .parameters
+                        .posonlyargs
+                        .iter()
+                        .chain(&function_def.parameters.args)
+                        .chain(&function_def.parameters.kwonlyargs)
+                    {
+                        self.record_target(param.parameter.name.as_str(), None);
+                    }
+                    if let Some(vararg) = &function_def.parameters.vararg {
+                        self.record_target(vararg.name.as_str(), None);
+                    }
+                    if let Some(kwarg) = &function_def.parameters.kwarg {
+                        self.record_target(kwarg.name.as_str(), None);
+                    }
+                }
+                Stmt::For(for_stmt) => {
+                    if let Expr::Name(name) = &*for_stmt.target {
+                        self.record_target(name.id.as_str(), None);
+                    }
+                }
+                _ => {}
             }
             source_order::walk_stmt(self, stmt);
         }
@@ -975,7 +1013,7 @@ fn collect_scope_constants(stmts: &[ruff_python_ast::Stmt]) -> IndexMap<String, 
     let mut collector = ConstantCollector {
         values: IndexMap::new(),
     };
-    for stmt in stmts {
+    for stmt in &module.body {
         collector.visit_stmt(stmt);
     }
     collector
@@ -990,8 +1028,9 @@ pub(crate) struct DistributionMetadataUsage {
     /// Verbatim requirement literals of name-taking query calls
     pub(crate) requirements: Vec<String>,
     /// Whether a global enumeration API (`importlib.metadata.distributions()`,
-    /// `packages_distributions()`) is called: it observes every installed
-    /// distribution, so bundled distributions would vanish from its results
+    /// `packages_distributions()`, `pkg_resources.working_set`) is observed, or a
+    /// recognized query's target cannot be determined: every installed
+    /// distribution must then stay observable
     pub(crate) enumerates_distributions: bool,
 }
 
@@ -999,172 +1038,41 @@ pub(crate) struct DistributionMetadataUsage {
 /// at runtime, e.g. `importlib.metadata.version("provider")`,
 /// `metadata.distribution("provider")`, `pkg_resources.get_distribution("provider")`,
 /// or `pkg_resources.require("provider[speed]>=2")`, along with whether the module
-/// enumerates installed distributions globally.
+/// observes installed distributions globally.
 ///
-/// A call is recognized only when its callee resolves through the enclosing scopes'
-/// import bindings to one of the metadata APIs (`importlib.metadata`,
-/// `importlib_metadata`, `pkg_resources`): unrelated callables that merely share a
-/// final name (e.g. `provider.version("provider")`) record nothing, and a
-/// scope-local rebinding (e.g. a function-level `import json as md`) shadows an
-/// outer metadata alias only inside that scope. Literals are returned verbatim so
-/// version specifiers and extras (`"provider[speed]>=2"`) survive into requirements.
+/// The scanner is conservative BY CONSTRUCTION rather than scope-precise: a name
+/// resolves to the union of every import binding it ever plausibly holds anywhere
+/// in the module (all scopes, all branches, aliases, wildcard metadata imports),
+/// and shadowing never vetoes recognition. Under-collection — silently dropping a
+/// distribution the runtime still queries — is therefore structurally impossible;
+/// over-collection merely keeps an extra distribution installed. Two additional
+/// safety nets catch indirect access: a metadata query with an unresolvable
+/// argument, and ANY reference to a metadata module member outside a recognized
+/// query call (e.g. `query = md.version`), both flag global observation.
 pub(crate) fn queried_distribution_requirements(
     module: &ruff_python_ast::ModModule,
 ) -> DistributionMetadataUsage {
-    use ruff_python_ast::Stmt;
-
-    /// Canonical dotted paths of the query functions that take a distribution name.
-    const QUERY_FUNCTIONS: [&str; 12] = [
-        "importlib.metadata.version",
-        "importlib.metadata.distribution",
-        "importlib.metadata.metadata",
-        "importlib.metadata.requires",
-        "importlib.metadata.files",
-        "importlib_metadata.version",
-        "importlib_metadata.distribution",
-        "importlib_metadata.metadata",
-        "importlib_metadata.requires",
-        "importlib_metadata.files",
-        "pkg_resources.get_distribution",
-        "pkg_resources.require",
-    ];
-    /// Canonical dotted paths of the enumeration functions that observe every
-    /// installed distribution without naming one. `entry_points` belongs here: it
-    /// observes groups (including script shims) that provider policy deliberately
-    /// ignores, so its results must reflect the full installed environment.
-    const ENUMERATION_FUNCTIONS: [&str; 7] = [
-        "importlib.metadata.distributions",
-        "importlib.metadata.packages_distributions",
-        "importlib.metadata.entry_points",
-        "importlib_metadata.distributions",
-        "importlib_metadata.packages_distributions",
-        "importlib_metadata.entry_points",
-        "pkg_resources.iter_entry_points",
-    ];
-    /// Canonical dotted paths of legacy enumeration OBJECTS (not calls): iterating
-    /// `pkg_resources.working_set` observes every installed distribution too.
-    const ENUMERATION_OBJECTS: [&str; 2] =
-        ["pkg_resources.working_set", "pkg_resources.Environment"];
-
-    /// One lexical scope on the resolution stack.
-    struct Scope {
-        bindings: IndexMap<String, String>,
-        /// Single-assignment string constants, for resolving non-literal query
-        /// arguments (`NAME = "provider"; version(NAME)`)
-        constants: IndexMap<String, String>,
-        shadows: FxIndexSet<String>,
-        /// Python excludes class namespaces from the lexical lookup of functions
-        /// nested inside them, and class bodies bind names in source order rather
-        /// than hoisting them
-        is_class: bool,
-        /// Module scope only: the COMPLETE module bindings and constants, used when
-        /// the lookup originates inside a function body — functions resolve module
-        /// names at call time, which may be after later imports/assignments
-        deferred: Option<(IndexMap<String, String>, IndexMap<String, String>)>,
-    }
-
     struct QueryCollector {
         requirements: Vec<String>,
         enumerates_distributions: bool,
-        /// Innermost-last scope stack
-        scopes: Vec<Scope>,
+        bindings: IndexMap<String, Vec<String>>,
+        constants: IndexMap<String, String>,
+        /// Call expressions currently being examined as recognized queries: their
+        /// callee sub-expressions are exempt from the indirect-access safety net
+        recognized_callee_depth: usize,
     }
 
     impl QueryCollector {
-        /// Whether the current lookup originates inside a function body: module-level
-        /// names are then resolved at call time (complete module view) rather than in
-        /// source order.
-        fn lookup_is_call_time(&self) -> bool {
-            self.scopes[1..].iter().any(|scope| !scope.is_class)
+        /// Resolve a base name to every candidate canonical target it may hold.
+        fn base_candidates(&self, name: &str) -> Vec<String> {
+            self.bindings.get(name).cloned().unwrap_or_default()
         }
 
-        /// Resolve a base name to its candidate canonical targets, innermost scope
-        /// first. A function-body lookup against the module scope considers BOTH the
-        /// source-order view at this point AND the complete deferred view: the
-        /// function may be called before or after later module rebindings, so every
-        /// alias the name plausibly held applies (over-collection is safe).
-        fn resolve_base_candidates(&self, name: &str) -> Vec<String> {
-            let call_time = self.lookup_is_call_time();
-            let mut candidates: Vec<String> = Vec::new();
-            for (depth_from_top, scope) in self.scopes.iter().rev().enumerate() {
-                if scope.is_class && depth_from_top > 0 {
-                    continue;
-                }
-                if call_time && let Some((deferred_bindings, _)) = &scope.deferred {
-                    if let Some(target) = deferred_bindings.get(name) {
-                        candidates.push(target.clone());
-                    }
-                    if let Some(target) = scope.bindings.get(name)
-                        && !candidates.contains(target)
-                    {
-                        candidates.push(target.clone());
-                    }
-                    return candidates;
-                }
-                if let Some(target) = scope.bindings.get(name) {
-                    candidates.push(target.clone());
-                    return candidates;
-                }
-                if scope.shadows.contains(name) {
-                    return candidates;
-                }
-            }
-            candidates
-        }
-
-        /// Resolve a query argument to its candidate string values: a literal, or a
-        /// name resolving to single-assignment string constants through the scope
-        /// stack (both module views for function-body lookups). The boolean reports
-        /// whether the argument resolved at all.
-        fn resolve_string_argument_candidates(
-            &self,
-            expr: &ruff_python_ast::Expr,
-        ) -> (Vec<String>, bool) {
-            use ruff_python_ast::Expr;
-            match expr {
-                Expr::StringLiteral(literal) => (vec![literal.value.to_str().to_owned()], true),
-                Expr::Name(name) => {
-                    let name = name.id.as_str();
-                    let call_time = self.lookup_is_call_time();
-                    for (depth_from_top, scope) in self.scopes.iter().rev().enumerate() {
-                        if scope.is_class && depth_from_top > 0 {
-                            continue;
-                        }
-                        if call_time && let Some((_, deferred_constants)) = &scope.deferred {
-                            let mut values: Vec<String> = Vec::new();
-                            if let Some(value) = deferred_constants.get(name) {
-                                values.push(value.clone());
-                            }
-                            if let Some(value) = scope.constants.get(name)
-                                && !values.contains(value)
-                            {
-                                values.push(value.clone());
-                            }
-                            let resolved = !values.is_empty();
-                            return (values, resolved);
-                        }
-                        // Constants are checked before shadow blocking: a constant
-                        // assignment is itself a non-import binding
-                        if let Some(value) = scope.constants.get(name) {
-                            return (vec![value.clone()], true);
-                        }
-                        if scope.shadows.contains(name) || scope.bindings.contains_key(name) {
-                            return (Vec::new(), false);
-                        }
-                    }
-                    (Vec::new(), false)
-                }
-                _ => (Vec::new(), false),
-            }
-        }
-
-        /// Resolve a callee to its candidate canonical dotted paths through the
-        /// scoped bindings: each candidate base is substituted by what it was
-        /// imported as, and attribute segments are appended verbatim.
-        fn canonical_callee_paths(&self, callee: &ruff_python_ast::Expr) -> Vec<String> {
+        /// Resolve an expression to its candidate canonical dotted paths.
+        fn canonical_paths(&self, expr: &ruff_python_ast::Expr) -> Vec<String> {
             use ruff_python_ast::Expr;
             let mut segments: Vec<&str> = Vec::new();
-            let mut current = callee;
+            let mut current = expr;
             loop {
                 match current {
                     Expr::Attribute(attribute) => {
@@ -1173,7 +1081,7 @@ pub(crate) fn queried_distribution_requirements(
                     }
                     Expr::Name(name) => {
                         return self
-                            .resolve_base_candidates(name.id.as_str())
+                            .base_candidates(name.id.as_str())
                             .into_iter()
                             .map(|base| {
                                 let mut path = base;
@@ -1190,208 +1098,93 @@ pub(crate) fn queried_distribution_requirements(
             }
         }
 
-        /// Record the bindings a statement introduces into the current (class or
-        /// module) scope AFTER it was visited, in source order. Bindings from
-        /// conditional statements may never execute: they update aliases (last
-        /// branch wins, covering try/except aliasing) but never shadow, so outer
-        /// resolution is conservatively retained.
-        fn merge_statement_bindings(&mut self, stmt: &Stmt) {
-            let statement = std::slice::from_ref(stmt);
-            let stmt_bindings = collect_scope_bindings(statement);
-            let binds_unconditionally = matches!(
-                stmt,
-                Stmt::Assign(_)
-                    | Stmt::AnnAssign(_)
-                    | Stmt::AugAssign(_)
-                    | Stmt::Import(_)
-                    | Stmt::ImportFrom(_)
-                    | Stmt::FunctionDef(_)
-                    | Stmt::ClassDef(_)
-            );
-            let (stmt_shadows, stmt_constants) = if binds_unconditionally {
-                (
-                    collect_scope_shadows(statement),
-                    collect_scope_constants(statement),
-                )
-            } else {
-                (FxIndexSet::default(), IndexMap::new())
-            };
-            if let Some(scope) = self.scopes.last_mut() {
-                scope.bindings.extend(stmt_bindings);
-                scope.shadows.extend(stmt_shadows);
-                scope.constants.extend(stmt_constants);
+        /// Resolve a query argument to its candidate string values; the boolean
+        /// reports whether the argument resolved at all.
+        fn string_argument_candidates(&self, expr: &ruff_python_ast::Expr) -> (Vec<String>, bool) {
+            use ruff_python_ast::Expr;
+            match expr {
+                Expr::StringLiteral(literal) => (vec![literal.value.to_str().to_owned()], true),
+                Expr::Name(name) => self
+                    .constants
+                    .get(name.id.as_str())
+                    .map_or_else(|| (Vec::new(), false), |value| (vec![value.clone()], true)),
+                _ => (Vec::new(), false),
             }
         }
     }
 
     impl<'a> ruff_python_ast::visitor::Visitor<'a> for QueryCollector {
-        fn visit_stmt(&mut self, stmt: &'a Stmt) {
-            match stmt {
-                Stmt::FunctionDef(function_def) => {
-                    // Decorators, parameter defaults, and annotations execute in the
-                    // ENCLOSING scope at definition time; visit them before the
-                    // function scope is installed
-                    for decorator in &function_def.decorator_list {
-                        self.visit_expr(&decorator.expression);
-                    }
-                    for param in function_def
-                        .parameters
-                        .posonlyargs
-                        .iter()
-                        .chain(&function_def.parameters.args)
-                        .chain(&function_def.parameters.kwonlyargs)
-                    {
-                        if let Some(annotation) = &param.parameter.annotation {
-                            self.visit_expr(annotation);
-                        }
-                        if let Some(default) = &param.default {
-                            self.visit_expr(default);
-                        }
-                    }
-                    if let Some(vararg) = &function_def.parameters.vararg
-                        && let Some(annotation) = &vararg.annotation
-                    {
-                        self.visit_expr(annotation);
-                    }
-                    if let Some(kwarg) = &function_def.parameters.kwarg
-                        && let Some(annotation) = &kwarg.annotation
-                    {
-                        self.visit_expr(annotation);
-                    }
-                    if let Some(returns) = &function_def.returns {
-                        self.visit_expr(returns);
-                    }
-
-                    // Parameters and body-wide non-import bindings shadow outer
-                    // aliases for the WHOLE function body (Python scoping hoists
-                    // function-local bindings)
-                    let mut shadows = collect_scope_shadows(&function_def.body);
-                    let mut parameter_names = FxIndexSet::default();
-                    for param in function_def
-                        .parameters
-                        .posonlyargs
-                        .iter()
-                        .chain(&function_def.parameters.args)
-                        .chain(&function_def.parameters.kwonlyargs)
-                    {
-                        parameter_names.insert(param.parameter.name.as_str().to_owned());
-                    }
-                    if let Some(vararg) = &function_def.parameters.vararg {
-                        parameter_names.insert(vararg.name.as_str().to_owned());
-                    }
-                    if let Some(kwarg) = &function_def.parameters.kwarg {
-                        parameter_names.insert(kwarg.name.as_str().to_owned());
-                    }
-                    shadows.extend(parameter_names.iter().cloned());
-                    // A constant assignment colliding with a parameter runs AFTER the
-                    // parameter held a caller-supplied value; treating it as a
-                    // constant would misattribute earlier uses, so such names remain
-                    // plain shadows (unresolvable arguments then flag conservatively)
-                    let mut constants = collect_scope_constants(&function_def.body);
-                    constants.retain(|name, _| !parameter_names.contains(name));
-                    self.scopes.push(Scope {
-                        bindings: collect_scope_bindings(&function_def.body),
-                        constants,
-                        shadows,
-                        is_class: false,
-                        deferred: None,
-                    });
-                    for body_stmt in &function_def.body {
-                        self.visit_stmt(body_stmt);
-                    }
-                    self.scopes.pop();
-                }
-                Stmt::ClassDef(class_def) => {
-                    // Decorators and base-class expressions execute in the enclosing
-                    // scope at definition time
-                    for decorator in &class_def.decorator_list {
-                        self.visit_expr(&decorator.expression);
-                    }
-                    if let Some(arguments) = &class_def.arguments {
-                        for base in &arguments.args {
-                            self.visit_expr(base);
-                        }
-                        for keyword in &arguments.keywords {
-                            self.visit_expr(&keyword.value);
-                        }
-                    }
-
-                    // Class namespaces bind names in source order (no hoisting): a
-                    // use of an enclosing alias BEFORE the class rebinds the same
-                    // name must still resolve to the enclosing binding. Bindings
-                    // inside conditional statements may never execute, so they
-                    // neither rebind nor shadow: outer resolution is conservatively
-                    // retained across branches (over-collection is the safe
-                    // direction). Function-local bindings hoist instead, so this
-                    // treatment is specific to class scopes.
-                    self.scopes.push(Scope {
-                        bindings: IndexMap::new(),
-                        constants: IndexMap::new(),
-                        shadows: FxIndexSet::default(),
-                        is_class: true,
-                        deferred: None,
-                    });
-                    for body_stmt in &class_def.body {
-                        self.visit_stmt(body_stmt);
-                        self.merge_statement_bindings(body_stmt);
-                    }
-                    self.scopes.pop();
-                }
-                _ => ruff_python_ast::visitor::walk_stmt(self, stmt),
-            }
-        }
-
         fn visit_expr(&mut self, expr: &'a ruff_python_ast::Expr) {
             use ruff_python_ast::Expr;
-            // Legacy enumeration objects are observed by mere attribute access
-            // (e.g. iterating `pkg_resources.working_set`)
-            if matches!(expr, Expr::Attribute(_))
-                && self
-                    .canonical_callee_paths(expr)
-                    .iter()
-                    .any(|path| ENUMERATION_OBJECTS.contains(&path.as_str()))
+            let paths = self.canonical_paths(expr);
+            // Legacy enumeration objects are observed by mere reference (iterating
+            // `pkg_resources.working_set` or a `from pkg_resources import
+            // working_set as ws` alias)
+            if paths
+                .iter()
+                .any(|path| ENUMERATION_OBJECTS.contains(&path.as_str()))
+            {
+                self.enumerates_distributions = true;
+            }
+            // Safety net for indirect access: any reference to a metadata module
+            // member OUTSIDE a recognized query callee (e.g. `query = md.version`,
+            // a metadata function passed to a helper) may perform arbitrary
+            // lookups later
+            if self.recognized_callee_depth == 0
+                && paths.iter().any(|path| {
+                    QUERY_FUNCTIONS.contains(&path.as_str())
+                        || ENUMERATION_FUNCTIONS.contains(&path.as_str())
+                })
             {
                 self.enumerates_distributions = true;
             }
             if let Expr::Call(call) = expr {
-                let paths = self.canonical_callee_paths(&call.func);
-                if paths
+                let callee_paths = self.canonical_paths(&call.func);
+                if callee_paths
                     .iter()
                     .any(|path| ENUMERATION_FUNCTIONS.contains(&path.as_str()))
                 {
                     self.enumerates_distributions = true;
                 }
-                if paths
+                let is_query = callee_paths
                     .iter()
-                    .any(|path| QUERY_FUNCTIONS.contains(&path.as_str()))
-                {
-                    // `require` is variadic; collecting every positional argument is
-                    // safe for the other APIs too. Arguments resolve as literals or
-                    // single-assignment string constants (`NAME = "provider"`);
-                    // anything unresolvable means the query may target ANY installed
-                    // distribution, so all of them conservatively stay observable.
+                    .any(|path| QUERY_FUNCTIONS.contains(&path.as_str()));
+                if is_query {
+                    // `require` is variadic; collecting every positional argument
+                    // is safe for the other APIs too. Arguments resolve as literals
+                    // or single-value string constants; anything unresolvable means
+                    // the query may target ANY installed distribution.
                     let mut all_arguments_resolved = true;
                     for argument in &call.arguments.args {
-                        let (values, resolved) = self.resolve_string_argument_candidates(argument);
+                        let (values, resolved) = self.string_argument_candidates(argument);
                         self.requirements.extend(values);
                         all_arguments_resolved &= resolved;
                     }
-                    // Keyword forms differ per API (`distribution_name=`, `dist=`);
-                    // over-collection is safe, so accept any resolvable keyword value
                     for keyword in &call.arguments.keywords {
                         if keyword.arg.is_none() {
                             // **kwargs unpacking is opaque
                             all_arguments_resolved = false;
                             continue;
                         }
-                        let (values, resolved) =
-                            self.resolve_string_argument_candidates(&keyword.value);
+                        let (values, resolved) = self.string_argument_candidates(&keyword.value);
                         self.requirements.extend(values);
                         all_arguments_resolved &= resolved;
                     }
                     if !all_arguments_resolved {
                         self.enumerates_distributions = true;
                     }
+                    // The callee itself is a recognized query reference; walk it
+                    // without triggering the indirect-access safety net
+                    self.recognized_callee_depth += 1;
+                    ruff_python_ast::visitor::walk_expr(self, &call.func);
+                    self.recognized_callee_depth -= 1;
+                    for argument in &call.arguments.args {
+                        self.visit_expr(argument);
+                    }
+                    for keyword in &call.arguments.keywords {
+                        self.visit_expr(&keyword.value);
+                    }
+                    return;
                 }
             }
             ruff_python_ast::visitor::walk_expr(self, expr);
@@ -1402,24 +1195,12 @@ pub(crate) fn queried_distribution_requirements(
     let mut collector = QueryCollector {
         requirements: Vec::new(),
         enumerates_distributions: false,
-        // The module scope carries two views: an incremental, source-ordered one for
-        // module-level expressions (a later `import json as md` must not hide an
-        // earlier `md.version(...)` query) and the complete deferred view for
-        // function bodies, which resolve module names at call time
-        scopes: vec![Scope {
-            bindings: IndexMap::new(),
-            constants: IndexMap::new(),
-            shadows: FxIndexSet::default(),
-            is_class: false,
-            deferred: Some((
-                collect_scope_bindings(&module.body),
-                collect_scope_constants(&module.body),
-            )),
-        }],
+        bindings: collect_import_binding_candidates(module),
+        constants: collect_string_constant_candidates(module),
+        recognized_callee_depth: 0,
     };
     for stmt in &module.body {
         collector.visit_stmt(stmt);
-        collector.merge_statement_bindings(stmt);
     }
     DistributionMetadataUsage {
         requirements: collector.requirements,
@@ -5690,10 +5471,13 @@ Import-Name: folded_module
     }
 
     /// The metadata-query scanner collects literal requirement strings from the
-    /// supported query call forms — verbatim, so constraints and extras survive —
-    /// and only when the callee resolves through the enclosing scopes' imports to a
-    /// metadata API: unrelated callables sharing a final name record nothing, and a
-    /// function-local rebinding shadows an outer alias only inside that function.
+    /// supported query call forms — verbatim, so constraints and extras survive.
+    /// Callees resolve through import bindings, so unrelated callables sharing a
+    /// final name (e.g. `provider.version(...)`) record nothing; resolution is
+    /// deliberately conservative (a union of every binding a name ever holds), so
+    /// locally shadowed aliases still record their queries — over-collection only
+    /// keeps an extra distribution installed, while under-collection would break
+    /// isolated deployments.
     #[test]
     fn test_queried_distribution_names_collection() {
         let source = "\
@@ -5754,8 +5538,13 @@ print(md.version('post-collision-name'))
                 "keyword-name",
                 "constrained-name>=2",
                 "variadic-name[extra]<3",
+                // Shadow-adjacent queries over-collect by design: the union
+                // resolution never risks missing a real query
+                "shadowed-name",
                 "default-name",
+                "body-shadowed-name",
                 "class-order-name",
+                "class-hidden-name",
                 "post-collision-name"
             ]
         );
@@ -5899,6 +5688,96 @@ def read(name):
         let usage = queried_distribution_requirements(parsed.syntax());
         assert!(usage.requirements.is_empty());
         assert!(usage.enumerates_distributions);
+    }
+
+    /// The union-based scanner is conservative by construction: conditional
+    /// aliases, intermediate bindings, `nonlocal` declarations, imported
+    /// enumeration objects, wildcard metadata imports, and assigned query
+    /// callables can never under-collect.
+    #[test]
+    fn test_queried_distribution_conservative_union() {
+        // A conditional rebinding unions with the metadata alias instead of
+        // replacing it: the query is still recognized
+        let source = "\
+import importlib.metadata as md
+
+if False:
+    import json as md
+print(md.version('conditional-name'))
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert!(usage.requirements.contains(&"conditional-name".to_owned()));
+
+        // A function called while an INTERMEDIATE module binding is live: the
+        // union holds every binding the name ever receives, so neither the
+        // definition-time nor the final binding can veto the metadata alias
+        let source = "\
+import json as md
+
+
+def read():
+    return md.version('intermediate-name')
+
+
+import importlib.metadata as md
+
+read()
+import json as md
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert!(usage.requirements.contains(&"intermediate-name".to_owned()));
+
+        // `nonlocal` resolves through the enclosing function's import; the
+        // declaration must not shadow the binding away
+        let source = "\
+def outer():
+    from importlib.metadata import version
+
+    def inner():
+        nonlocal version
+        result = version('nonlocal-name')
+        version = None
+        return result
+
+    return inner()
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert!(usage.requirements.contains(&"nonlocal-name".to_owned()));
+
+        // Iterating a directly imported (and aliased) enumeration object
+        // observes every installed distribution
+        let source = "\
+from pkg_resources import working_set as ws
+
+for dist in ws:
+    print(dist)
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        assert!(queried_distribution_requirements(parsed.syntax()).enumerates_distributions);
+
+        // A wildcard import from a metadata module binds the whole query API
+        let source = "\
+from importlib.metadata import *
+
+print(version('wildcard-name'))
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert!(usage.requirements.contains(&"wildcard-name".to_owned()));
+
+        // A query callable escaping into an assignment may perform arbitrary
+        // lookups later: everything conservatively stays observable
+        let source = "\
+import importlib.metadata as md
+
+query = md.version
+print(query('assigned-name'))
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        assert!(queried_distribution_requirements(parsed.syntax()).enumerates_distributions);
     }
 
     /// Shared libraries loaded through ctypes/CFFI (`.dll`/`.dylib`) and versioned
