@@ -399,7 +399,7 @@ struct UnbundlablePatternDetector {
 }
 
 impl UnbundlablePatternDetector {
-    const INSTALLED_PACKAGE_APIS: [&'static str; 7] = [
+    const INSTALLED_PACKAGE_APIS: [&'static str; 8] = [
         "importlib.metadata",
         "importlib_metadata",
         "pkg_resources",
@@ -410,6 +410,10 @@ impl UnbundlablePatternDetector {
         // Introspects import specs (find_spec); inlined modules are not registered
         // with the import machinery, so spec lookups would misreport them
         "importlib.util",
+        // Executes modules through import specs and loader.get_code(); bundled
+        // modules carry no code-providing loader, so run_module would fail where
+        // the installed distribution runs fine
+        "runpy",
     ];
 
     /// Return whether an imported module name is (or is inside) an API module that
@@ -845,17 +849,19 @@ impl DistributionInfo {
 }
 
 /// Canonical dotted paths of the query functions that take a distribution name.
-const QUERY_FUNCTIONS: [&str; 12] = [
+const QUERY_FUNCTIONS: [&str; 14] = [
     "importlib.metadata.version",
     "importlib.metadata.distribution",
     "importlib.metadata.metadata",
     "importlib.metadata.requires",
     "importlib.metadata.files",
+    "importlib.metadata.Distribution.from_name",
     "importlib_metadata.version",
     "importlib_metadata.distribution",
     "importlib_metadata.metadata",
     "importlib_metadata.requires",
     "importlib_metadata.files",
+    "importlib_metadata.Distribution.from_name",
     "pkg_resources.get_distribution",
     "pkg_resources.require",
 ];
@@ -863,18 +869,29 @@ const QUERY_FUNCTIONS: [&str; 12] = [
 /// installed distribution without naming one. `entry_points` belongs here: it
 /// observes groups (including script shims) that provider policy deliberately
 /// ignores, so its results must reflect the full installed environment.
-const ENUMERATION_FUNCTIONS: [&str; 7] = [
+const ENUMERATION_FUNCTIONS: [&str; 9] = [
     "importlib.metadata.distributions",
     "importlib.metadata.packages_distributions",
     "importlib.metadata.entry_points",
+    "importlib.metadata.Distribution.discover",
     "importlib_metadata.distributions",
     "importlib_metadata.packages_distributions",
     "importlib_metadata.entry_points",
+    "importlib_metadata.Distribution.discover",
     "pkg_resources.iter_entry_points",
 ];
 /// Canonical dotted paths of legacy enumeration OBJECTS (not calls): iterating
 /// `pkg_resources.working_set` observes every installed distribution too.
 const ENUMERATION_OBJECTS: [&str; 2] = ["pkg_resources.working_set", "pkg_resources.Environment"];
+/// Canonical dotted paths of metadata CLASSES: recognized constructors
+/// (`Distribution.from_name`) are queries, but any other reference to the class
+/// (`Distribution.at(...)`, aliasing it, passing it around) may perform
+/// arbitrary lookups and conservatively flags global observation.
+const METADATA_CLASSES: [&str; 3] = [
+    "importlib.metadata.Distribution",
+    "importlib_metadata.Distribution",
+    "pkg_resources.Distribution",
+];
 /// Modules whose wildcard import binds the metadata query API.
 const METADATA_API_MODULES: [&str; 3] =
     ["importlib.metadata", "importlib_metadata", "pkg_resources"];
@@ -957,10 +974,18 @@ fn collect_import_binding_candidates(
         collector.visit_stmt(stmt);
     }
     // `from <metadata module> import *` binds every query and enumeration function
+    // plus the metadata classes (dotted members like `Distribution.from_name` are
+    // reached through their class binding)
     for module_name in collector.wildcard_modules {
         if METADATA_API_MODULES.contains(&module_name.as_str()) {
-            for function in QUERY_FUNCTIONS.iter().chain(&ENUMERATION_FUNCTIONS) {
-                if let Some(member) = function.strip_prefix(&format!("{module_name}.")) {
+            for function in QUERY_FUNCTIONS
+                .iter()
+                .chain(&ENUMERATION_FUNCTIONS)
+                .chain(&METADATA_CLASSES)
+            {
+                if let Some(member) = function.strip_prefix(&format!("{module_name}."))
+                    && !member.contains('.')
+                {
                     collector
                         .bindings
                         .entry(member.to_owned())
@@ -1177,12 +1202,13 @@ pub(crate) fn queried_distribution_requirements(
             }
             // Safety net for indirect access: any reference to a metadata module
             // member OUTSIDE a recognized query callee (e.g. `query = md.version`,
-            // a metadata function passed to a helper) may perform arbitrary
-            // lookups later
+            // a metadata function passed to a helper, `Distribution.at(...)` or an
+            // aliased metadata class) may perform arbitrary lookups later
             if self.recognized_callee_depth == 0
                 && paths.iter().any(|path| {
                     QUERY_FUNCTIONS.contains(&path.as_str())
                         || ENUMERATION_FUNCTIONS.contains(&path.as_str())
+                        || METADATA_CLASSES.contains(&path.as_str())
                 })
             {
                 self.enumerates_distributions = true;
@@ -2429,6 +2455,7 @@ impl ModuleResolver {
         if !source.contains("importlib")
             && !source.contains("pkg_resources")
             && !source.contains("pkgutil")
+            && !source.contains("runpy")
             && !source.contains("find_spec")
             && !source.contains("__import__")
             && !source.contains("__file__")
@@ -2465,13 +2492,14 @@ impl ModuleResolver {
         }
 
         let mut site_packages_dirs = IndexSet::new();
-        // A configured interpreter without a recognizable <env>/bin layout (a PATH
-        // command, pyenv shim, system Python) is asked for its purelib directly and
-        // ordered first, so bundling inspects the same environment requirement
-        // resolution executes even when auto-detected virtualenvs also exist
+        // A configured interpreter (--python / requirements.python) is ALWAYS asked
+        // for its purelib via sysconfig and ordered first: the interpreter's own
+        // report is authoritative where lexical <env>/lib/*/site-packages scanning
+        // misreads layouts (Debian dist-packages, lib64 symlinks, roots containing
+        // several Python minors, pyenv shims). Lexical environment-root discovery
+        // below remains as additional, lower-priority coverage.
         if virtualenv_override.is_none()
             && let Some(python) = &self.config.requirements.python
-            && Self::environment_root_of_interpreter(python).is_none()
             && let Some(purelib) = Self::interpreter_site_packages(python)
         {
             site_packages_dirs.insert(self.canonicalize_path(purelib));
@@ -5086,6 +5114,10 @@ Import-Name: folded_module
             "import importlib.util\n",
             "from importlib import util\n",
             "from importlib.util import find_spec\n",
+            // Executes modules through import specs; bundled modules carry no
+            // code-providing loader
+            "import runpy\nrunpy.run_module('pkg.backend')\n",
+            "from runpy import run_module\n",
         ] {
             assert!(
                 ModuleResolver::python_source_blocks_bundling(source),
@@ -5887,6 +5919,62 @@ print(query('assigned-name'))
         assert!(queried_distribution_requirements(parsed.syntax()).enumerates_distributions);
     }
 
+    /// `Distribution` class access: `from_name` is a recognized name-taking query
+    /// (module-qualified, imported, or wildcard-bound), `discover` enumerates, and
+    /// any other reference to the class conservatively flags global observation.
+    #[test]
+    fn test_queried_distribution_class_lookups() {
+        let source = "\
+import importlib.metadata as md
+
+print(md.Distribution.from_name('dist-name').version)
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert_eq!(usage.requirements, vec!["dist-name"]);
+        assert!(!usage.enumerates_distributions);
+
+        let source = "\
+from importlib.metadata import Distribution
+
+print(Distribution.from_name('cls-name').version)
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert_eq!(usage.requirements, vec!["cls-name"]);
+        assert!(!usage.enumerates_distributions);
+
+        let source = "\
+from importlib.metadata import *
+
+print(Distribution.from_name('wild-cls-name').version)
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert_eq!(usage.requirements, vec!["wild-cls-name"]);
+
+        // Distribution.discover() observes every installed distribution
+        let source = "\
+from importlib_metadata import Distribution
+
+for dist in Distribution.discover():
+    print(dist)
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        assert!(queried_distribution_requirements(parsed.syntax()).enumerates_distributions);
+
+        // Any OTHER class reference (aliasing, Distribution.at, escaping) may
+        // perform arbitrary lookups: conservatively global
+        let source = "\
+import importlib.metadata as md
+
+loader = md.Distribution
+print(loader.from_name('hidden-name'))
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        assert!(queried_distribution_requirements(parsed.syntax()).enumerates_distributions);
+    }
+
     /// Shared libraries loaded through ctypes/CFFI (`.dll`/`.dylib`) and versioned
     /// shared libraries (`libhelper.so.1`) also keep a distribution external, not just
     /// Python extension modules.
@@ -5943,6 +6031,69 @@ print(query('assigned-name'))
             ModuleResolver::environment_root_of_interpreter(Path::new("python3")),
             None
         );
+    }
+
+    /// A configured interpreter is ALWAYS asked for its purelib, even under a
+    /// recognizable `bin` layout: the interpreter's own `sysconfig` report covers
+    /// layouts the lexical `<env>/lib/*/site-packages` scan misses (Debian
+    /// `dist-packages`, `lib64`, multiple minors).
+    #[cfg(unix)]
+    #[test]
+    fn test_bundle_third_party_queries_bin_layout_interpreter_purelib() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new()?;
+        let environment = temp_dir.path().join("env");
+        // The purelib uses a Debian-style dist-packages layout that the lexical
+        // site-packages scan does not discover
+        let dist_packages = environment.join("lib/python3/dist-packages");
+        create_test_file(
+            &dist_packages.join(format!(
+                "debian_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &dist_packages.join("debian_pkg-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: debian-pkg\nVersion: 1.0\nImport-Name: debian_pkg\n",
+        )?;
+        // Fake bin-layout interpreter reporting that purelib via sysconfig
+        let interpreter = environment.join("bin/python");
+        create_test_file(
+            &interpreter,
+            &format!("#!/bin/sh\necho '{}'\n", dist_packages.display()),
+        )?;
+        fs::set_permissions(&interpreter, fs::Permissions::from_mode(0o755))?;
+
+        let config = Config {
+            bundle_third_party: Some(true),
+            requirements: crate::config::RequirementsConfig {
+                python: Some(interpreter),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let resolver = ModuleResolver::new_with_overrides(config, Some(""), None)?;
+
+        let classification = resolver.classify_import("debian_pkg");
+        assert_eq!(classification.origin, ImportOrigin::ThirdParty);
+        assert_eq!(
+            classification.bundle,
+            BundleDisposition::Include,
+            "the interpreter-reported purelib must be searched even for bin-layout interpreters"
+        );
+        assert_eq!(
+            resolver.resolve_module_path("debian_pkg")?,
+            Some(
+                dist_packages
+                    .join("debian_pkg")
+                    .join(crate::python::constants::INIT_FILE)
+                    .canonicalize()?
+            )
+        );
+
+        Ok(())
     }
 
     /// Distribution-backed packages supplied through PYTHONPATH are subject to the
