@@ -186,6 +186,13 @@ impl<'a> ImportDiscoveryVisitor<'a> {
 
     #[inline]
     fn insert_imported_name(&mut self, name: String, module_key: String) {
+        // A live import binding replaces any pending body-wide shadow for the name
+        // in this scope: usage AFTER the import statement resolves to it (source
+        // order), while usage before it still sees the shadow (UnboundLocalError
+        // semantics for function scopes)
+        if let Some(top) = self.shadowed_names_stack.last_mut() {
+            top.shift_remove(&name);
+        }
         if let Some(top) = self.imported_names_stack.last_mut() {
             top.insert(name, module_key);
         }
@@ -619,11 +626,15 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
                 // Python scoping makes any name assigned in the function local for
                 // the WHOLE body, so a call before the assignment must not be
                 // attributed to an enclosing import either (it raises
-                // UnboundLocalError at runtime)
+                // UnboundLocalError at runtime). This includes IMPORT bindings:
+                // `import json as importlib` later in the body makes earlier uses
+                // of `importlib` unbound too — the shadow is lifted when the import
+                // statement itself is reached (see `insert_imported_name`). Names
+                // declared `global` rebind the module scope instead of shadowing.
                 {
-                    let no_globals = FxIndexSet::default();
-                    crate::visitors::LocalVarCollector::new(&mut parameter_names, &no_globals)
-                        .ignore_import_bindings()
+                    let scope_globals =
+                        crate::visitors::collect_scope_global_declarations(&func.body);
+                    crate::visitors::LocalVarCollector::new(&mut parameter_names, &scope_globals)
                         .collect_from_stmts(&func.body);
                 }
                 self.shadowed_names_stack.push(parameter_names);
@@ -634,21 +645,9 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
                 self.imported_names_stack.push(FxIndexMap::default());
                 self.shadowed_names_stack.push(FxIndexSet::default());
             }
-            // Non-import bindings rebind names in the current scope
-            AnyNodeRef::StmtAssign(assign) => {
-                for target in &assign.targets {
-                    Self::collect_binding_names(target, &mut |name| {
-                        self.insert_shadowed_name(name);
-                    });
-                }
-            }
-            AnyNodeRef::StmtAnnAssign(assign) => {
-                if assign.value.is_some() {
-                    Self::collect_binding_names(&assign.target, &mut |name| {
-                        self.insert_shadowed_name(name);
-                    });
-                }
-            }
+            // Non-import bindings (assignments) are recorded in leave_node, after
+            // the value expression is visited: Python evaluates the right-hand side
+            // through the OLD binding before rebinding the target.
             AnyNodeRef::StmtFor(for_stmt) => {
                 self.scope_stack.push(ScopeElement::For);
                 Self::collect_binding_names(&for_stmt.target, &mut |name| {
@@ -689,6 +688,26 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
                 self.scope_stack.pop();
                 self.imported_names_stack.pop();
                 self.shadowed_names_stack.pop();
+            }
+            // Non-import bindings rebind names in the current scope. Recorded on
+            // LEAVE, after the value expression is visited: Python evaluates the
+            // right-hand side through the OLD binding before rebinding the target,
+            // so `importlib = importlib.import_module("helper")` at module or
+            // class scope must still discover `helper`. Function scopes are
+            // unaffected: their body-wide shadows are precomputed on scope entry.
+            AnyNodeRef::StmtAssign(assign) => {
+                for target in &assign.targets {
+                    Self::collect_binding_names(target, &mut |name| {
+                        self.insert_shadowed_name(name);
+                    });
+                }
+            }
+            AnyNodeRef::StmtAnnAssign(assign) => {
+                if assign.value.is_some() {
+                    Self::collect_binding_names(&assign.target, &mut |name| {
+                        self.insert_shadowed_name(name);
+                    });
+                }
             }
             // If handling moved to visit_stmt
             AnyNodeRef::StmtWhile(_)

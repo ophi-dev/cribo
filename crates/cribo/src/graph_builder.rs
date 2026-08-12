@@ -903,6 +903,16 @@ impl<'a> GraphBuilder<'a> {
 
             log::trace!("Processing import: {module_name} as {local_name}");
 
+            // The import statement makes its binding live from here on: lift any
+            // body-wide shadow recorded for the bound name (a dotted import
+            // without alias binds only the root)
+            let bound_name = if alias.asname.is_some() {
+                local_name
+            } else {
+                module_name.split('.').next().unwrap_or(module_name)
+            };
+            self.shadowed_bindings.shift_remove(bound_name);
+
             // Track importlib aliases for later detection
             if module_name == "importlib" {
                 self.import_aliases
@@ -1005,6 +1015,9 @@ impl<'a> GraphBuilder<'a> {
                     .map_or(imported_name, ruff_python_ast::Identifier::as_str);
 
                 imported_names.insert(local_name.to_owned());
+                // The import statement makes its binding live from here on: lift
+                // any body-wide shadow recorded for the bound name
+                self.shadowed_bindings.shift_remove(local_name);
                 names.push((
                     imported_name.to_owned(),
                     alias.asname.as_ref().map(ToString::to_string),
@@ -1148,10 +1161,13 @@ impl<'a> GraphBuilder<'a> {
                 .insert(kwarg.name.as_str().to_owned());
         }
         {
+            // Import bindings shadow the whole body too (UnboundLocalError before
+            // the import statement); `process_import`/`process_from_import` lift
+            // the shadow when the statement is reached. `global`-declared names
+            // rebind the module scope instead of shadowing.
             let mut body_bindings = FxIndexSet::default();
-            let no_globals = FxIndexSet::default();
-            crate::visitors::LocalVarCollector::new(&mut body_bindings, &no_globals)
-                .ignore_import_bindings()
+            let scope_globals = crate::visitors::collect_scope_global_declarations(&func_def.body);
+            crate::visitors::LocalVarCollector::new(&mut body_bindings, &scope_globals)
                 .collect_from_stmts(&func_def.body);
             self.shadowed_bindings.extend(body_bindings);
         }

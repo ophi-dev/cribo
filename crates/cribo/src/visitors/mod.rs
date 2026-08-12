@@ -17,7 +17,7 @@ pub(crate) use export_collector::ExportCollector;
 pub(crate) use import_discovery::{
     DiscoveredImport, ImportDiscoveryVisitor, ImportLocation, ImportType, ScopeElement,
 };
-pub(crate) use local_var_collector::LocalVarCollector;
+pub(crate) use local_var_collector::{LocalVarCollector, collect_scope_global_declarations};
 pub(crate) use side_effect_detector::{ExpressionSideEffectDetector, SideEffectDetector};
 pub(crate) use symbol_usage_visitor::SymbolUsageVisitor;
 pub(crate) use variable_collector::VariableCollector;

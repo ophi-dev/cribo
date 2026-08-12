@@ -695,6 +695,33 @@ impl<'a> RecursiveImportTransformer<'a> {
         // Check if it's a hoisted import before matching
         let is_hoisted = import_deduplicator::is_hoisted_import(self.state.bundler, stmt);
 
+        // An import statement makes its bindings live from here on: lift any
+        // body-wide shadows recorded for the bound names, so usage AFTER a
+        // function-local import resolves through it while usage before it still
+        // sees the shadow (UnboundLocalError semantics)
+        match &stmt {
+            Stmt::Import(import_stmt) => {
+                for alias in &import_stmt.names {
+                    let name_str = alias.name.as_str();
+                    let bound = alias.asname.as_ref().map_or_else(
+                        || name_str.split('.').next().unwrap_or(name_str),
+                        ruff_python_ast::Identifier::as_str,
+                    );
+                    self.state.shadowed_bindings.shift_remove(bound);
+                }
+            }
+            Stmt::ImportFrom(import_from) => {
+                for alias in &import_from.names {
+                    if alias.name.as_str() == "*" {
+                        continue;
+                    }
+                    let bound = alias.asname.as_ref().unwrap_or(&alias.name).as_str();
+                    self.state.shadowed_bindings.shift_remove(bound);
+                }
+            }
+            _ => {}
+        }
+
         match stmt {
             Stmt::Import(import_stmt) => {
                 log::debug!(

@@ -13,6 +13,43 @@ use ruff_python_ast::{
 
 use crate::{types::FxIndexSet, visitors::patterns};
 
+/// Collect the names declared `global` in one scope's statements, skipping nested
+/// function and class bodies (their declarations bind those scopes, not this one).
+///
+/// Shadow analyses must exclude these names: assigning a `global`-declared name
+/// rebinds the MODULE binding instead of creating a scope-local shadow.
+pub(crate) fn collect_scope_global_declarations(stmts: &[Stmt]) -> FxIndexSet<String> {
+    struct GlobalCollector {
+        globals: FxIndexSet<String>,
+    }
+
+    impl<'a> SourceOrderVisitor<'a> for GlobalCollector {
+        fn enter_node(&mut self, node: AnyNodeRef<'a>) -> TraversalSignal {
+            match node {
+                AnyNodeRef::StmtFunctionDef(_) | AnyNodeRef::StmtClassDef(_) => {
+                    TraversalSignal::Skip
+                }
+                _ => TraversalSignal::Traverse,
+            }
+        }
+
+        fn visit_stmt(&mut self, stmt: &'a Stmt) {
+            if let Stmt::Global(global_stmt) = stmt {
+                for name in &global_stmt.names {
+                    self.globals.insert(name.to_string());
+                }
+            }
+            walk_stmt(self, stmt);
+        }
+    }
+
+    let mut collector = GlobalCollector {
+        globals: FxIndexSet::default(),
+    };
+    source_order::walk_body(&mut collector, stmts);
+    collector.globals
+}
+
 /// Visitor that collects local variable names at module level,
 /// excluding names declared as `global`, and treating `nonlocal` names as locals
 pub(crate) struct LocalVarCollector<'a> {
@@ -20,9 +57,6 @@ pub(crate) struct LocalVarCollector<'a> {
     local_vars: &'a mut FxIndexSet<String>,
     /// Set of global names to exclude from collection
     global_vars: &'a FxIndexSet<String>,
-    /// Whether import statements' bindings are collected; shadowing analyses
-    /// exclude them because import bindings are tracked separately
-    collect_import_bindings: bool,
 }
 
 impl<'a> LocalVarCollector<'a> {
@@ -34,15 +68,7 @@ impl<'a> LocalVarCollector<'a> {
         Self {
             local_vars,
             global_vars,
-            collect_import_bindings: true,
         }
-    }
-
-    /// Skip names bound by import statements: shadowing analyses track import
-    /// bindings separately and must only see non-import rebindings.
-    pub(crate) const fn ignore_import_bindings(mut self) -> Self {
-        self.collect_import_bindings = false;
-        self
     }
 
     /// Collect local variable names from a list of statements
@@ -140,7 +166,7 @@ impl<'a> SourceOrderVisitor<'a> for LocalVarCollector<'a> {
                     self.insert_if_not_global(name);
                 }
             }
-            Stmt::Import(import_stmt) if self.collect_import_bindings => {
+            Stmt::Import(import_stmt) => {
                 for alias in &import_stmt.names {
                     let name = alias.asname.as_ref().map_or_else(
                         || {
@@ -153,7 +179,7 @@ impl<'a> SourceOrderVisitor<'a> for LocalVarCollector<'a> {
                     self.insert_if_not_global(&name);
                 }
             }
-            Stmt::ImportFrom(from_stmt) if self.collect_import_bindings => {
+            Stmt::ImportFrom(from_stmt) => {
                 for alias in &from_stmt.names {
                     // Skip wildcard imports (from m import *)
                     if alias.name.as_str() == "*" {
