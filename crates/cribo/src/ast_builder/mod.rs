@@ -54,6 +54,7 @@ pub(crate) mod expressions;
 pub(crate) mod module_attr_merge;
 pub(crate) mod module_wrapper;
 pub(crate) mod other;
+pub(crate) mod preserved_finder;
 pub(crate) mod proxy_generator;
 pub(crate) mod statements;
 

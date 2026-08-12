@@ -136,36 +136,12 @@ impl DynamicHandler {
                 return Some(access);
             }
         }
-        // Preserved calls with opaque arguments still resolve BUNDLED targets at
-        // runtime through sys.modules; initialize the target at the call site
-        // (init functions are guarded, so repeat calls are no-ops) to keep Python's
-        // lazy import semantics: an uncalled function or untaken branch must not
-        // execute the target module at bundle startup
-        if let Some(module_name) = crate::python::importlib_call::literal_module_name(call)
-            && !module_name.starts_with('.')
-            && bundler.resolver.is_preserved_importlib_target(module_name)
-            && let Some(module_id) = bundler.get_module_id(module_name)
-            && let Some(init_func_name) = bundler.module_init_functions.get(&module_id)
-        {
-            use ruff_python_ast::ExprContext;
-
-            use crate::{
-                ast_builder::expressions,
-                code_generator::module_registry::sanitize_module_name_for_identifier,
-            };
-            log::debug!("Initializing preserved importlib target '{module_name}' at its call site");
-            let module_var = sanitize_module_name_for_identifier(module_name);
-            let init_expr = expressions::call(
-                expressions::name(init_func_name, ExprContext::Load),
-                vec![expressions::name(&module_var, ExprContext::Load)],
-                vec![],
-            );
-            return Some(expressions::subscript(
-                expressions::tuple(vec![init_expr, Expr::Call(call.clone())]),
-                expressions::integer_literal(1),
-                ExprContext::Load,
-            ));
-        }
+        // Preserved calls with opaque arguments stay fully verbatim: the bundle's
+        // sys.meta_path finder (emitted in post-processing) maps bundled target
+        // names to their init functions, so Python's own import machinery
+        // evaluates and validates the arguments, initializes parent packages in
+        // order, and manages sys.modules — with exact runtime semantics and
+        // without eager initialization at bundle load.
         None
     }
 

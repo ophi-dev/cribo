@@ -42,7 +42,12 @@ impl PostProcessingPhase {
             Self::generate_namespace_attachments(bundler, entry_symbols, entry_renames);
 
         // Generate proxy statements for stdlib access
-        let proxy_statements = Self::generate_proxy_statements();
+        let mut proxy_statements = Self::generate_proxy_statements();
+
+        // Generate the meta-path finder for preserved import_module calls; it
+        // resolves registrations lazily through globals(), so it can ride along
+        // right after the proxy prelude (which binds the `_sys` alias it uses)
+        proxy_statements.extend(Self::generate_preserved_finder_statements(bundler));
 
         // Generate package child aliases
         let alias_statements = Self::generate_package_child_aliases(bundler, final_body);
@@ -101,6 +106,64 @@ impl PostProcessingPhase {
     fn generate_proxy_statements() -> Vec<Stmt> {
         log::debug!("Generating _cribo proxy for stdlib access");
         crate::ast_builder::proxy_generator::generate_cribo_proxy()
+    }
+
+    /// Generate the `sys.meta_path` finder serving preserved `import_module`
+    /// targets, plus one registration per target and per bundled ancestor
+    /// package (the machinery imports parents before dotted targets).
+    ///
+    /// Preserved calls stay verbatim, so Python's own import machinery
+    /// evaluates their arguments, initializes parents in order, and manages
+    /// `sys.modules` — the finder only maps original module names to bundled
+    /// init functions and namespace objects.
+    fn generate_preserved_finder_statements(bundler: &Bundler<'_>) -> Vec<Stmt> {
+        use crate::code_generator::module_registry::sanitize_module_name_for_identifier;
+
+        let targets = bundler.resolver.preserved_importlib_targets();
+        if targets.is_empty() {
+            return Vec::new();
+        }
+
+        // Each target plus its bundled ancestor packages, deduplicated
+        let mut names: FxIndexSet<String> = FxIndexSet::default();
+        for target in targets {
+            let mut boundary = target.len();
+            loop {
+                names.insert(target[..boundary].to_owned());
+                match target[..boundary].rfind('.') {
+                    Some(dot) => boundary = dot,
+                    None => break,
+                }
+            }
+        }
+
+        let mut statements =
+            crate::ast_builder::preserved_finder::generate_preserved_import_finder();
+        for name in &names {
+            let Some(module_id) = bundler.get_module_id(name) else {
+                log::warn!(
+                    "Preserved import target '{name}' is not bundled; skipping registration"
+                );
+                continue;
+            };
+            let init_function = bundler.module_init_functions.get(&module_id);
+            let namespace_variable = sanitize_module_name_for_identifier(name);
+            let is_package = bundler.resolver.is_package_init(module_id)
+                || bundler.resolver.is_namespace_package(module_id);
+            log::debug!(
+                "Registering preserved import target '{name}' with the meta-path finder \
+                 (init={init_function:?}, namespace='{namespace_variable}', is_package={is_package})"
+            );
+            statements.push(
+                crate::ast_builder::preserved_finder::generate_preserved_target_registration(
+                    name,
+                    init_function.map(String::as_str),
+                    &namespace_variable,
+                    is_package,
+                ),
+            );
+        }
+        statements
     }
 
     /// Generate package child alias statements

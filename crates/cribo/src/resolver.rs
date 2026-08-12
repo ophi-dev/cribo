@@ -2972,8 +2972,9 @@ impl ModuleResolver {
     }
 
     /// Record a bundled module that is the target of a preserved `import_module`
-    /// call (opaque arguments): the call resolves it through `sys.modules` at
-    /// runtime, so it must be wrapped, registered, and eagerly initialized.
+    /// call (opaque arguments): the call stays verbatim and resolves the target
+    /// through the import machinery at runtime, so it must be wrapped and
+    /// registered with the bundle's meta-path finder.
     pub(crate) fn record_preserved_importlib_target(&self, module_name: String) {
         self.preserved_importlib_module_targets
             .borrow_mut()
@@ -2986,6 +2987,16 @@ impl ModuleResolver {
         self.preserved_importlib_module_targets
             .borrow()
             .contains(module_name)
+    }
+
+    /// Return the bundled targets of preserved `import_module` calls, for
+    /// registration with the bundle's meta-path finder.
+    pub(crate) fn preserved_importlib_targets(&self) -> Vec<String> {
+        self.preserved_importlib_module_targets
+            .borrow()
+            .iter()
+            .cloned()
+            .collect()
     }
 
     /// Record requirement literals whose distribution metadata bundled code queries
