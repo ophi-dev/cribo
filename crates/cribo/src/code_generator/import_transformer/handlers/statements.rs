@@ -237,6 +237,10 @@ impl StatementsHandler {
 
         // Transform class body
         t.transform_statements(&mut s.body);
+
+        // The definition's NAME rebinds in the enclosing scope from here on: a
+        // later `class importlib: ...` kills an earlier import alias
+        t.state.shadowed_bindings.insert(s.name.to_string());
     }
 
     pub(in crate::code_generator::import_transformer) fn handle_function_def(
@@ -433,6 +437,10 @@ impl StatementsHandler {
         // Restore the previous scope's local variables
         t.state.local_variables = saved_locals;
         t.state.shadowed_bindings = saved_shadowed_bindings;
+
+        // The definition's NAME rebinds in the enclosing scope from here on: a
+        // later `def importlib(): ...` kills an earlier import alias
+        t.state.shadowed_bindings.insert(s.name.to_string());
     }
 
     /// Handle assignment statement. Returns whether the caller should advance `i` normally

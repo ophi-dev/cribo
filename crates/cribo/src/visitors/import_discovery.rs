@@ -678,16 +678,21 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
 
     fn leave_node(&mut self, node: AnyNodeRef<'a>) {
         match node {
-            // Clean up scope stack when leaving scope-creating nodes
-            AnyNodeRef::StmtFunctionDef(_) => {
+            // Clean up scope stack when leaving scope-creating nodes. The
+            // definition's NAME then rebinds in the enclosing scope (recorded
+            // after the definition-time expressions were visited): a later
+            // `def importlib(): ...` kills an earlier import alias.
+            AnyNodeRef::StmtFunctionDef(func) => {
                 self.scope_stack.pop();
                 self.imported_names_stack.pop();
                 self.shadowed_names_stack.pop();
+                self.insert_shadowed_name(func.name.to_string());
             }
-            AnyNodeRef::StmtClassDef(_) => {
+            AnyNodeRef::StmtClassDef(class) => {
                 self.scope_stack.pop();
                 self.imported_names_stack.pop();
                 self.shadowed_names_stack.pop();
+                self.insert_shadowed_name(class.name.to_string());
             }
             // Non-import bindings rebind names in the current scope. Recorded on
             // LEAVE, after the value expression is visited: Python evaluates the

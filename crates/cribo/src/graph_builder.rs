@@ -1180,6 +1180,10 @@ impl<'a> GraphBuilder<'a> {
         self.scope_path = old_scope_path;
         self.shadowed_bindings = saved_shadowed_bindings;
 
+        // The definition's NAME rebinds in the enclosing scope from here on: a
+        // later `def importlib(): ...` kills an earlier import alias
+        self.shadowed_bindings.insert(func_def.name.to_string());
+
         Ok(())
     }
 
@@ -1326,6 +1330,10 @@ impl<'a> GraphBuilder<'a> {
             self.process_statement(stmt)?;
         }
         self.scope_path = old_scope_path;
+
+        // The definition's NAME rebinds in the enclosing scope from here on: a
+        // later `class importlib: ...` kills an earlier import alias
+        self.shadowed_bindings.insert(class_def.name.to_string());
 
         Ok(())
     }
