@@ -7826,10 +7826,7 @@ def read(package):
             let config = Config {
                 bundle_third_party: Some(true),
                 requirements: crate::config::RequirementsConfig {
-                    module_map: indexmap::IndexMap::from([(
-                        "mapped_pkg".to_owned(),
-                        mapped.to_owned(),
-                    )]),
+                    module_map: IndexMap::from([("mapped_pkg".to_owned(), mapped.to_owned())]),
                     ..Default::default()
                 },
                 ..Default::default()

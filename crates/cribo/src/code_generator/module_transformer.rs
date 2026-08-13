@@ -37,7 +37,7 @@ impl ImportGlobalRewriter<'_> {
         parameters: Option<&ruff_python_ast::Parameters>,
         body: &[Stmt],
     ) -> Vec<&'static str> {
-        let mut bound = crate::types::FxIndexSet::default();
+        let mut bound = FxIndexSet::default();
         if let Some(parameters) = parameters {
             for param in parameters
                 .posonlyargs
@@ -55,7 +55,7 @@ impl ImportGlobalRewriter<'_> {
             }
         }
         {
-            let no_globals = crate::types::FxIndexSet::default();
+            let no_globals = FxIndexSet::default();
             let mut collector = crate::visitors::LocalVarCollector::new(&mut bound, &no_globals);
             collector.collect_from_stmts(body);
         }
