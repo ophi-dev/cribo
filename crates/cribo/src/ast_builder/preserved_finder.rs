@@ -1,14 +1,22 @@
-//! Meta-path finder for preserved `import_module` calls.
+//! Meta-path finder serving bundled modules to REAL runtime imports.
 //!
 //! Preserved calls (opaque arguments such as `**options`) stay verbatim in the
-//! bundle and execute as REAL runtime imports. Bundled targets are made
-//! reachable through Python's own import machinery: a `sys.meta_path` finder
-//! maps their original names to the bundled init functions and namespace
-//! objects, so the runtime call keeps exact Python semantics — arguments are
-//! evaluated and validated by `import_module` itself, parent packages are
-//! initialized in order by the machinery, `sys.modules` is populated (and
-//! cleaned up on failure) by the machinery, and nothing executes until the
-//! call actually runs.
+//! bundle and execute as REAL runtime imports, and external consumers such as
+//! `pickle` resolve classes through `__import__(cls.__module__)`. Bundled
+//! modules are made reachable through Python's own import machinery: a
+//! `sys.meta_path` finder maps their original names to the bundled init
+//! functions and namespace objects, so runtime imports keep exact Python
+//! semantics — arguments are evaluated and validated by `import_module`
+//! itself, parent packages are initialized by the machinery in order,
+//! `sys.modules` is populated (and cleaned up on failure) by the machinery,
+//! and nothing executes until the import actually runs.
+//!
+//! The finder is APPENDED to `sys.meta_path`: modules importable from the
+//! environment win, exactly like before the finder existed — hijacking them
+//! would break native submodules resolved through their installed parent
+//! (e.g. `yaml._yaml` under a bundled `yaml`). In isolated deployments — the
+//! environments bundles actually target — nothing else provides the bundled
+//! names and the finder serves them.
 //!
 //! Registrations store the init-function and namespace-variable NAMES and the
 //! loader resolves them through `globals()` at import time, so the finder and
@@ -55,7 +63,7 @@ class _CriboPreservedFinder:
 
 
 _cribo_finder = _CriboPreservedFinder()
-{sys}.meta_path.insert(0, _cribo_finder)
+{sys}.meta_path.append(_cribo_finder)
 "#;
 
 /// Generate the finder class, loader class, instance, and `sys.meta_path`

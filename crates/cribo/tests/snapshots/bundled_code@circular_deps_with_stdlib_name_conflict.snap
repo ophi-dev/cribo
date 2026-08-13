@@ -28,6 +28,40 @@ class _Cribo():
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
+class _CriboPreservedLoader:
+
+    def __init__(self, entry):
+        self._entry = entry
+
+    def create_module(self, spec):
+        return globals()[self._entry[1]]
+
+    def exec_module(self, module):
+        init = self._entry[0]
+        if init is not None:
+            globals()[init](module)
+class _CriboPreservedFinder:
+
+    def __init__(self):
+        self._targets = {}
+
+    def register(self, name, init, namespace, is_package):
+        self._targets[name] = init, namespace, is_package
+
+    def find_spec(self, name, path=None, target=None):
+        entry = self._targets.get(name)
+        if entry is None:
+            return None
+        from importlib.machinery import ModuleSpec
+        return ModuleSpec(name, _CriboPreservedLoader(entry), is_package=entry[2])
+_cribo_finder = _CriboPreservedFinder()
+_sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('pkg.abc', '_cribo_init___cribo_5f60be_pkg_abc', 'pkg_abc', False)
+_cribo_finder.register('pkg.pretty', '_cribo_init___cribo_2353ad_pkg_pretty', 'pkg_pretty', False)
+_cribo_finder.register('pkg', '_cribo_init___cribo_6b1af6_pkg', 'pkg', True)
+_cribo_finder.register('pkg.console', '_cribo_init___cribo_f0224b_pkg_console', 'pkg_console', False)
+_cribo_finder.register('pkg.color', '_cribo_init___cribo_02808e_pkg_color', 'pkg_color', False)
+_cribo_finder.register('pkg.style', '_cribo_init___cribo_4c91ba_pkg_style', 'pkg_style', False)
 pkg = _cribo.types.SimpleNamespace(__name__='pkg', __initializing__=False, __initialized__=False, __path__=[])
 pkg_abc = _cribo.types.SimpleNamespace(__name__='pkg.abc', __initializing__=False, __initialized__=False)
 pkg.abc = pkg_abc
@@ -89,6 +123,7 @@ def _cribo_init___cribo_5f60be_pkg_abc(self):
             """Check if a class implements the render protocol."""
             return hasattr(other, "render")
     RichRenderable.__module__ = 'pkg.abc'
+    RichRenderable.__qualname__ = 'RichRenderable'
     self.RichRenderable = RichRenderable
     pkg_console = _cribo_init___cribo_f0224b_pkg_console(pkg_console)
     ConsoleBase = pkg.console.ConsoleBase
@@ -104,6 +139,7 @@ def _cribo_init___cribo_5f60be_pkg_abc(self):
         def render(self, console):
             return f"Rendering with {console}"
     RenderableWithConsole.__module__ = 'pkg.abc'
+    RenderableWithConsole.__qualname__ = 'RenderableWithConsole'
     self.RenderableWithConsole = RenderableWithConsole
     self.ABC = _cribo.abc.ABC
     self.abstractmethod = _cribo.abc.abstractmethod
@@ -142,6 +178,7 @@ def _cribo_init___cribo_02808e_pkg_color(self):
             """Convert to hex string."""
             return f"#{self.r:02x}{self.g:02x}{self.b:02x}"
     Color.__module__ = 'pkg.color'
+    Color.__qualname__ = 'Color'
     self.Color = Color
 
     def color_from_style(style) -> "Color":
@@ -187,6 +224,7 @@ def _cribo_init___cribo_f0224b_pkg_console(self):
         """Base console class for type checking."""
         pass
     ConsoleBase.__module__ = 'pkg.console'
+    ConsoleBase.__qualname__ = 'ConsoleBase'
     self.ConsoleBase = ConsoleBase
     pkg_abc = _cribo_init___cribo_5f60be_pkg_abc(pkg_abc)
     RichRenderable = pkg.abc.RichRenderable
@@ -222,6 +260,7 @@ def _cribo_init___cribo_f0224b_pkg_console(self):
             """Check if object is renderable."""
             return isinstance(obj, RichRenderable)
     Console.__module__ = 'pkg.console'
+    Console.__qualname__ = 'Console'
     self.Console = Console
     pkg_pretty = _cribo_init___cribo_2353ad_pkg_pretty(pkg_pretty)
     format_pretty = pkg.pretty.format_pretty
@@ -273,6 +312,7 @@ def _cribo_init___cribo_2353ad_pkg_pretty(self):
             formatted = format_pretty(obj, console)
             print(formatted)
     PrettyPrinter.__module__ = 'pkg.pretty'
+    PrettyPrinter.__qualname__ = 'PrettyPrinter'
     self.PrettyPrinter = PrettyPrinter
 
     def format_pretty(obj: _cribo.typing.Any, console: Console) -> str:
@@ -316,6 +356,7 @@ def _cribo_init___cribo_4c91ba_pkg_style(self):
             """Get associated color object."""
             return self._color_obj
     Style.__module__ = 'pkg.style'
+    Style.__qualname__ = 'Style'
     self.Style = Style
 
     def apply_style_to_console(console, style: Style) -> None:

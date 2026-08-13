@@ -28,6 +28,35 @@ class _Cribo():
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
+class _CriboPreservedLoader:
+
+    def __init__(self, entry):
+        self._entry = entry
+
+    def create_module(self, spec):
+        return globals()[self._entry[1]]
+
+    def exec_module(self, module):
+        init = self._entry[0]
+        if init is not None:
+            globals()[init](module)
+class _CriboPreservedFinder:
+
+    def __init__(self):
+        self._targets = {}
+
+    def register(self, name, init, namespace, is_package):
+        self._targets[name] = init, namespace, is_package
+
+    def find_spec(self, name, path=None, target=None):
+        entry = self._targets.get(name)
+        if entry is None:
+            return None
+        from importlib.machinery import ModuleSpec
+        return ModuleSpec(name, _CriboPreservedLoader(entry), is_package=entry[2])
+_cribo_finder = _CriboPreservedFinder()
+_sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('with_source', '_cribo_init___cribo_e1cf19_with_source', 'with_source', False)
 with_source = _cribo.types.SimpleNamespace(__name__='with_source', __initializing__=False, __initialized__=False)
 def _cribo_init___cribo_e1cf19_with_source(self):
     if getattr(self, '__initialized__', False):
@@ -44,6 +73,7 @@ def _cribo_init___cribo_e1cf19_with_source(self):
         def __exit__(self, _exc_type, _exc_value, _traceback):
             return False
     SuccessfulContext.__module__ = 'with_source'
+    SuccessfulContext.__qualname__ = 'SuccessfulContext'
     self.SuccessfulContext = SuccessfulContext
 
     class FailingContext:
@@ -54,6 +84,7 @@ def _cribo_init___cribo_e1cf19_with_source(self):
         def __exit__(self, _exc_type, _exc_value, _traceback):
             return False
     FailingContext.__module__ = 'with_source'
+    FailingContext.__qualname__ = 'FailingContext'
     self.FailingContext = FailingContext
 
     class CompoundContext:
@@ -64,6 +95,7 @@ def _cribo_init___cribo_e1cf19_with_source(self):
         def __exit__(self, _exc_type, _exc_value, _traceback):
             return False
     CompoundContext.__module__ = 'with_source'
+    CompoundContext.__qualname__ = 'CompoundContext'
     self.CompoundContext = CompoundContext
 
     class FailingTarget:
@@ -71,6 +103,7 @@ def _cribo_init___cribo_e1cf19_with_source(self):
         def __setattr__(self, _name, _value):
             raise RuntimeError
     FailingTarget.__module__ = 'with_source'
+    FailingTarget.__qualname__ = 'FailingTarget'
     self.FailingTarget = FailingTarget
     try:
         with SuccessfulContext() as EARLY_WITH_VALUE:

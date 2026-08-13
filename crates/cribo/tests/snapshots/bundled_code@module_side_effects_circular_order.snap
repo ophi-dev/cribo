@@ -28,6 +28,38 @@ class _Cribo():
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
+class _CriboPreservedLoader:
+
+    def __init__(self, entry):
+        self._entry = entry
+
+    def create_module(self, spec):
+        return globals()[self._entry[1]]
+
+    def exec_module(self, module):
+        init = self._entry[0]
+        if init is not None:
+            globals()[init](module)
+class _CriboPreservedFinder:
+
+    def __init__(self):
+        self._targets = {}
+
+    def register(self, name, init, namespace, is_package):
+        self._targets[name] = init, namespace, is_package
+
+    def find_spec(self, name, path=None, target=None):
+        entry = self._targets.get(name)
+        if entry is None:
+            return None
+        from importlib.machinery import ModuleSpec
+        return ModuleSpec(name, _CriboPreservedLoader(entry), is_package=entry[2])
+_cribo_finder = _CriboPreservedFinder()
+_sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('my_package', '_cribo_init___cribo_c04dc3_my_package', 'my_package', True)
+_cribo_finder.register('my_package.mod_a', '_cribo_init___cribo_e90488_my_package_mod_a', 'my_package_mod_a', False)
+_cribo_finder.register('my_package.mod_b', '_cribo_init___cribo_d862bd_my_package_mod_b', 'my_package_mod_b', False)
+_cribo_finder.register('my_package.mod_c', '_cribo_init___cribo_748052_my_package_mod_c', 'my_package_mod_c', False)
 my_package_mod_l = _cribo.types.SimpleNamespace(__name__='my_package.mod_l')
 my_package = _cribo.types.SimpleNamespace(__name__='my_package', __initializing__=False, __initialized__=False, __path__=[])
 my_package.mod_l = my_package_mod_l

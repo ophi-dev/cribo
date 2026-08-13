@@ -28,6 +28,41 @@ class _Cribo():
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
+class _CriboPreservedLoader:
+
+    def __init__(self, entry):
+        self._entry = entry
+
+    def create_module(self, spec):
+        return globals()[self._entry[1]]
+
+    def exec_module(self, module):
+        init = self._entry[0]
+        if init is not None:
+            globals()[init](module)
+class _CriboPreservedFinder:
+
+    def __init__(self):
+        self._targets = {}
+
+    def register(self, name, init, namespace, is_package):
+        self._targets[name] = init, namespace, is_package
+
+    def find_spec(self, name, path=None, target=None):
+        entry = self._targets.get(name)
+        if entry is None:
+            return None
+        from importlib.machinery import ModuleSpec
+        return ModuleSpec(name, _CriboPreservedLoader(entry), is_package=entry[2])
+_cribo_finder = _CriboPreservedFinder()
+_sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('models.base', '_cribo_init___cribo_bca2f6_models_base', 'models_base', False)
+_cribo_finder.register('models', '_cribo_init___cribo_98ecc1_models', 'models', True)
+_cribo_finder.register('services.auth', '_cribo_init___cribo_b16105_services_auth', 'services_auth', True)
+_cribo_finder.register('services', '_cribo_init___cribo_93a195_services', 'services', True)
+_cribo_finder.register('services.auth.manager', '_cribo_init___cribo_ee1d45_services_auth_manager', 'services_auth_manager', False)
+_cribo_finder.register('core.utils', '_cribo_init___cribo_c57a32_core_utils', 'core_utils', True)
+_cribo_finder.register('core', '_cribo_init___cribo_62c387_core', 'core', True)
 core_utils_helpers = _cribo.types.SimpleNamespace(__name__='core.utils.helpers', __doc__='\nUtility helpers module with extensive naming conflicts\n')
 core = _cribo.types.SimpleNamespace(__name__='core', __initializing__=False, __initialized__=False, __path__=[])
 core_utils = _cribo.types.SimpleNamespace(__name__='core.utils', __initializing__=False, __initialized__=False, __path__=[])
@@ -304,6 +339,7 @@ def _cribo_init___cribo_bca2f6_models_base(self):
             models_base.result = _cribo_models_base_result
             return _cribo_models_base_result
     BaseModel.__module__ = 'models.base'
+    BaseModel.__qualname__ = 'BaseModel'
     self.BaseModel = BaseModel
 
     def initialize() -> str:
@@ -351,6 +387,7 @@ def _cribo_init___cribo_bca2f6_models_base(self):
             self.log(f"Processing: {log_data}")
             return f"base_logger_process: {log_data}"
     Logger.__module__ = 'models.base'
+    Logger.__qualname__ = 'Logger'
     self.Logger = Logger
 
     def connect() -> str:
@@ -475,6 +512,7 @@ def _cribo_init___cribo_ee1d45_services_auth_manager(self):
             self.connection = DBConnection()
             return f"User {self.username} connected"
     User.__module__ = 'services.auth.manager'
+    User.__qualname__ = 'User'
     self.User = User
 
     class Connection:
@@ -492,6 +530,7 @@ def _cribo_init___cribo_ee1d45_services_auth_manager(self):
             """Process with parameter name conflicts"""
             return f"auth_connection_process: {User}"
     Connection.__module__ = 'services.auth.manager'
+    Connection.__qualname__ = 'Connection'
     self.Connection = Connection
 
     def process(data: _cribo.typing.Any) -> str:
@@ -564,6 +603,7 @@ def _cribo_init___cribo_ee1d45_services_auth_manager(self):
                 result.append({"user": User.username, "process": user_result, "validate": validate_result, "connection": connection_process})
             return {"manager_results": result}
     AuthManager.__module__ = 'services.auth.manager'
+    AuthManager.__qualname__ = 'AuthManager'
     self.AuthManager = AuthManager
     self.Optional = _cribo.typing.Optional
     self.Dict = _cribo.typing.Dict

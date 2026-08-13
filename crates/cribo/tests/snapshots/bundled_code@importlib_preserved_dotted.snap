@@ -55,9 +55,9 @@ class _CriboPreservedFinder:
         from importlib.machinery import ModuleSpec
         return ModuleSpec(name, _CriboPreservedLoader(entry), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
-_sys.meta_path.insert(0, _cribo_finder)
-_cribo_finder.register('pkg.sub', '_cribo_init___cribo_fd3e12_pkg_sub', 'pkg_sub', False)
+_sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('pkg', '_cribo_init___cribo_95bf5f_pkg', 'pkg', True)
+_cribo_finder.register('pkg.sub', '_cribo_init___cribo_fd3e12_pkg_sub', 'pkg_sub', False)
 pkg = _cribo.types.SimpleNamespace(__name__='pkg', __initializing__=False, __initialized__=False, __path__=[])
 def _cribo_init___cribo_95bf5f_pkg(self):
     if getattr(self, '__initialized__', False):

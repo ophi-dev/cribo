@@ -28,6 +28,36 @@ class _Cribo():
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
+class _CriboPreservedLoader:
+
+    def __init__(self, entry):
+        self._entry = entry
+
+    def create_module(self, spec):
+        return globals()[self._entry[1]]
+
+    def exec_module(self, module):
+        init = self._entry[0]
+        if init is not None:
+            globals()[init](module)
+class _CriboPreservedFinder:
+
+    def __init__(self):
+        self._targets = {}
+
+    def register(self, name, init, namespace, is_package):
+        self._targets[name] = init, namespace, is_package
+
+    def find_spec(self, name, path=None, target=None):
+        entry = self._targets.get(name)
+        if entry is None:
+            return None
+        from importlib.machinery import ModuleSpec
+        return ModuleSpec(name, _CriboPreservedLoader(entry), is_package=entry[2])
+_cribo_finder = _CriboPreservedFinder()
+_sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('yaml_module', '_cribo_init___cribo_1309dd_yaml_module', 'yaml_module', True)
+_cribo_finder.register('yaml_module.other', '_cribo_init___cribo_1fd8cb_yaml_module_other', 'yaml_module_other', False)
 yaml_module_loader = _cribo.types.SimpleNamespace(__name__='yaml_module.loader')
 yaml_module = _cribo.types.SimpleNamespace(__name__='yaml_module', __initializing__=False, __initialized__=False, __path__=[])
 yaml_module.loader = yaml_module_loader
@@ -58,12 +88,14 @@ def _cribo_init___cribo_1fd8cb_yaml_module_other(self):
         """First version of the metaclass"""
         pass
     YAMLObjectMetaclass.__module__ = 'yaml_module.other'
+    YAMLObjectMetaclass.__qualname__ = 'YAMLObjectMetaclass'
     self.YAMLObjectMetaclass = YAMLObjectMetaclass
 
     class YAMLObject(metaclass=YAMLObjectMetaclass):
         """First version of YAMLObject"""
         source = "other"
     YAMLObject.__module__ = 'yaml_module.other'
+    YAMLObject.__qualname__ = 'YAMLObject'
     self.YAMLObject = YAMLObject
     self.__initialized__ = True
     self.__initializing__ = False
@@ -100,6 +132,7 @@ def _cribo_init___cribo_1309dd_yaml_module(self):
                 cls.yaml_loader.add_constructor(cls.yaml_tag, cls.from_yaml)
                 cls.yaml_dumper.add_representer(cls, cls.to_yaml)
     YAMLObjectMetaclass.__module__ = 'yaml_module'
+    YAMLObjectMetaclass.__qualname__ = 'YAMLObjectMetaclass'
     self.YAMLObjectMetaclass = YAMLObjectMetaclass
 
     class YAMLObject(metaclass=YAMLObjectMetaclass):
@@ -117,6 +150,7 @@ def _cribo_init___cribo_1309dd_yaml_module(self):
         def to_yaml(cls, dumper, data):
             return f"Dumping {cls.__name__}"
     YAMLObject.__module__ = 'yaml_module'
+    YAMLObject.__qualname__ = 'YAMLObject'
     self.YAMLObject = YAMLObject
     self.loader = yaml_module_loader
     self.__initialized__ = True

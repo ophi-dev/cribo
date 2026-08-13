@@ -216,10 +216,18 @@ pub(crate) fn process_statements_for_init_function(
                 // Note: We set __module__ for the class, but Python still shows the full scope path
                 // in the class repr when it's defined inside a function. This is expected behavior.
                 // Setting __module__ helps with introspection but doesn't change the repr.
+                // __qualname__ is restored to the original module-level name so external
+                // consumers resolving classes by identity (pickle, multiprocessing) find
+                // them through __import__(cls.__module__) + getattr(module, __qualname__).
                 body.push(ast_builder::statements::assign_attribute(
                     &symbol_name,
                     "__module__",
                     ast_builder::expressions::string_literal(ctx.module_name),
+                ));
+                body.push(ast_builder::statements::assign_attribute(
+                    &symbol_name,
+                    "__qualname__",
+                    ast_builder::expressions::string_literal(class_def.name.as_str()),
                 ));
 
                 // Set as module attribute via centralized helper

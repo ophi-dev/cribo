@@ -28,6 +28,36 @@ class _Cribo():
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
+class _CriboPreservedLoader:
+
+    def __init__(self, entry):
+        self._entry = entry
+
+    def create_module(self, spec):
+        return globals()[self._entry[1]]
+
+    def exec_module(self, module):
+        init = self._entry[0]
+        if init is not None:
+            globals()[init](module)
+class _CriboPreservedFinder:
+
+    def __init__(self):
+        self._targets = {}
+
+    def register(self, name, init, namespace, is_package):
+        self._targets[name] = init, namespace, is_package
+
+    def find_spec(self, name, path=None, target=None):
+        entry = self._targets.get(name)
+        if entry is None:
+            return None
+        from importlib.machinery import ModuleSpec
+        return ModuleSpec(name, _CriboPreservedLoader(entry), is_package=entry[2])
+_cribo_finder = _CriboPreservedFinder()
+_sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('other', '_cribo_init___cribo_c0fc3d_other', 'other', False)
+_cribo_finder.register('base', '_cribo_init___cribo_a6386c_base', 'base', False)
 base = _cribo.types.SimpleNamespace(__name__='base', __initializing__=False, __initialized__=False)
 def _cribo_init___cribo_a6386c_base(self):
     if getattr(self, '__initialized__', False):
@@ -44,6 +74,7 @@ def _cribo_init___cribo_a6386c_base(self):
             super(MyMetaclass, cls).__init__(name, bases, kwds)
             cls.base_attr = "from base"
     MyMetaclass.__module__ = 'base'
+    MyMetaclass.__qualname__ = 'MyMetaclass'
     self.MyMetaclass = MyMetaclass
 
     class MyObject(metaclass=MyMetaclass):
@@ -52,6 +83,7 @@ def _cribo_init___cribo_a6386c_base(self):
         def __repr__(self):
             return f"MyObject(base_attr={self.base_attr})"
     MyObject.__module__ = 'base'
+    MyObject.__qualname__ = 'MyObject'
     self.MyObject = MyObject
     self.__initialized__ = True
     self.__initializing__ = False
@@ -73,6 +105,7 @@ def _cribo_init___cribo_c0fc3d_other(self):
             super(MyMetaclass, cls).__init__(name, bases, kwds)
             cls.other_attr = "from other"
     MyMetaclass.__module__ = 'other'
+    MyMetaclass.__qualname__ = 'MyMetaclass'
     self.MyMetaclass = MyMetaclass
 
     class MyObject(metaclass=MyMetaclass):
@@ -81,6 +114,7 @@ def _cribo_init___cribo_c0fc3d_other(self):
         def __repr__(self):
             return f"OtherMyObject(other_attr={self.other_attr})"
     MyObject.__module__ = 'other'
+    MyObject.__qualname__ = 'MyObject'
     self.MyObject = MyObject
     self.__initialized__ = True
     self.__initializing__ = False

@@ -28,6 +28,36 @@ class _Cribo():
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
+class _CriboPreservedLoader:
+
+    def __init__(self, entry):
+        self._entry = entry
+
+    def create_module(self, spec):
+        return globals()[self._entry[1]]
+
+    def exec_module(self, module):
+        init = self._entry[0]
+        if init is not None:
+            globals()[init](module)
+class _CriboPreservedFinder:
+
+    def __init__(self):
+        self._targets = {}
+
+    def register(self, name, init, namespace, is_package):
+        self._targets[name] = init, namespace, is_package
+
+    def find_spec(self, name, path=None, target=None):
+        entry = self._targets.get(name)
+        if entry is None:
+            return None
+        from importlib.machinery import ModuleSpec
+        return ModuleSpec(name, _CriboPreservedLoader(entry), is_package=entry[2])
+_cribo_finder = _CriboPreservedFinder()
+_sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('schemas.user', '_cribo_init___cribo_e6d2b7_schemas_user', 'schemas_user', False)
+_cribo_finder.register('schemas', None, 'schemas', True)
 schemas_user = _cribo.types.SimpleNamespace(__name__='schemas.user', __initializing__=False, __initialized__=False)
 def _cribo_init___cribo_e6d2b7_schemas_user(self):
     if getattr(self, '__initialized__', False):
@@ -49,6 +79,7 @@ def _cribo_init___cribo_e6d2b7_schemas_user(self):
         is_active: bool = Field(default=True, description="Whether the user is active")
         bio: _cribo.typing.Optional[str] = Field(default=None, max_length=500, description="User's biography")
     UserSchema.__module__ = 'schemas.user'
+    UserSchema.__qualname__ = 'UserSchema'
     self.UserSchema = UserSchema
 
     class CreateUserRequest(BaseModel):
@@ -58,6 +89,7 @@ def _cribo_init___cribo_e6d2b7_schemas_user(self):
         age: _cribo.typing.Optional[int] = Field(default=None, ge=0, le=150)
         bio: _cribo.typing.Optional[str] = Field(default=None, max_length=500)
     CreateUserRequest.__module__ = 'schemas.user'
+    CreateUserRequest.__qualname__ = 'CreateUserRequest'
     self.CreateUserRequest = CreateUserRequest
 
     class UserResponse(BaseModel):
@@ -69,6 +101,7 @@ def _cribo_init___cribo_e6d2b7_schemas_user(self):
         is_active: bool
         bio: _cribo.typing.Optional[str] = None
     UserResponse.__module__ = 'schemas.user'
+    UserResponse.__qualname__ = 'UserResponse'
     self.UserResponse = UserResponse
     self.Optional = _cribo.typing.Optional
     self.__initialized__ = True

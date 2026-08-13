@@ -3072,16 +3072,6 @@ impl ModuleResolver {
             .contains(module_name)
     }
 
-    /// Return the bundled targets of preserved `import_module` calls, for
-    /// registration with the bundle's meta-path finder.
-    pub(crate) fn preserved_importlib_targets(&self) -> Vec<String> {
-        self.preserved_importlib_module_targets
-            .borrow()
-            .iter()
-            .cloned()
-            .collect()
-    }
-
     /// Record import names whose package resources bundled code reads at runtime
     /// (`importlib.resources.files("provider")`, `pkgutil.get_data("provider", ..)`):
     /// the target needs its installed layout and import spec, so it and its package

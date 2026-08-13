@@ -28,6 +28,40 @@ class _Cribo():
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
+class _CriboPreservedLoader:
+
+    def __init__(self, entry):
+        self._entry = entry
+
+    def create_module(self, spec):
+        return globals()[self._entry[1]]
+
+    def exec_module(self, module):
+        init = self._entry[0]
+        if init is not None:
+            globals()[init](module)
+class _CriboPreservedFinder:
+
+    def __init__(self):
+        self._targets = {}
+
+    def register(self, name, init, namespace, is_package):
+        self._targets[name] = init, namespace, is_package
+
+    def find_spec(self, name, path=None, target=None):
+        entry = self._targets.get(name)
+        if entry is None:
+            return None
+        from importlib.machinery import ModuleSpec
+        return ModuleSpec(name, _CriboPreservedLoader(entry), is_package=entry[2])
+_cribo_finder = _CriboPreservedFinder()
+_sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('2024-config', '_cribo_init___cribo_5687a6__2024_config', '_2024_config', False)
+_cribo_finder.register('for', '_cribo_init___cribo_ec6681_for_', 'for_', False)
+_cribo_finder.register('def', '_cribo_init___cribo_944eb6_def_', 'def_', False)
+_cribo_finder.register('class', '_cribo_init___cribo_004e55_class_', 'class_', False)
+_cribo_finder.register('api-client', '_cribo_init___cribo_64c186_api_client', 'api_client', False)
+_cribo_finder.register('data-processor', '_cribo_init___cribo_d8297b_data_processor', 'data_processor', False)
 data_processor = _cribo.types.SimpleNamespace(__name__='data-processor', __initializing__=False, __initialized__=False)
 def _cribo_init___cribo_d8297b_data_processor(self):
     if getattr(self, '__initialized__', False):
@@ -45,6 +79,7 @@ def _cribo_init___cribo_d8297b_data_processor(self):
         def process(self, data):
             return f"Processing {data} with hyphenated module"
     DataProcessor.__module__ = 'data-processor'
+    DataProcessor.__qualname__ = 'DataProcessor'
     self.DataProcessor = DataProcessor
 
     def get_processor_info():
@@ -74,6 +109,7 @@ def _cribo_init___cribo_64c186_api_client(self):
         def make_request(self, endpoint):
             return f"Making request to {self.base_url}/{endpoint}"
     APIClient.__module__ = 'api-client'
+    APIClient.__qualname__ = 'APIClient'
     self.APIClient = APIClient
 
     def create_client(url=None):
@@ -105,6 +141,7 @@ def _cribo_init___cribo_004e55_class_(self):
         def describe(self):
             return f"This is a {self.type} named {self.name}"
     MetaClass.__module__ = 'class'
+    MetaClass.__qualname__ = 'MetaClass'
     self.MetaClass = MetaClass
 
     def create_class_instance(class_name):
@@ -137,6 +174,7 @@ def _cribo_init___cribo_944eb6_def_(self):
             params_str = ", ".join(self.params)
             return f"def {self.name}({params_str})"
     FunctionDefinition.__module__ = 'def'
+    FunctionDefinition.__qualname__ = 'FunctionDefinition'
     self.FunctionDefinition = FunctionDefinition
 
     def define_function(name, *args):
@@ -171,6 +209,7 @@ def _cribo_init___cribo_ec6681_for_(self):
                 results.append(f"Processing: {item}")
             return results
     ForLoop.__module__ = 'for'
+    ForLoop.__qualname__ = 'ForLoop'
     self.ForLoop = ForLoop
 
     def create_loop(items):
@@ -202,6 +241,7 @@ def _cribo_init___cribo_5687a6__2024_config(self):
         def get_config(cls):
             return {"year": cls.YEAR, "version": cls.VERSION, "features": cls.FEATURES}
     Config2024.__module__ = '2024-config'
+    Config2024.__qualname__ = 'Config2024'
     self.Config2024 = Config2024
 
     def load_yearly_config():

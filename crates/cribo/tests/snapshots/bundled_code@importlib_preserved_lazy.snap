@@ -55,9 +55,9 @@ class _CriboPreservedFinder:
         from importlib.machinery import ModuleSpec
         return ModuleSpec(name, _CriboPreservedLoader(entry), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
-_sys.meta_path.insert(0, _cribo_finder)
-_cribo_finder.register('lazy_helper', '_cribo_init___cribo_5e52f3_lazy_helper', 'lazy_helper', False)
+_sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('untouched_helper', '_cribo_init___cribo_5af165_untouched_helper', 'untouched_helper', False)
+_cribo_finder.register('lazy_helper', '_cribo_init___cribo_5e52f3_lazy_helper', 'lazy_helper', False)
 lazy_helper = _cribo.types.SimpleNamespace(__name__='lazy_helper', __initializing__=False, __initialized__=False)
 def _cribo_init___cribo_5e52f3_lazy_helper(self):
     if getattr(self, '__initialized__', False):

@@ -28,6 +28,37 @@ class _Cribo():
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
+class _CriboPreservedLoader:
+
+    def __init__(self, entry):
+        self._entry = entry
+
+    def create_module(self, spec):
+        return globals()[self._entry[1]]
+
+    def exec_module(self, module):
+        init = self._entry[0]
+        if init is not None:
+            globals()[init](module)
+class _CriboPreservedFinder:
+
+    def __init__(self):
+        self._targets = {}
+
+    def register(self, name, init, namespace, is_package):
+        self._targets[name] = init, namespace, is_package
+
+    def find_spec(self, name, path=None, target=None):
+        entry = self._targets.get(name)
+        if entry is None:
+            return None
+        from importlib.machinery import ModuleSpec
+        return ModuleSpec(name, _CriboPreservedLoader(entry), is_package=entry[2])
+_cribo_finder = _CriboPreservedFinder()
+_sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('mypackage.utils', '_cribo_init___cribo_99e487_mypackage_utils', 'mypackage_utils', True)
+_cribo_finder.register('mypackage.config', '_cribo_init___cribo_de6c46_mypackage_config', 'mypackage_config', False)
+_cribo_finder.register('mypackage', '_cribo_init___cribo_a81151_mypackage', 'mypackage', True)
 mypackage_data_processor = _cribo.types.SimpleNamespace(__name__='mypackage.data_processor', __doc__='Data processing module.')
 mypackage = _cribo.types.SimpleNamespace(__name__='mypackage', __initializing__=False, __initialized__=False, __path__=[])
 mypackage.data_processor = mypackage_data_processor
@@ -64,6 +95,7 @@ def _cribo_init___cribo_de6c46_mypackage_config(self):
             self.DEBUG = _cribo.os.environ.get("DEBUG", "false").lower() == "true"
             self.LOG_LEVEL = _cribo.os.environ.get("LOG_LEVEL", "INFO")
     Config.__module__ = 'mypackage.config'
+    Config.__qualname__ = 'Config'
     self.Config = Config
     config = Config()
     self.config = config

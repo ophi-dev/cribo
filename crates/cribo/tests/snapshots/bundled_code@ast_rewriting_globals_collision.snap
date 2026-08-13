@@ -28,6 +28,44 @@ class _Cribo():
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
+class _CriboPreservedLoader:
+
+    def __init__(self, entry):
+        self._entry = entry
+
+    def create_module(self, spec):
+        return globals()[self._entry[1]]
+
+    def exec_module(self, module):
+        init = self._entry[0]
+        if init is not None:
+            globals()[init](module)
+class _CriboPreservedFinder:
+
+    def __init__(self):
+        self._targets = {}
+
+    def register(self, name, init, namespace, is_package):
+        self._targets[name] = init, namespace, is_package
+
+    def find_spec(self, name, path=None, target=None):
+        entry = self._targets.get(name)
+        if entry is None:
+            return None
+        from importlib.machinery import ModuleSpec
+        return ModuleSpec(name, _CriboPreservedLoader(entry), is_package=entry[2])
+_cribo_finder = _CriboPreservedFinder()
+_sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('models.base', '_cribo_init___cribo_0a162a_models_base', 'models_base', False)
+_cribo_finder.register('models', '_cribo_init___cribo_293a98_models', 'models', True)
+_cribo_finder.register('models.user', '_cribo_init___cribo_1f9e6c_models_user', 'models_user', False)
+_cribo_finder.register('services.auth', '_cribo_init___cribo_84bf42_services_auth', 'services_auth', True)
+_cribo_finder.register('services', '_cribo_init___cribo_b2dda7_services', 'services', True)
+_cribo_finder.register('services.auth.manager', '_cribo_init___cribo_0ecebd_services_auth_manager', 'services_auth_manager', False)
+_cribo_finder.register('core.utils', '_cribo_init___cribo_e52b1d_core_utils', 'core_utils', True)
+_cribo_finder.register('core.database', '_cribo_init___cribo_b7b3e3_core_database', 'core_database', True)
+_cribo_finder.register('core', '_cribo_init___cribo_0ac752_core', 'core', True)
+_cribo_finder.register('core.database.connection', '_cribo_init___cribo_df9c8d_core_database_connection', 'core_database_connection', False)
 core_utils_helpers = _cribo.types.SimpleNamespace(__name__='core.utils.helpers', __doc__='Core utility helpers module - NO external dependencies to avoid circular imports')
 core = _cribo.types.SimpleNamespace(__name__='core', __initializing__=False, __initialized__=False, __path__=[])
 core_utils = _cribo.types.SimpleNamespace(__name__='core.utils', __initializing__=False, __initialized__=False, __path__=[])
@@ -195,6 +233,7 @@ def _cribo_init___cribo_df9c8d_core_database_connection(self):
                 raise RuntimeError("Not connected")
             return format_result(f"Query: {query}")
     Connection.__module__ = 'core.database.connection'
+    Connection.__qualname__ = 'Connection'
     self.Connection = Connection
 
     class Logger:
@@ -206,6 +245,7 @@ def _cribo_init___cribo_df9c8d_core_database_connection(self):
         def log(self, message):
             return f"DB_LOG[{self.context}]: {message}"
     Logger.__module__ = 'core.database.connection'
+    Logger.__qualname__ = 'Logger'
     self.Logger = Logger
 
     def create_connection(db_name):
@@ -265,6 +305,7 @@ def _cribo_init___cribo_0a162a_models_base(self):
         def get_message(self):
             return f"base_logger_{self.prefix}"
     Logger.__module__ = 'models.base'
+    Logger.__qualname__ = 'Logger'
     self.Logger = Logger
 
     def initialize():
@@ -359,6 +400,7 @@ def _cribo_init___cribo_1f9e6c_models_user(self):
         def process(self):
             return f"User.process: {self.name}"
     User.__module__ = 'models.user'
+    User.__qualname__ = 'User'
     self.User = User
 
     class Logger:
@@ -375,6 +417,7 @@ def _cribo_init___cribo_1f9e6c_models_user(self):
         def log_all(self):
             return [self.get_message(), self.base_logger.get_message(), self.util_logger.get_message()]
     Logger.__module__ = 'models.user'
+    Logger.__qualname__ = 'Logger'
     self.Logger = Logger
 
     class UserValidator:
@@ -386,6 +429,7 @@ def _cribo_init___cribo_1f9e6c_models_user(self):
         def add_rule(self, rule):
             self.rules.append(rule)
     UserValidator.__module__ = 'models.user'
+    UserValidator.__qualname__ = 'UserValidator'
     self.UserValidator = UserValidator
     self.__initialized__ = True
     self.__initializing__ = False
@@ -456,6 +500,7 @@ def _cribo_init___cribo_0ecebd_services_auth_manager(self):
         def authenticate(self):
             return f"auth_user_{self.username}"
     User.__module__ = 'services.auth.manager'
+    User.__qualname__ = 'User'
     self.User = User
 
     class Connection:
@@ -469,6 +514,7 @@ def _cribo_init___cribo_0ecebd_services_auth_manager(self):
             db_result = self.db_conn.connect()
             return f"auth_wrapped_{db_result}"
     Connection.__module__ = 'services.auth.manager'
+    Connection.__qualname__ = 'Connection'
     self.Connection = Connection
 
     class AuthManager:
@@ -484,6 +530,7 @@ def _cribo_init___cribo_0ecebd_services_auth_manager(self):
         def process_auth(self, username, data):
             return process(f"{username}:{data}")
     AuthManager.__module__ = 'services.auth.manager'
+    AuthManager.__qualname__ = 'AuthManager'
     self.AuthManager = AuthManager
     self.__initialized__ = True
     self.__initializing__ = False

@@ -28,6 +28,39 @@ class _Cribo():
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
+class _CriboPreservedLoader:
+
+    def __init__(self, entry):
+        self._entry = entry
+
+    def create_module(self, spec):
+        return globals()[self._entry[1]]
+
+    def exec_module(self, module):
+        init = self._entry[0]
+        if init is not None:
+            globals()[init](module)
+class _CriboPreservedFinder:
+
+    def __init__(self):
+        self._targets = {}
+
+    def register(self, name, init, namespace, is_package):
+        self._targets[name] = init, namespace, is_package
+
+    def find_spec(self, name, path=None, target=None):
+        entry = self._targets.get(name)
+        if entry is None:
+            return None
+        from importlib.machinery import ModuleSpec
+        return ModuleSpec(name, _CriboPreservedLoader(entry), is_package=entry[2])
+_cribo_finder = _CriboPreservedFinder()
+_sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('pkg', '_cribo_init___cribo_6d9930_pkg', 'pkg', True)
+_cribo_finder.register('pkg.auth', '_cribo_init___cribo_e94ab8_pkg_auth', 'pkg_auth', False)
+_cribo_finder.register('pkg.utils', '_cribo_init___cribo_bdb497_pkg_utils', 'pkg_utils', False)
+_cribo_finder.register('pkg.models', '_cribo_init___cribo_01ad7c_pkg_models', 'pkg_models', False)
+_cribo_finder.register('pkg.adapters', '_cribo_init___cribo_12d613_pkg_adapters', 'pkg_adapters', False)
 pkg = _cribo.types.SimpleNamespace(__name__='pkg', __initializing__=False, __initialized__=False, __path__=[])
 pkg_adapters = _cribo.types.SimpleNamespace(__name__='pkg.adapters', __initializing__=False, __initialized__=False)
 pkg.adapters = pkg_adapters
@@ -83,6 +116,7 @@ def _cribo_init___cribo_12d613_pkg_adapters(self):
             print(f"Auth header set: {self.auth_header}")
             return self.auth_header
     Adapter.__module__ = 'pkg.adapters'
+    Adapter.__qualname__ = 'Adapter'
     self.Adapter = Adapter
     self.__initialized__ = True
     self.__initializing__ = False
@@ -116,6 +150,7 @@ def _cribo_init___cribo_e94ab8_pkg_auth(self):
         def get_header(self):
             return _basic_auth_str(self.username, self.password)
     HTTPBasicAuth.__module__ = 'pkg.auth'
+    HTTPBasicAuth.__qualname__ = 'HTTPBasicAuth'
     self.HTTPBasicAuth = HTTPBasicAuth
     self.__initialized__ = True
     self.__initializing__ = False
@@ -143,6 +178,7 @@ def _cribo_init___cribo_01ad7c_pkg_models(self):
             """Reference to adapter class (creates circular dependency)."""
             return _adapters_module.Adapter if hasattr(_adapters_module, "Adapter") else None
     BaseModel.__module__ = 'pkg.models'
+    BaseModel.__qualname__ = 'BaseModel'
     self.BaseModel = BaseModel
     self.__initialized__ = True
     self.__initializing__ = False

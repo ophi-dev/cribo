@@ -28,6 +28,37 @@ class _Cribo():
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
+class _CriboPreservedLoader:
+
+    def __init__(self, entry):
+        self._entry = entry
+
+    def create_module(self, spec):
+        return globals()[self._entry[1]]
+
+    def exec_module(self, module):
+        init = self._entry[0]
+        if init is not None:
+            globals()[init](module)
+class _CriboPreservedFinder:
+
+    def __init__(self):
+        self._targets = {}
+
+    def register(self, name, init, namespace, is_package):
+        self._targets[name] = init, namespace, is_package
+
+    def find_spec(self, name, path=None, target=None):
+        entry = self._targets.get(name)
+        if entry is None:
+            return None
+        from importlib.machinery import ModuleSpec
+        return ModuleSpec(name, _CriboPreservedLoader(entry), is_package=entry[2])
+_cribo_finder = _CriboPreservedFinder()
+_sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('mypkg', '_cribo_init___cribo_30661c_mypkg', 'mypkg', True)
+_cribo_finder.register('mypkg.exceptions', '_cribo_init___cribo_72b028_mypkg_exceptions', 'mypkg_exceptions', False)
+_cribo_finder.register('mypkg.compat', '_cribo_init___cribo_4089db_mypkg_compat', 'mypkg_compat', False)
 mypkg_compat = _cribo.types.SimpleNamespace(__name__='mypkg.compat', __initializing__=False, __initialized__=False)
 def _cribo_init___cribo_4089db_mypkg_compat(self):
     if getattr(self, '__initialized__', False):
@@ -82,6 +113,7 @@ def _cribo_init___cribo_72b028_mypkg_exceptions(self):
         """Base exception class"""
         pass
     BaseException.__module__ = 'mypkg.exceptions'
+    BaseException.__qualname__ = 'BaseException'
     self.BaseException = BaseException
 
     class CustomJSONError(BaseException, CompatJSONDecodeError):
@@ -94,6 +126,7 @@ def _cribo_init___cribo_72b028_mypkg_exceptions(self):
         def __reduce__(self):
             return CompatJSONDecodeError.__reduce__(self)
     CustomJSONError.__module__ = 'mypkg.exceptions'
+    CustomJSONError.__qualname__ = 'CustomJSONError'
     self.CustomJSONError = CustomJSONError
     self.__initialized__ = True
     self.__initializing__ = False

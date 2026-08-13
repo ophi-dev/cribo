@@ -28,6 +28,36 @@ class _Cribo():
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
+class _CriboPreservedLoader:
+
+    def __init__(self, entry):
+        self._entry = entry
+
+    def create_module(self, spec):
+        return globals()[self._entry[1]]
+
+    def exec_module(self, module):
+        init = self._entry[0]
+        if init is not None:
+            globals()[init](module)
+class _CriboPreservedFinder:
+
+    def __init__(self):
+        self._targets = {}
+
+    def register(self, name, init, namespace, is_package):
+        self._targets[name] = init, namespace, is_package
+
+    def find_spec(self, name, path=None, target=None):
+        entry = self._targets.get(name)
+        if entry is None:
+            return None
+        from importlib.machinery import ModuleSpec
+        return ModuleSpec(name, _CriboPreservedLoader(entry), is_package=entry[2])
+_cribo_finder = _CriboPreservedFinder()
+_sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('logger', '_cribo_init___cribo_0639af_logger', 'logger', False)
+_cribo_finder.register('config', '_cribo_init___cribo_f96d2c_config', 'config', False)
 utils = _cribo.types.SimpleNamespace(__name__='utils', __doc__='\nUtility module with no dependencies on other modules in this package.\nThis can be safely imported at module level by everyone.\n')
 """\nUtility module with no dependencies on other modules in this package.\nThis can be safely imported at module level by everyone.\n"""
 def format_message(message):
@@ -78,6 +108,7 @@ def _cribo_init___cribo_f96d2c_config(self):
         def get_setting(self, key):
             return getattr(self, key, None)
     Config.__module__ = 'config'
+    Config.__qualname__ = 'Config'
     self.Config = Config
     _config = None
     _cribo_config__config = _config
@@ -134,6 +165,7 @@ def _cribo_init___cribo_0639af_logger(self):
             levels = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3}
             return levels.get(level, 1) >= levels.get(self.log_level, 1)
     Logger.__module__ = 'logger'
+    Logger.__qualname__ = 'Logger'
     self.Logger = Logger
     _logger = None
     _cribo_logger__logger = _logger
