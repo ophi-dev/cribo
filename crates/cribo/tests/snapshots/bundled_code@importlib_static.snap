@@ -108,6 +108,8 @@ def _cribo_init___cribo_d8297b_data_processor(self):
 
     def get_processor_info():
         return "This is a data processor from a module with a hyphen"
+    get_processor_info.__module__ = 'data-processor'
+    get_processor_info.__qualname__ = 'get_processor_info'
     self.get_processor_info = get_processor_info
     PROCESSOR_VERSION = "1.0-hyphenated"
     self.PROCESSOR_VERSION = PROCESSOR_VERSION
@@ -140,6 +142,8 @@ def _cribo_init___cribo_64c186_api_client(self):
 
     def create_client(url=None):
         return APIClient(url) if url else APIClient()
+    create_client.__module__ = 'api-client'
+    create_client.__qualname__ = 'create_client'
     self.create_client = create_client
     API_VERSION = "2.0-stable"
     self.API_VERSION = API_VERSION
@@ -174,6 +178,8 @@ def _cribo_init___cribo_004e55_class_(self):
 
     def create_class_instance(class_name):
         return MetaClass(class_name)
+    create_class_instance.__module__ = 'class'
+    create_class_instance.__qualname__ = 'create_class_instance'
     self.create_class_instance = create_class_instance
     CLASS_TYPES = ["abstract", "concrete", "meta"]
     self.CLASS_TYPES = CLASS_TYPES
@@ -209,6 +215,8 @@ def _cribo_init___cribo_944eb6_def_(self):
 
     def define_function(name, *args):
         return FunctionDefinition(name, list(args))
+    define_function.__module__ = 'def'
+    define_function.__qualname__ = 'define_function'
     self.define_function = define_function
     BUILTIN_FUNCTIONS = ["print", "len", "range", "sorted"]
     self.BUILTIN_FUNCTIONS = BUILTIN_FUNCTIONS
@@ -246,6 +254,8 @@ def _cribo_init___cribo_ec6681_for_(self):
 
     def create_loop(items):
         return ForLoop(items)
+    create_loop.__module__ = 'for'
+    create_loop.__qualname__ = 'create_loop'
     self.create_loop = create_loop
     LOOP_TYPES = ["for", "while", "comprehension"]
     self.LOOP_TYPES = LOOP_TYPES
@@ -280,6 +290,8 @@ def _cribo_init___cribo_5687a6__2024_config(self):
 
     def load_yearly_config():
         return Config2024()
+    load_yearly_config.__module__ = '2024-config'
+    load_yearly_config.__qualname__ = 'load_yearly_config'
     self.load_yearly_config = load_yearly_config
     SUPPORTED_YEARS = [2022, 2023, 2024]
     self.SUPPORTED_YEARS = SUPPORTED_YEARS

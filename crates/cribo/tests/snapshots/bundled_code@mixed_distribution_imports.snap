@@ -104,6 +104,8 @@ def _cribo_init___cribo_a01816_mixed_package_core(self):
 
     def describe():
         return f"mixed distribution {_native is None} {native_symbol is None}"
+    describe.__module__ = 'mixed_package.core'
+    describe.__qualname__ = 'describe'
     self.describe = describe
     self.__initialized__ = True
     self.__initializing__ = False

@@ -105,11 +105,15 @@ def _cribo_init___cribo_9d48f2_services_auth(self):
         """Authenticate user using database connection"""
         conn = get_connection()
         return f"auth({username}, conn={conn})"
+    authenticate_user.__module__ = 'services.auth'
+    authenticate_user.__qualname__ = 'authenticate_user'
     self.authenticate_user = authenticate_user
 
     def get_user_context():
         """Get user context - used by database module"""
         return "user_context_from_auth"
+    get_user_context.__module__ = 'services.auth'
+    get_user_context.__qualname__ = 'get_user_context'
     self.get_user_context = get_user_context
     self.__initialized__ = True
     self.__initializing__ = False
@@ -132,11 +136,15 @@ def _cribo_init___cribo_62de34_services_database(self):
         """Get database connection with user context"""
         context = get_user_context()
         return f"db_connection(context={context})"
+    get_connection.__module__ = 'services.database'
+    get_connection.__qualname__ = 'get_connection'
     self.get_connection = get_connection
 
     def execute_query(query):
         """Execute a database query"""
         return f"query_result({query})"
+    execute_query.__module__ = 'services.database'
+    execute_query.__qualname__ = 'execute_query'
     self.execute_query = execute_query
     self.__initialized__ = True
     self.__initializing__ = False

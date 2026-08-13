@@ -107,6 +107,8 @@ def _cribo_init___cribo_f23a44_external_plugin(self):
     def register_plugin():
         """Register this plugin."""
         return add_plugin("external_plugin")
+    register_plugin.__module__ = 'external_plugin'
+    register_plugin.__qualname__ = 'register_plugin'
     self.register_plugin = register_plugin
     add_plugin("external_plugin_loaded")
     self.__initialized__ = True

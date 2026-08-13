@@ -100,10 +100,14 @@ def _cribo_init___cribo_ffe0bc_shadow_pkg(self):
 
     def load_via(importlib):
         return importlib.import_module(name="shadow_pkg.backend")
+    load_via.__module__ = 'shadow_pkg'
+    load_via.__qualname__ = 'load_via'
     self.load_via = load_via
 
     def real_kind():
         return KIND
+    real_kind.__module__ = 'shadow_pkg'
+    real_kind.__qualname__ = 'real_kind'
     self.real_kind = real_kind
     self.backend = shadow_pkg_backend
     self.__initialized__ = True

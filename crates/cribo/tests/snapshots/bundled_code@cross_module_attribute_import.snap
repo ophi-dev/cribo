@@ -114,6 +114,8 @@ def _cribo_init___cribo_370515_mypackage(self):
     def get_full_info():
         """Combine version and processed data."""
         return f"{get_version_info()} - {process_data()}"
+    get_full_info.__module__ = 'mypackage'
+    get_full_info.__qualname__ = 'get_full_info'
     self.get_full_info = get_full_info
     self.__version__ = mypackage___version__
     self.__initialized__ = True
@@ -136,6 +138,8 @@ def _cribo_init___cribo_e49d78_mypackage_core(self):
     def process_data():
         """Process some data."""
         return "Processed Data"
+    process_data.__module__ = 'mypackage.core'
+    process_data.__qualname__ = 'process_data'
     self.process_data = process_data
     package_ref = mypackage
     self.package_ref = package_ref
@@ -159,6 +163,8 @@ def _cribo_init___cribo_35f1d1_mypackage_utils(self):
     def get_version_info():
         """Return version information using the imported __version__ variable."""
         return VERSION_PREFIX
+    get_version_info.__module__ = 'mypackage.utils'
+    get_version_info.__qualname__ = 'get_version_info'
     self.get_version_info = get_version_info
     self.__initialized__ = True
     self.__initializing__ = False

@@ -100,6 +100,8 @@ def _cribo_init___cribo_b428f2_kw_pkg(self):
 
     def backend_kind():
         return KIND
+    backend_kind.__module__ = 'kw_pkg'
+    backend_kind.__qualname__ = 'backend_kind'
     self.backend_kind = backend_kind
     self.backend = kw_pkg_backend
     self.__initialized__ = True

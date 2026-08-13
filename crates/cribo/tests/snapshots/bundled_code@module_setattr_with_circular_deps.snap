@@ -217,6 +217,8 @@ def _cribo_init___cribo_fc6bcd_pkg__main(self):
         """Main function using Client."""
         client = Client()
         return client.make_request()
+    main.__module__ = 'pkg._main'
+    main.__qualname__ = 'main'
     self.main = main
     self.__initialized__ = True
     self.__initializing__ = False

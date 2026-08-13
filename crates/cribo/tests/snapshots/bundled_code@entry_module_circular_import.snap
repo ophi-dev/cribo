@@ -123,6 +123,8 @@ def _cribo_init___cribo_651687_child_with_init(self):
             _cribo_child_with_init__initialized = True
             if _cribo.typing.TYPE_CHECKING:
                 pass
+    _init.__module__ = 'child_with_init'
+    _init.__qualname__ = '_init'
     self._init = _init
     _init()
     self.TYPE_CHECKING = _cribo.typing.TYPE_CHECKING
@@ -145,12 +147,16 @@ def _cribo_init___cribo_24f0c8_main(self):
     def get_console():
         """Function that should be accessible from child module."""
         return "console object"
+    get_console.__module__ = 'main'
+    get_console.__qualname__ = 'get_console'
     self.get_console = get_console
 
     def main():
         """Main function."""
         obj = child_with_init.ConsoleUser()
         return obj.use_console()
+    main.__module__ = 'main'
+    main.__qualname__ = 'main'
     self.main = main
     if self.__name__ == "__main__":
         print(f"Result: {main()}")

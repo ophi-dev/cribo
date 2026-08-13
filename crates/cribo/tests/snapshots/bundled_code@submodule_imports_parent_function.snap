@@ -97,6 +97,8 @@ def _cribo_init___cribo_dca395_pkg_submodule(self):
 
     def process():
         return computed_value
+    process.__module__ = 'pkg.submodule'
+    process.__qualname__ = 'process'
     self.process = process
     self.__initialized__ = True
     self.__initializing__ = False

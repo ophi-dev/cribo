@@ -95,14 +95,20 @@ def _cribo_init___cribo_895222_moduleA(self):
     def funcA():
         funcB = _cribo_init___cribo_19d6d4_moduleB(globals()['moduleB']).funcB
         return f"A calls {funcB()}"
+    funcA.__module__ = 'moduleA'
+    funcA.__qualname__ = 'funcA'
     self.funcA = funcA
 
     def get_chain():
         return "A -> B -> C(symlink to A)"
+    get_chain.__module__ = 'moduleA'
+    get_chain.__qualname__ = 'get_chain'
     self.get_chain = get_chain
 
     def funcC():
         return "Actually funcA pretending to be funcC"
+    funcC.__module__ = 'moduleA'
+    funcC.__qualname__ = 'funcC'
     self.funcC = funcC
     self.__initialized__ = True
     self.__initializing__ = False
@@ -123,6 +129,8 @@ def _cribo_init___cribo_19d6d4_moduleB(self):
 
     def funcB():
         return f"B calls {funcC()}"
+    funcB.__module__ = 'moduleB'
+    funcB.__qualname__ = 'funcB'
     self.funcB = funcB
     self.__initialized__ = True
     self.__initializing__ = False

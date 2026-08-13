@@ -96,6 +96,8 @@ def _cribo_init___cribo_2b5490_pandera(self):
 
     def local_function():
         return "This is from the local pandera package"
+    local_function.__module__ = 'pandera'
+    local_function.__qualname__ = 'local_function'
     self.local_function = local_function
     self.__initialized__ = True
     self.__initializing__ = False

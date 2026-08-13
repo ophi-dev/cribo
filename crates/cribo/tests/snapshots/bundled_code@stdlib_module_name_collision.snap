@@ -151,6 +151,8 @@ def _cribo_init___cribo_6558da_mypkg_console(self):
             loader = _cribo.importlib.machinery.SourceFileLoader
             return f"Success with {my_list} and {TestEnum.A} and {loader.__name__}"
         return "Failed"
+    test_function.__module__ = 'mypkg.console'
+    test_function.__qualname__ = 'test_function'
     self.test_function = test_function
     self.__initialized__ = True
     self.__initializing__ = False

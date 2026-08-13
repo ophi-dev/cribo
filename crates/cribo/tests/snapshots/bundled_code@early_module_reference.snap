@@ -147,6 +147,8 @@ def _cribo_init___cribo_d2a83c_mypkg_api(self):
         """Make a request using the session."""
         with session_ref.Session() as session:
             return session.request(method=method, url=url, **kwargs)
+    request.__module__ = 'mypkg.api'
+    request.__qualname__ = 'request'
     self.request = request
     self.__initialized__ = True
     self.__initializing__ = False

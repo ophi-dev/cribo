@@ -115,6 +115,8 @@ def _cribo_init___cribo_2f952c_side_effect_module(self):
         more = """Computed Values:\n        length=62\n    """
         note = """Generated output\n        includes a blank line\n        """ "appended"
         return message + more + note
+    _render_start.__module__ = 'side_effect_module'
+    _render_start.__qualname__ = '_render_start'
     self._render_start = _render_start
     SUMMARY_TEXT = START_BANNER + DETAILS
     self.SUMMARY_TEXT = SUMMARY_TEXT

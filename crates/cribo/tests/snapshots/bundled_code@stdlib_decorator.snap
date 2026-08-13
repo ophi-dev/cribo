@@ -113,6 +113,8 @@ def _cribo_init___cribo_7c69fc_mypackage_utils(self):
         except BaseException:
             _cribo.os.remove(tmp_name)
             raise
+    atomic_open.__module__ = 'mypackage.utils'
+    atomic_open.__qualname__ = 'atomic_open'
     self.atomic_open = atomic_open
     self.__initialized__ = True
     self.__initializing__ = False

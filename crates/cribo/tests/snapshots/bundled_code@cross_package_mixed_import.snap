@@ -155,11 +155,15 @@ def _cribo_init___cribo_f00e4b_core(self):
         if debug:
             print(f"Core initialized with version: {CORE_MODEL_VERSION}")
         return _cribo_core__initialized
+    initialize_core.__module__ = 'core'
+    initialize_core.__qualname__ = 'initialize_core'
     self.initialize_core = initialize_core
 
     def is_initialized():
         """Check if core is initialized."""
         return self._initialized
+    is_initialized.__module__ = 'core'
+    is_initialized.__qualname__ = 'is_initialized'
     self.is_initialized = is_initialized
     self.version = core_version
     self.utils = core_utils
@@ -213,6 +217,8 @@ def _cribo_init___cribo_563ea2_models(self):
     def get_model_version():
         """Get the models package version."""
         return self._VERSION
+    get_model_version.__module__ = 'models'
+    get_model_version.__qualname__ = 'get_model_version'
     self.get_model_version = get_model_version
     if _cribo.sys.version_info >= (3, 9):
         TypeAlias = _cribo.typing.TypeAlias
@@ -234,6 +240,8 @@ def _cribo_init___cribo_563ea2_models(self):
             models.BaseModel = BaseModel
             _cribo_models__base_model = BaseModel
         return _cribo_models__base_model
+    get_base_model.__module__ = 'models'
+    get_base_model.__qualname__ = 'get_base_model'
     self.get_base_model = get_base_model
     process_user = models_user.process_user
     models.process_user = process_user
@@ -312,6 +320,8 @@ def _cribo_init___cribo_1f0c3d_core_database_connection(self):
     def connect(database_name: str) -> Connection:
         """Create a new database connection."""
         return Connection(database_name)
+    connect.__module__ = 'core.database.connection'
+    connect.__qualname__ = 'connect'
     self.connect = connect
 
     def get_connection_info() -> dict:
@@ -324,6 +334,8 @@ def _cribo_init___cribo_1f0c3d_core_database_connection(self):
             core_database_connection.get_full_config = get_full_config
             info["config"] = get_full_config()
         return info
+    get_connection_info.__module__ = 'core.database.connection'
+    get_connection_info.__qualname__ = 'get_connection_info'
     self.get_connection_info = get_connection_info
     self.__initialized__ = True
     self.__initializing__ = False
@@ -350,6 +362,8 @@ def _cribo_init___cribo_782908_core_database(self):
         """Internal function to register database types."""
         _registered_types.append(type_name)
         return type_name
+    _register_type.__module__ = 'core.database'
+    _register_type.__qualname__ = '_register_type'
     self._register_type = _register_type
     _register_type("connection")
     _register_type("cursor")
@@ -359,6 +373,8 @@ def _cribo_init___cribo_782908_core_database(self):
         if not validate(name):
             return False
         return not any(char in name for char in ["/", "\\", ":"])
+    validate_db_name.__module__ = 'core.database'
+    validate_db_name.__qualname__ = 'validate_db_name'
     self.validate_db_name = validate_db_name
     core_database_connection = _cribo_init___cribo_1f0c3d_core_database_connection(core_database_connection)
     connect = core_database_connection.connect
@@ -374,6 +390,8 @@ def _cribo_init___cribo_782908_core_database(self):
         if not is_initialized():
             raise RuntimeError("Core package must be initialized before connecting")
         return connect(database_name)
+    safe_connect.__module__ = 'core.database'
+    safe_connect.__qualname__ = 'safe_connect'
     self.safe_connect = safe_connect
     self.__initialized__ = True
     self.__initializing__ = False

@@ -125,6 +125,8 @@ def _cribo_init___cribo_e61774_pkg_helper(self):
 
     def transform(val):
         return val * len(items)
+    transform.__module__ = 'pkg.helper'
+    transform.__qualname__ = 'transform'
     self.transform = transform
     self.__initialized__ = True
     self.__initializing__ = False

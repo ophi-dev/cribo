@@ -111,26 +111,36 @@ def _cribo_init___cribo_5101f4_module_globals_dict(self):
     def get_bar():
         """Get bar using globals() dict."""
         return self.__dict__["bar"]
+    get_bar.__module__ = 'module_globals_dict'
+    get_bar.__qualname__ = 'get_bar'
     self.get_bar = get_bar
 
     def modify_bar():
         """Modify bar using globals() dict."""
         self.__dict__["bar"] = "module2_bar_modified"
+    modify_bar.__module__ = 'module_globals_dict'
+    modify_bar.__qualname__ = 'modify_bar'
     self.modify_bar = modify_bar
 
     def set_dynamic_global(name, value):
         """Set a global variable dynamically using globals()."""
         self.__dict__[name] = value
+    set_dynamic_global.__module__ = 'module_globals_dict'
+    set_dynamic_global.__qualname__ = 'set_dynamic_global'
     self.set_dynamic_global = set_dynamic_global
 
     def get_dynamic_global(name, default=None):
         """Get a global variable dynamically."""
         return self.__dict__.get(name, default)
+    get_dynamic_global.__module__ = 'module_globals_dict'
+    get_dynamic_global.__qualname__ = 'get_dynamic_global'
     self.get_dynamic_global = get_dynamic_global
 
     def list_module_globals():
         """List all non-built-in globals in this module."""
         return {k: v for k, v in self.__dict__.items() if not k.startswith("__") and k not in ["get_bar", "modify_bar", "set_dynamic_global", "get_dynamic_global", "list_module_globals"]}
+    list_module_globals.__module__ = 'module_globals_dict'
+    list_module_globals.__qualname__ = 'list_module_globals'
     self.list_module_globals = list_module_globals
     set_dynamic_global("dynamic1", "created_via_globals")
     set_dynamic_global("dynamic2", [1, 2, 3])
@@ -166,6 +176,8 @@ def _cribo_init___cribo_c75306_module_mixed_patterns(self):
         dict_bar = self.__dict__["bar"]
         counter_val = self.__dict__.get("counter", -1)
         return {"foo": direct_foo, "bar": dict_bar, "counter": counter_val}
+    get_values.__module__ = 'module_mixed_patterns'
+    get_values.__qualname__ = 'get_values'
     self.get_values = get_values
 
     def modify_all():
@@ -177,6 +189,8 @@ def _cribo_init___cribo_c75306_module_mixed_patterns(self):
         module_mixed_patterns.counter = _cribo_module_mixed_patterns_counter
         self.__dict__["bar"] = "module3_bar_modified"
         self.__dict__["new_var"] = "dynamically_added"
+    modify_all.__module__ = 'module_mixed_patterns'
+    modify_all.__qualname__ = 'modify_all'
     self.modify_all = modify_all
 
     def complex_global_usage():
@@ -192,6 +206,8 @@ def _cribo_init___cribo_c75306_module_mixed_patterns(self):
             return _cribo_module_mixed_patterns_counter
         global_keys = [k for k in self.__dict__ if not k.startswith("_")]
         return {"original": original, "after_loop": _cribo_module_mixed_patterns_counter, "increment_func": increment, "global_count": len(global_keys)}
+    complex_global_usage.__module__ = 'module_mixed_patterns'
+    complex_global_usage.__qualname__ = 'complex_global_usage'
     self.complex_global_usage = complex_global_usage
     self.__dict__["initialized_via_globals"] = True
     exec("exec_created_var = 'created_via_exec'", self.__dict__)

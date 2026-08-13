@@ -93,6 +93,8 @@ def _cribo_init___cribo_332fbf_my_module(self):
 
     def get_value():
         return value
+    get_value.__module__ = 'my-module'
+    get_value.__qualname__ = 'get_value'
     self.get_value = get_value
     self.__initialized__ = True
     self.__initializing__ = False

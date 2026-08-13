@@ -98,10 +98,14 @@ def _cribo_init___cribo_592ce1_guard_observer(self):
     def mutate_and_return(result):
         guarded.BOOL_GUARD_VALUE = "mutated"
         return result
+    mutate_and_return.__module__ = 'guard_observer'
+    mutate_and_return.__qualname__ = 'mutate_and_return'
     self.mutate_and_return = mutate_and_return
 
     def capture_was_mutated():
         return guarded.BOOL_GUARD_VALUE == "mutated"
+    capture_was_mutated.__module__ = 'guard_observer'
+    capture_was_mutated.__qualname__ = 'capture_was_mutated'
     self.capture_was_mutated = capture_was_mutated
     self.__initialized__ = True
     self.__initializing__ = False
@@ -120,6 +124,8 @@ def _cribo_init___cribo_962e76_guarded(self):
 
     def get_subject():
         return "captured"
+    get_subject.__module__ = 'guarded'
+    get_subject.__qualname__ = 'get_subject'
     self.get_subject = get_subject
 
     class GuardResult:

@@ -97,6 +97,8 @@ def _cribo_init___cribo_d338f1_conditional_observer(self):
 
     def observe_value():
         return conditional_source.VALUE
+    observe_value.__module__ = 'conditional_observer'
+    observe_value.__qualname__ = 'observe_value'
     self.observe_value = observe_value
     self.__initialized__ = True
     self.__initializing__ = False

@@ -97,6 +97,8 @@ def _cribo_init___cribo_d50b51_rich(self):
 
     def get_console():
         return "console"
+    get_console.__module__ = 'rich'
+    get_console.__qualname__ = 'get_console'
     self.get_console = get_console
     rich_jupyter = _cribo_init___cribo_951ad9_rich_jupyter(rich_jupyter)
     jupyter = rich.jupyter

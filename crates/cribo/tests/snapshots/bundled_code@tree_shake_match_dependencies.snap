@@ -101,6 +101,8 @@ def _cribo_init___cribo_6c62dc_routing(self):
 
     def module_marker() -> str:
         return "ready"
+    module_marker.__module__ = 'routing'
+    module_marker.__qualname__ = 'module_marker'
     self.module_marker = module_marker
     match module_marker():
         case Kinds.READY:
@@ -112,10 +114,14 @@ def _cribo_init___cribo_6c62dc_routing(self):
 
     def normalize_payload(payload: object) -> object:
         return payload
+    normalize_payload.__module__ = 'routing'
+    normalize_payload.__qualname__ = 'normalize_payload'
     self.normalize_payload = normalize_payload
 
     def should_handle(payload: object) -> bool:
         return isinstance(payload, dict)
+    should_handle.__module__ = 'routing'
+    should_handle.__qualname__ = 'should_handle'
     self.should_handle = should_handle
 
     def dispatch(payload: object) -> str:
@@ -127,6 +133,8 @@ def _cribo_init___cribo_6c62dc_routing(self):
             case _:
                 result = "ignored"
         return f"{MODULE_STATE}:{result}"
+    dispatch.__module__ = 'routing'
+    dispatch.__qualname__ = 'dispatch'
     self.dispatch = dispatch
     self.__initialized__ = True
     self.__initializing__ = False

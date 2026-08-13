@@ -222,12 +222,16 @@ def _cribo_init___cribo_02808e_pkg_color(self):
         elif style.color == "blue":
             return Color(0, 0, 255)
         return Color()
+    color_from_style.__module__ = 'pkg.color'
+    color_from_style.__qualname__ = 'color_from_style'
     self.color_from_style = color_from_style
 
     def apply_color_to_console(console, color: Color) -> None:
         """Apply color to console."""
         ConsoleBase = _cribo_init___cribo_f0224b_pkg_console(globals()['pkg_console']).ConsoleBase
         pass
+    apply_color_to_console.__module__ = 'pkg.color'
+    apply_color_to_console.__qualname__ = 'apply_color_to_console'
     self.apply_color_to_console = apply_color_to_console
     self.Optional = _cribo.typing.Optional
     self.Tuple = _cribo.typing.Tuple
@@ -302,6 +306,8 @@ def _cribo_init___cribo_f0224b_pkg_console(self):
     def format_with_pretty(console: Console, obj: _cribo.typing.Any) -> str:
         """Format object using pretty printer."""
         return format_pretty(obj, console)
+    format_with_pretty.__module__ = 'pkg.console'
+    format_with_pretty.__qualname__ = 'format_with_pretty'
     self.format_with_pretty = format_with_pretty
     self.Any = _cribo.typing.Any
     self.Optional = _cribo.typing.Optional
@@ -353,6 +359,8 @@ def _cribo_init___cribo_2353ad_pkg_pretty(self):
         if console.is_renderable(obj):
             return f"<Renderable: {obj}>"
         return repr(obj)
+    format_pretty.__module__ = 'pkg.pretty'
+    format_pretty.__qualname__ = 'format_pretty'
     self.format_pretty = format_pretty
     self.Any = _cribo.typing.Any
     self.__initialized__ = True
@@ -397,6 +405,8 @@ def _cribo_init___cribo_4c91ba_pkg_style(self):
         """Apply a style to console output."""
         ConsoleBase = _cribo_init___cribo_f0224b_pkg_console(globals()['pkg_console']).ConsoleBase
         pass
+    apply_style_to_console.__module__ = 'pkg.style'
+    apply_style_to_console.__qualname__ = 'apply_style_to_console'
     self.apply_style_to_console = apply_style_to_console
     self.Optional = _cribo.typing.Optional
     self.__initialized__ = True

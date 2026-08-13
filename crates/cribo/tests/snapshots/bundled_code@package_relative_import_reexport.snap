@@ -122,6 +122,8 @@ def _cribo_init___cribo_814350_pkg_module_with_sideeffects(self):
     def display(msg):
         """Display a message."""
         print(msg)
+    display.__module__ = 'pkg.module_with_sideeffects'
+    display.__qualname__ = 'display'
     self.display = display
     self.__initialized__ = True
     self.__initializing__ = False

@@ -293,6 +293,8 @@ def _cribo_init___cribo_ce8acb_myrequests_utils(self):
         if isinstance(string, builtin_str):
             return string
         return str(string)
+    to_native_string.__module__ = 'myrequests.utils'
+    to_native_string.__qualname__ = 'to_native_string'
     self.to_native_string = to_native_string
 
     def decode_json(content):
@@ -302,6 +304,8 @@ def _cribo_init___cribo_ce8acb_myrequests_utils(self):
         except (ValueError, TypeError) as e:
             OurJSONDecodeError = _cribo_init___cribo_530a30_myrequests_exceptions(globals()['myrequests_exceptions']).JSONDecodeError
             raise OurJSONDecodeError(str(e))
+    decode_json.__module__ = 'myrequests.utils'
+    decode_json.__qualname__ = 'decode_json'
     self.decode_json = decode_json
     self.__initialized__ = True
     self.__initializing__ = False

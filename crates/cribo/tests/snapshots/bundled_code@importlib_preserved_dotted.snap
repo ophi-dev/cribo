@@ -115,6 +115,8 @@ def _cribo_init___cribo_fd3e12_pkg_sub(self):
             if not attr.startswith('_'):
                 setattr(pkg, attr, getattr(__cribo_init_result, attr))
         return pkg.PACKAGE_FLAG
+    parent_flag.__module__ = 'pkg.sub'
+    parent_flag.__qualname__ = 'parent_flag'
     self.parent_flag = parent_flag
     self.__initialized__ = True
     self.__initializing__ = False

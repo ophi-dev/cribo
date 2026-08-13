@@ -426,8 +426,25 @@ pub(crate) fn process_statements_for_init_function(
                 // Add transformed function definition
                 body.push(Stmt::FunctionDef(func_def_clone));
 
-                // Set as module attribute via centralized helper
                 let symbol_name = func_def.name.to_string();
+
+                // Stamp a serializable identity, like classes: pickle and
+                // multiprocessing resolve functions through
+                // __import__(func.__module__) + getattr by __qualname__, and a
+                // function defined inside the init would otherwise carry a
+                // '<locals>' qualified name and the bundle entry's module
+                body.push(ast_builder::statements::assign_attribute(
+                    &symbol_name,
+                    "__module__",
+                    ast_builder::expressions::string_literal(ctx.module_name),
+                ));
+                body.push(ast_builder::statements::assign_attribute(
+                    &symbol_name,
+                    "__qualname__",
+                    ast_builder::expressions::string_literal(func_def.name.as_str()),
+                ));
+
+                // Set as module attribute via centralized helper
                 emit_module_attr_if_exportable(
                     bundler,
                     &symbol_name,

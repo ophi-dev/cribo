@@ -496,6 +496,39 @@ impl<'a> ImportDiscoveryVisitor<'a> {
         crate::python::importlib_call::literal_module_name(call).map(ToOwned::to_owned)
     }
 
+    /// Resolve a dynamic `import_module` name argument of the form
+    /// `<imported module>.__name__` (first positional or `name=` keyword): the
+    /// value is statically known through this module's import bindings, so the
+    /// target can be recorded as a preserved runtime dependency even though the
+    /// call itself stays verbatim.
+    fn resolve_imported_dunder_name_argument(&self, call: &ExprCall) -> Option<String> {
+        let argument = call.arguments.args.first().or_else(|| {
+            call.arguments
+                .keywords
+                .iter()
+                .find(|keyword| {
+                    keyword
+                        .arg
+                        .as_ref()
+                        .is_some_and(|argument| argument.as_str() == "name")
+                })
+                .map(|keyword| &keyword.value)
+        })?;
+        let Expr::Attribute(attribute) = argument else {
+            return None;
+        };
+        if attribute.attr.as_str() != "__name__" {
+            return None;
+        }
+        let Expr::Name(base) = &*attribute.value else {
+            return None;
+        };
+        if self.is_name_shadowed(base.id.as_str()) {
+            return None;
+        }
+        self.lookup_imported_name(base.id.as_str()).cloned()
+    }
+
     /// Extract the package context of a static `importlib.import_module` call.
     ///
     /// Only string-literal contexts are recognized, supplied either as the second
@@ -851,17 +884,46 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
                             // Do not add to imported_names: importlib.import_module returns a
                             // value assigned to a variable, but it does not bind `module_name`
                             // in scope.
+                        } else if let Some(module_name) =
+                            self.resolve_imported_dunder_name_argument(call)
+                        {
+                            // `import_module(provider.__name__)` where `provider` is
+                            // import-bound: the target is statically known even though
+                            // the call stays verbatim, so record it as a preserved
+                            // runtime dependency (bundled targets are then registered
+                            // with the meta-path finder)
+                            log::debug!(
+                                "Found preserved importlib call resolving an imported module's \
+                                 __name__: {module_name}"
+                            );
+                            let import = DiscoveredImport {
+                                module_name: Some(module_name),
+                                names: vec![],
+                                location: self.current_location(),
+                                range: call.range,
+                                level: 0,
+                                import_type: ImportType::ImportlibPreserved,
+                                execution_contexts: FxIndexSet::default(),
+                                is_used_in_init: false,
+                                is_movable: false,
+                                is_type_checking_only: self.in_type_checking(),
+                                package_context: None,
+                            };
+                            self.imports.push(import);
                         }
                     } else if !crate::python::importlib_call::statically_raises_type_error(call)
-                        && let Some(module_name) = self.extract_literal_module_name(call)
+                        && let Some(module_name) = self
+                            .extract_literal_module_name(call)
+                            .or_else(|| self.resolve_imported_dunder_name_argument(call))
                         && !module_name.starts_with('.')
                     {
                         // Opaque argument shapes (e.g. `import_module("pkg", **kw)`)
-                        // keep the call verbatim, but the literal absolute target is
-                        // still a runtime dependency: it must stay installed and
-                        // reach requirements generation. Calls statically known to
-                        // raise TypeError never import their target and record
-                        // nothing.
+                        // keep the call verbatim, but the target is still a runtime
+                        // dependency: it must stay installed and reach requirements
+                        // generation. The target is known for absolute literals AND
+                        // for `import_module(provider.__name__)` where `provider`
+                        // is import-bound. Calls statically known to raise
+                        // TypeError never import their target and record nothing.
                         log::debug!(
                             "Found preserved importlib call for module: {module_name} (arguments \
                              not safely discardable)"

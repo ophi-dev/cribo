@@ -235,6 +235,8 @@ def _cribo_init___cribo_df9c8d_core_database_connection(self):
         core_database_connection.format_result = format_result
         clean_data = sanitize(data)
         return f"db_process: {clean_data}"
+    process.__module__ = 'core.database.connection'
+    process.__qualname__ = 'process'
     self.process = process
 
     def validate(data):
@@ -244,6 +246,8 @@ def _cribo_init___cribo_df9c8d_core_database_connection(self):
         format_result = core_utils_helpers.format_result
         core_database_connection.format_result = format_result
         return f"db_validate: {data} (overrides lambda)"
+    validate.__module__ = 'core.database.connection'
+    validate.__qualname__ = 'validate'
     self.validate = validate
 
     class Connection:
@@ -286,6 +290,8 @@ def _cribo_init___cribo_df9c8d_core_database_connection(self):
         conn = Connection(db_name)
         conn.connect()
         return conn
+    create_connection.__module__ = 'core.database.connection'
+    create_connection.__qualname__ = 'create_connection'
     self.create_connection = create_connection
     self.__initialized__ = True
     self.__initializing__ = False
@@ -318,6 +324,8 @@ def _cribo_init___cribo_0a162a_models_base(self):
     def process(data):
         """Process function in base module"""
         return f"base_process: {data} (overrides lambda)"
+    process.__module__ = 'models.base'
+    process.__qualname__ = 'process'
     self.process = process
 
     def validate(data):
@@ -325,6 +333,8 @@ def _cribo_init___cribo_0a162a_models_base(self):
         base_check = f"base_validate: {data}"
         util_check = util_validate(data)
         return f"{base_check} + {util_check}"
+    validate.__module__ = 'models.base'
+    validate.__qualname__ = 'validate'
     self.validate = validate
 
     class Logger:
@@ -345,6 +355,8 @@ def _cribo_init___cribo_0a162a_models_base(self):
         _cribo_models_base_Connection = type("Connection", (), {"type": "base_connection"})
         models_base.Connection = _cribo_models_base_Connection
         return "base_initialized"
+    initialize.__module__ = 'models.base'
+    initialize.__qualname__ = 'initialize'
     self.initialize = initialize
     self.__initialized__ = True
     self.__initializing__ = False
@@ -411,17 +423,23 @@ def _cribo_init___cribo_1f9e6c_models_user(self):
     def process(data):
         """Process function in user module"""
         return f"user_process: {data}"
+    process.__module__ = 'models.user'
+    process.__qualname__ = 'process'
     self.process = process
 
     def process_user(user_data):
         """Process user-specific data"""
         util_result = util_process(user_data)
         return f"process_user: {user_data} -> {util_result}"
+    process_user.__module__ = 'models.user'
+    process_user.__qualname__ = 'process_user'
     self.process_user = process_user
 
     def validate(data):
         """Validate function in user module"""
         return f"user_validate: {data}"
+    validate.__module__ = 'models.user'
+    validate.__qualname__ = 'validate'
     self.validate = validate
 
     class User:
@@ -517,6 +535,8 @@ def _cribo_init___cribo_0ecebd_services_auth_manager(self):
         """Process function in auth module"""
         sanitized = sanitize(data)
         return f"auth_process: {sanitized}"
+    process.__module__ = 'services.auth.manager'
+    process.__qualname__ = 'process'
     self.process = process
 
     def validate(data):
@@ -524,6 +544,8 @@ def _cribo_init___cribo_0ecebd_services_auth_manager(self):
         if not isinstance(data, str):
             return f"auth_validate_failed: {data}"
         return f"auth_validate: {data}"
+    validate.__module__ = 'services.auth.manager'
+    validate.__qualname__ = 'validate'
     self.validate = validate
 
     class User:

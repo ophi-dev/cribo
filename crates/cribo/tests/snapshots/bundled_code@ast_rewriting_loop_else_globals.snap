@@ -108,6 +108,8 @@ def _cribo_init___cribo_bca834_loops(self):
         else:
             _cribo_loops_last_result = f"missing:{target}"
         return _cribo_loops_last_result
+    find_item.__module__ = 'loops'
+    find_item.__qualname__ = 'find_item'
     self.find_item = find_item
 
     def count_up(limit):
@@ -121,6 +123,8 @@ def _cribo_init___cribo_bca834_loops(self):
         else:
             _cribo_loops_loop_count = -1
         return _cribo_loops_loop_count
+    count_up.__module__ = 'loops'
+    count_up.__qualname__ = 'count_up'
     self.count_up = count_up
     self.__initialized__ = True
     self.__initializing__ = False

@@ -124,6 +124,8 @@ def _cribo_init___cribo_6b5e0d_provider_worker(self):
 
     def package_at_call_time():
         return self.__package__
+    package_at_call_time.__module__ = 'provider.worker'
+    package_at_call_time.__qualname__ = 'package_at_call_time'
     self.package_at_call_time = package_at_call_time
     self.__initialized__ = True
     self.__initializing__ = False

@@ -103,11 +103,15 @@ def _cribo_init___cribo_41d36f_mypackage_core(self):
         """Process input data and return results.\n\n    This function uses forward references in type hints.\n    """
         result: ProcessingResult = {"input": data, "processed": True, "output": _transform_data(data)}
         return result
+    process_data.__module__ = 'mypackage.core'
+    process_data.__qualname__ = 'process_data'
     self.process_data = process_data
 
     def _transform_data(data: _cribo.typing.Dict[str, _cribo.typing.Any]) -> _cribo.typing.List[str]:
         """Transform data into list format."""
         return [f"{k}={v}" for k, v in data.items()]
+    _transform_data.__module__ = 'mypackage.core'
+    _transform_data.__qualname__ = '_transform_data'
     self._transform_data = _transform_data
     ProcessingResult = _cribo.typing.Dict[str, _cribo.typing.Any]
     self.ProcessingResult = ProcessingResult
@@ -142,11 +146,15 @@ def _cribo_init___cribo_c3d681_mypackage_submodule_utils(self):
         if not isinstance(data, dict):
             return False
         return "key" in data and isinstance(data.get("numbers"), list)
+    validate_input.__module__ = 'mypackage.submodule.utils'
+    validate_input.__qualname__ = 'validate_input'
     self.validate_input = validate_input
 
     def format_output(data: _cribo.typing.Any) -> FormattedOutput:
         """Format data for output."""
         return f"Formatted: {data}"
+    format_output.__module__ = 'mypackage.submodule.utils'
+    format_output.__qualname__ = 'format_output'
     self.format_output = format_output
     InputData = _cribo.typing.Dict[str, _cribo.typing.Any]
     self.InputData = InputData

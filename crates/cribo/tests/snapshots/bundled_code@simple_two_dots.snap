@@ -121,6 +121,8 @@ def _cribo_init___cribo_9fa9ed_foo_boo___main__(self):
 
     def tada() -> str:
         return f"Tada {ANIMAL}!"
+    tada.__module__ = 'foo.boo.__main__'
+    tada.__qualname__ = 'tada'
     self.tada = tada
     self.__initialized__ = True
     self.__initializing__ = False

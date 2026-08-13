@@ -126,6 +126,8 @@ def _cribo_init___cribo_244765_compat_module(self):
                 except ImportError:
                     pass
         return chardet
+    _resolve_char_detection.__module__ = 'compat_module'
+    _resolve_char_detection.__qualname__ = '_resolve_char_detection'
     self._resolve_char_detection = _resolve_char_detection
     chardet = _resolve_char_detection()
     self.chardet = chardet
@@ -139,6 +141,8 @@ def _cribo_init___cribo_244765_compat_module(self):
     def get_encoding_from_headers(headers):
         """Dummy function to test function exports."""
         return "utf-8"
+    get_encoding_from_headers.__module__ = 'compat_module'
+    get_encoding_from_headers.__qualname__ = 'get_encoding_from_headers'
     self.get_encoding_from_headers = get_encoding_from_headers
     self.__initialized__ = True
     self.__initializing__ = False

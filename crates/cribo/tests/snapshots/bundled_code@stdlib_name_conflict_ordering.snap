@@ -117,6 +117,8 @@ def _cribo_init___cribo_937418_complex_pkg(self):
     def main():
         console = Console()
         console.print("Testing")
+    main.__module__ = 'complex_pkg'
+    main.__qualname__ = 'main'
     self.main = main
     self.abc = complex_pkg_abc
     self.__initialized__ = True

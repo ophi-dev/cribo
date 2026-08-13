@@ -99,11 +99,15 @@ def _cribo_init___cribo_ae45fc_module_a(self):
         """Process A that depends on B"""
         process_b = _cribo_init___cribo_afa23a_module_b(globals()['module_b']).process_b
         return process_b() + "->A"
+    process_a.__module__ = 'module_a'
+    process_a.__qualname__ = 'process_a'
     self.process_a = process_a
 
     def get_value_a():
         process_b = _cribo_init___cribo_afa23a_module_b(globals()['module_b']).process_b
         return "value_from_A"
+    get_value_a.__module__ = 'module_a'
+    get_value_a.__qualname__ = 'get_value_a'
     self.get_value_a = get_value_a
     self.__initialized__ = True
     self.__initializing__ = False
@@ -121,11 +125,15 @@ def _cribo_init___cribo_afa23a_module_b(self):
         """Process B that depends on C"""
         process_c = _cribo_init___cribo_b6d812_module_c(globals()['module_c']).process_c
         return process_c() + "->B"
+    process_b.__module__ = 'module_b'
+    process_b.__qualname__ = 'process_b'
     self.process_b = process_b
 
     def get_value_b():
         process_c = _cribo_init___cribo_b6d812_module_c(globals()['module_c']).process_c
         return "value_from_B"
+    get_value_b.__module__ = 'module_b'
+    get_value_b.__qualname__ = 'get_value_b'
     self.get_value_b = get_value_b
     self.__initialized__ = True
     self.__initializing__ = False
@@ -144,11 +152,15 @@ def _cribo_init___cribo_b6d812_module_c(self):
         get_value_a = _cribo_init___cribo_ae45fc_module_a(globals()['module_a']).get_value_a
         value = get_value_a()
         return f"C(using_{value})"
+    process_c.__module__ = 'module_c'
+    process_c.__qualname__ = 'process_c'
     self.process_c = process_c
 
     def get_value_c():
         get_value_a = _cribo_init___cribo_ae45fc_module_a(globals()['module_a']).get_value_a
         return "value_from_C"
+    get_value_c.__module__ = 'module_c'
+    get_value_c.__qualname__ = 'get_value_c'
     self.get_value_c = get_value_c
     self.__initialized__ = True
     self.__initializing__ = False

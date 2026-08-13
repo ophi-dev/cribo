@@ -97,10 +97,14 @@ def _cribo_init___cribo_fb64cc_loop_observer(self):
 
     def observe_loop_value():
         return loop_source.LOOP_VALUE
+    observe_loop_value.__module__ = 'loop_observer'
+    observe_loop_value.__qualname__ = 'observe_loop_value'
     self.observe_loop_value = observe_loop_value
 
     def loop_value_was_cleaned():
         return not hasattr(loop_source, "LOOP_VALUE")
+    loop_value_was_cleaned.__module__ = 'loop_observer'
+    loop_value_was_cleaned.__qualname__ = 'loop_value_was_cleaned'
     self.loop_value_was_cleaned = loop_value_was_cleaned
     self.__initialized__ = True
     self.__initializing__ = False

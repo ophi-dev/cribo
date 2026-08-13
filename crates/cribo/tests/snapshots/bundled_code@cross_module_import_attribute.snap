@@ -120,6 +120,8 @@ def _cribo_init___cribo_1f0580_my_package_utils(self):
     def get_version():
         """Return the package version"""
         return __version__
+    get_version.__module__ = 'my_package.utils'
+    get_version.__qualname__ = 'get_version'
     self.get_version = get_version
     self.__initialized__ = True
     self.__initializing__ = False

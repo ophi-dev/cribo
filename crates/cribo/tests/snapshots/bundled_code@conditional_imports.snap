@@ -136,6 +136,8 @@ def _cribo_init___cribo_e43fad_conditional_module(self):
             return json.loads(text)
         except JSONDecodeError as e:
             return None
+    decode_json.__module__ = 'conditional_module'
+    decode_json.__qualname__ = 'decode_json'
     self.decode_json = decode_json
     self.__initialized__ = True
     self.__initializing__ = False
@@ -198,6 +200,8 @@ def _cribo_init___cribo_17f1ec_try_except_module(self):
             return ET.fromstring(xml_string)
         else:
             raise ImportError("No XML parser available")
+    parse_xml.__module__ = 'try_except_module'
+    parse_xml.__qualname__ = 'parse_xml'
     self.parse_xml = parse_xml
     self.__initialized__ = True
     self.__initializing__ = False

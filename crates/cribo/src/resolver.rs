@@ -769,6 +769,19 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
             self.found = true;
             return;
         }
+        // Indirect reads of the same import globals through the module dict:
+        // `globals()["__file__"]`, `globals().get("__spec__")`. Wrapper
+        // generation rewrites globals() to the namespace dictionary, which
+        // carries no faithful values for these keys.
+        if let Expr::StringLiteral(literal) = expr
+            && matches!(
+                literal.value.to_str(),
+                "__file__" | "__spec__" | "__path__" | "__loader__" | "__cached__"
+            )
+        {
+            self.found = true;
+            return;
+        }
         // Import-spec introspection (importlib.util.find_spec) misreports inlined
         // modules: they are not registered with Python's import machinery, so
         // capability detection would disagree with the original installation
@@ -2776,6 +2789,7 @@ impl ModuleResolver {
             && !source.contains("__path__")
             && !source.contains("__loader__")
             && !source.contains("__cached__")
+            && !source.contains("__getattr__")
         {
             return false;
         }
@@ -2783,6 +2797,26 @@ impl ModuleResolver {
             // Conservative: unparsable source keeps the package external
             return true;
         };
+        // PEP 562 module-level __getattr__ hooks participate in attribute lookup
+        // only on REAL module objects; generated SimpleNamespace instances ignore
+        // instance attributes named __getattr__, so lazy exports would break
+        for stmt in &parsed.syntax().body {
+            match stmt {
+                ruff_python_ast::Stmt::FunctionDef(function_def)
+                    if function_def.name.as_str() == "__getattr__" =>
+                {
+                    return true;
+                }
+                ruff_python_ast::Stmt::Assign(assign)
+                    if assign.targets.iter().any(|target| {
+                        matches!(target, ruff_python_ast::Expr::Name(name) if name.id.as_str() == "__getattr__")
+                    }) =>
+                {
+                    return true;
+                }
+                _ => {}
+            }
+        }
         use ruff_python_ast::visitor::Visitor as _;
         let mut detector = UnbundlablePatternDetector::default();
         // Collect importlib.import_module aliases up front: an alias imported after a
@@ -5704,6 +5738,13 @@ Import-Name: folded_module
             // Loader/bytecode-cache introspection observes the installed layout
             "CAN_LOAD = __loader__.get_data is not None\n",
             "print(__cached__)\n",
+            // Indirect reads through the module dict
+            "F = globals()['__file__']\n",
+            "S = globals().get('__spec__')\n",
+            // PEP 562 module-level __getattr__: SimpleNamespace instances ignore
+            // instance attributes named __getattr__
+            "def __getattr__(name):\n    raise AttributeError(name)\n",
+            "__getattr__ = _lazy_hook\n",
         ] {
             assert!(
                 ModuleResolver::python_source_blocks_bundling(source),
@@ -5715,6 +5756,8 @@ Import-Name: folded_module
             "'''docstring mentioning __file__'''\nVALUE = 1\n",
             "# comment: __file__\nVALUE = 1\n",
             "file = 'not the dunder'\nprint(file)\n",
+            // Class-level __getattr__ is ordinary Python, not a PEP 562 hook
+            "class Lazy:\n    def __getattr__(self, name):\n        return name\n",
         ] {
             assert!(
                 !ModuleResolver::python_source_blocks_bundling(source),

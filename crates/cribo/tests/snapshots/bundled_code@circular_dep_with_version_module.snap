@@ -111,6 +111,8 @@ def _cribo_init___cribo_a4c23d_package(self):
 
     def package_func():
         return func_a() + " from package"
+    package_func.__module__ = 'package'
+    package_func.__qualname__ = 'package_func'
     self.package_func = package_func
     print(f"Package initialized with version {__version__}")
     self.__version__ = __version__
@@ -131,10 +133,14 @@ def _cribo_init___cribo_cc4906_package_module_a(self):
     def func_a():
         package_func = _cribo_init___cribo_a4c23d_package(globals()['package']).package_func
         return "func_a"
+    func_a.__module__ = 'package.module_a'
+    func_a.__qualname__ = 'func_a'
     self.func_a = func_a
 
     def another_func():
         return "another"
+    another_func.__module__ = 'package.module_a'
+    another_func.__qualname__ = 'another_func'
     self.another_func = another_func
     self.__initialized__ = True
     self.__initializing__ = False

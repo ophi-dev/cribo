@@ -168,6 +168,8 @@ def _cribo_init___cribo_e94ab8_pkg_auth(self):
         """Returns a basic auth string."""
         formatted = utils.format_credentials(username, password)
         return f"Basic {formatted}"
+    _basic_auth_str.__module__ = 'pkg.auth'
+    _basic_auth_str.__qualname__ = '_basic_auth_str'
     self._basic_auth_str = _basic_auth_str
 
     class HTTPBasicAuth:
@@ -234,6 +236,8 @@ def _cribo_init___cribo_bdb497_pkg_utils(self):
         if BaseModel:
             return f"{username}:{password}"
         return ""
+    format_credentials.__module__ = 'pkg.utils'
+    format_credentials.__qualname__ = 'format_credentials'
     self.format_credentials = format_credentials
     self.__initialized__ = True
     self.__initializing__ = False

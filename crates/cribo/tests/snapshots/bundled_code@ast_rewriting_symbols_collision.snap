@@ -454,6 +454,8 @@ def _cribo_init___cribo_6ccb3a_services_auth_manager(self):
             processed = f"auth_other_{data}"
         new_result = f"{result}_processed"
         return f"auth_processed: {processed}, base: {base_init}"
+    process.__module__ = 'services.auth.manager'
+    process.__qualname__ = 'process'
     self.process = process
 
     def validate(data: _cribo.typing.Any) -> str:
@@ -466,6 +468,8 @@ def _cribo_init___cribo_6ccb3a_services_auth_manager(self):
         else:
             lambda_result = f"fallback_{data}"
         return f"auth_valid: {data}, lambda: {lambda_result}"
+    validate.__module__ = 'services.auth.manager'
+    validate.__qualname__ = 'validate'
     self.validate = validate
 
     def connect(User: _cribo.typing.Optional["User"]=None) -> Connection:
@@ -474,6 +478,8 @@ def _cribo_init___cribo_6ccb3a_services_auth_manager(self):
         if User:
             connection.add_user(User)
         return connection
+    connect.__module__ = 'services.auth.manager'
+    connect.__qualname__ = 'connect'
     self.connect = connect
 
     class AuthManager:

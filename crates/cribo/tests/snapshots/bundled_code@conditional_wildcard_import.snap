@@ -115,6 +115,8 @@ def _cribo_init___cribo_33ed77_config(self):
 
     def get_config():
         return {"max_retries": MAX_RETRIES, "timeout": DEFAULT_TIMEOUT, "api_version": API_VERSION}
+    get_config.__module__ = 'config'
+    get_config.__qualname__ = 'get_config'
     self.get_config = get_config
     self.__initialized__ = True
     self.__initializing__ = False

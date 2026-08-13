@@ -102,12 +102,16 @@ def _cribo_init___cribo_1444c2_module_a(self):
         """Start the processing chain A -> B -> C -> D -> A"""
         process_in_b = _cribo_init___cribo_277dcc_module_b(globals()['module_b']).process_in_b
         return f"A({process_in_b()})"
+    start_process.__module__ = 'module_a'
+    start_process.__qualname__ = 'start_process'
     self.start_process = start_process
 
     def final_step():
         """Final step called by module_d to complete the cycle"""
         process_in_b = _cribo_init___cribo_277dcc_module_b(globals()['module_b']).process_in_b
         return "A_final"
+    final_step.__module__ = 'module_a'
+    final_step.__qualname__ = 'final_step'
     self.final_step = final_step
     self.__initialized__ = True
     self.__initializing__ = False
@@ -125,11 +129,15 @@ def _cribo_init___cribo_277dcc_module_b(self):
         """Process in B, depends on C"""
         process_in_c = _cribo_init___cribo_21fc08_module_c(globals()['module_c']).process_in_c
         return f"B({process_in_c()})"
+    process_in_b.__module__ = 'module_b'
+    process_in_b.__qualname__ = 'process_in_b'
     self.process_in_b = process_in_b
 
     def step_b():
         process_in_c = _cribo_init___cribo_21fc08_module_c(globals()['module_c']).process_in_c
         return "B_step"
+    step_b.__module__ = 'module_b'
+    step_b.__qualname__ = 'step_b'
     self.step_b = step_b
     self.__initialized__ = True
     self.__initializing__ = False
@@ -147,11 +155,15 @@ def _cribo_init___cribo_21fc08_module_c(self):
         """Process in C, depends on D"""
         process_in_d = _cribo_init___cribo_f1543a_module_d(globals()['module_d']).process_in_d
         return f"C({process_in_d()})"
+    process_in_c.__module__ = 'module_c'
+    process_in_c.__qualname__ = 'process_in_c'
     self.process_in_c = process_in_c
 
     def step_c():
         process_in_d = _cribo_init___cribo_f1543a_module_d(globals()['module_d']).process_in_d
         return "C_step"
+    step_c.__module__ = 'module_c'
+    step_c.__qualname__ = 'step_c'
     self.step_c = step_c
     self.__initialized__ = True
     self.__initializing__ = False
@@ -169,11 +181,15 @@ def _cribo_init___cribo_f1543a_module_d(self):
         """Process in D, depends back on A - completes the 4-module cycle"""
         final_step = _cribo_init___cribo_1444c2_module_a(globals()['module_a']).final_step
         return f"D({final_step()})"
+    process_in_d.__module__ = 'module_d'
+    process_in_d.__qualname__ = 'process_in_d'
     self.process_in_d = process_in_d
 
     def step_d():
         final_step = _cribo_init___cribo_1444c2_module_a(globals()['module_a']).final_step
         return "D_step"
+    step_d.__module__ = 'module_d'
+    step_d.__qualname__ = 'step_d'
     self.step_d = step_d
     self.__initialized__ = True
     self.__initializing__ = False

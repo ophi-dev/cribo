@@ -142,6 +142,8 @@ def _cribo_init___cribo_1a829c_pkg_core(self):
     def get_value():
         """Get the cached value."""
         return _cached_value
+    get_value.__module__ = 'pkg.core'
+    get_value.__qualname__ = 'get_value'
     self.get_value = get_value
     self.__initialized__ = True
     self.__initializing__ = False

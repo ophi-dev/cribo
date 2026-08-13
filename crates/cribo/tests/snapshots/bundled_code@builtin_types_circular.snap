@@ -164,6 +164,8 @@ def _cribo_init___cribo_5a392a_pkg__internal_utils(self):
         if isinstance(value, builtin_str):
             return value
         return str(value)
+    to_native_string.__module__ = 'pkg._internal_utils'
+    to_native_string.__qualname__ = 'to_native_string'
     self.to_native_string = to_native_string
     self.__initialized__ = True
     self.__initializing__ = False
@@ -311,6 +313,8 @@ def _cribo_init___cribo_70cac5_pkg_utils(self):
             return f"Processed string: {data}"
         else:
             return "Unknown type"
+    process_data.__module__ = 'pkg.utils'
+    process_data.__qualname__ = 'process_data'
     self.process_data = process_data
     self.__initialized__ = True
     self.__initializing__ = False

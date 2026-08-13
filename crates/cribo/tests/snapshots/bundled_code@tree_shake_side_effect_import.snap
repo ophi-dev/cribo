@@ -129,6 +129,8 @@ def _cribo_init___cribo_09b9b3_mypackage_utils(self):
         if data is None:
             raise CustomError("Data cannot be None")
         return f"Processed: {data}"
+    process_data.__module__ = 'mypackage.utils'
+    process_data.__qualname__ = 'process_data'
     self.process_data = process_data
     self.__initialized__ = True
     self.__initializing__ = False

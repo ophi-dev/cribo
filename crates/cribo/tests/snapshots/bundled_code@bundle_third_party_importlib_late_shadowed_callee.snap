@@ -102,10 +102,14 @@ def _cribo_init___cribo_d38e22_late_shadow_pkg(self):
         result = importlib.import_module(name="late_shadow_pkg.backend")
         importlib = None
         return result
+    broken_loader.__module__ = 'late_shadow_pkg'
+    broken_loader.__qualname__ = 'broken_loader'
     self.broken_loader = broken_loader
 
     def real_kind():
         return KIND
+    real_kind.__module__ = 'late_shadow_pkg'
+    real_kind.__qualname__ = 'real_kind'
     self.real_kind = real_kind
     self.backend = late_shadow_pkg_backend
     self.__initialized__ = True

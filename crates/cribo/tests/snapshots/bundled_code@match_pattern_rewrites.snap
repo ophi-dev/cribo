@@ -235,6 +235,8 @@ def _cribo_init___cribo_52189b_wrapped_matcher(self):
                 return "wrapped-class"
             case _:
                 return "wrapped-class-miss"
+    match_wrapped.__module__ = 'wrapped_matcher'
+    match_wrapped.__qualname__ = 'match_wrapped'
     self.match_wrapped = match_wrapped
 
     def match_wrapped_global(value):
@@ -244,6 +246,8 @@ def _cribo_init___cribo_52189b_wrapped_matcher(self):
                 return "wrapped-global"
             case _:
                 return "wrapped-global-miss"
+    match_wrapped_global.__module__ = 'wrapped_matcher'
+    match_wrapped_global.__qualname__ = 'match_wrapped_global'
     self.match_wrapped_global = match_wrapped_global
     value = "module-value"
     self.value = value
@@ -261,6 +265,8 @@ def _cribo_init___cribo_52189b_wrapped_matcher(self):
             case [json]:
                 return json
         return "import-capture-miss"
+    match_import_capture.__module__ = 'wrapped_matcher'
+    match_import_capture.__qualname__ = 'match_import_capture'
     self.match_import_capture = match_import_capture
 
     def match_import_capture_scope(subject):
@@ -273,6 +279,8 @@ def _cribo_init___cribo_52189b_wrapped_matcher(self):
         except UnboundLocalError:
             return "capture-scope-local"
         return "import-scope-miss"
+    match_import_capture_scope.__module__ = 'wrapped_matcher'
+    match_import_capture_scope.__qualname__ = 'match_import_capture_scope'
     self.match_import_capture_scope = match_import_capture_scope
     global_capture = "global-before"
     _cribo_wrapped_matcher_global_capture = global_capture
@@ -285,10 +293,14 @@ def _cribo_init___cribo_52189b_wrapped_matcher(self):
             case [_cribo_wrapped_matcher_global_capture] if ((_cribo.builtins.setattr(wrapped_matcher, 'global_capture', _cribo_wrapped_matcher_global_capture),), _cribo.builtins.bool(_cribo_wrapped_matcher_global_capture == "captured-global"))[1]:
                 return _cribo_wrapped_matcher_global_capture
         return "global-capture-miss"
+    match_global_capture.__module__ = 'wrapped_matcher'
+    match_global_capture.__qualname__ = 'match_global_capture'
     self.match_global_capture = match_global_capture
 
     def get_global_capture():
         return self.global_capture
+    get_global_capture.__module__ = 'wrapped_matcher'
+    get_global_capture.__qualname__ = 'get_global_capture'
     self.get_global_capture = get_global_capture
     LOADED_MODULES = []
     self.LOADED_MODULES = LOADED_MODULES

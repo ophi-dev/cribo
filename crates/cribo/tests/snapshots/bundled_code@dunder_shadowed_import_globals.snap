@@ -93,15 +93,21 @@ def _cribo_init___cribo_24fe86_provider_worker(self):
 
     def with_param(__package__):
         return __package__
+    with_param.__module__ = 'provider.worker'
+    with_param.__qualname__ = 'with_param'
     self.with_param = with_param
 
     def with_local():
         __name__ = "local"
         return __name__
+    with_local.__module__ = 'provider.worker'
+    with_local.__qualname__ = 'with_local'
     self.with_local = with_local
 
     def normal():
         return self.__package__
+    normal.__module__ = 'provider.worker'
+    normal.__qualname__ = 'normal'
     self.normal = normal
     self.__initialized__ = True
     self.__initializing__ = False

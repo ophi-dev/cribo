@@ -117,6 +117,8 @@ def _cribo_init___cribo_dbce9e_mypackage_utils(self):
 
     def get_version():
         return VERSION
+    get_version.__module__ = 'mypackage.utils'
+    get_version.__qualname__ = 'get_version'
     self.get_version = get_version
     self.__initialized__ = True
     self.__initializing__ = False

@@ -111,6 +111,8 @@ def _cribo_init___cribo_73cafd_pkg__internal(self):
     def process_headers(headers):
         """Example function that uses the validators."""
         return f"Processing {len(headers)} headers with validators"
+    process_headers.__module__ = 'pkg._internal'
+    process_headers.__qualname__ = 'process_headers'
     self.process_headers = process_headers
     self.__initialized__ = True
     self.__initializing__ = False

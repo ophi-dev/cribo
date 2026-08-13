@@ -115,6 +115,8 @@ def _cribo_init___cribo_9a9871_with_side_effects(self):
     def effect_function():
         """Function from module with side-effects."""
         return "effect_function_result"
+    effect_function.__module__ = 'with_side_effects'
+    effect_function.__qualname__ = 'effect_function'
     self.effect_function = effect_function
 
     class EffectClass:
@@ -141,12 +143,16 @@ def _cribo_init___cribo_9a9871_with_side_effects(self):
             _registry[name] = func
             return func
         return decorator
+    register.__module__ = 'with_side_effects'
+    register.__qualname__ = 'register'
     self.register = register
 
     @register("sample")
     def registered_function():
         """Function registered as a side-effect."""
         return "registered_result"
+    registered_function.__module__ = 'with_side_effects'
+    registered_function.__qualname__ = 'registered_function'
     self.registered_function = registered_function
     if len(_module_state) > 0:
         print(f"Module state initialized with {len(_module_state)} items")
