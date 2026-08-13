@@ -28,11 +28,6 @@ class _Cribo():
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
-acme_plugin_a = _cribo.types.SimpleNamespace(__name__='acme.plugin_a')
-acme = _cribo.types.SimpleNamespace(__name__='acme', __initializing__=False, __initialized__=False, __path__=[])
-acme.plugin_a = acme_plugin_a
-NAME = "plugin_a"
-acme_plugin_a.NAME = NAME
+import acme.plugin_a
 import acme.plugin_b
 print(acme.plugin_a.NAME, acme.plugin_b.NAME)
-plugin_a = acme.plugin_a

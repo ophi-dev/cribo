@@ -852,6 +852,25 @@ impl DistributionInfo {
                         .is_some_and(|suffix| suffix.starts_with('.'))
             })
     }
+
+    /// Return whether this distribution provides any module under a top-level
+    /// import root (namespace-provider detection: declared prefixes at or under
+    /// the root, or installed files inside it).
+    fn provides_under_root(&self, root: &str) -> bool {
+        let is_at_or_under_root = |name: &str| {
+            name == root
+                || name
+                    .strip_prefix(root)
+                    .is_some_and(|suffix| suffix.starts_with('.'))
+        };
+        self.declared_prefixes
+            .iter()
+            .any(|prefix| is_at_or_under_root(prefix))
+            || self
+                .record_imports
+                .iter()
+                .any(|import| is_at_or_under_root(import))
+    }
 }
 
 /// Canonical dotted paths of the query functions that take a distribution name.
@@ -2395,6 +2414,17 @@ impl ModuleResolver {
             return true;
         }
 
+        // Providers of one PEP 420 namespace stay external TOGETHER: bundling one
+        // child while a sibling provider stays external would rebind the namespace
+        // root to the real namespace at runtime, hiding the bundled-only children
+        if self.namespace_provider_must_stay_external(search_root, module_name) {
+            debug!(
+                "Import '{module_name}' shares a PEP 420 namespace with an external provider; \
+                 keeping the whole namespace external"
+            );
+            return true;
+        }
+
         // Plugin providers are discovered through installed entry-point metadata by
         // OTHER code; inlining their source would make them invisible to discovery
         if self.distribution_with_runtime_entry_points_owns_import(search_root, module_name) {
@@ -2905,6 +2935,54 @@ impl ModuleResolver {
     /// in which case ownership answers may miss distributions entirely.
     fn distribution_metadata_index_incomplete(&self, site_packages_dir: &Path) -> bool {
         self.with_distribution_ownership_index(site_packages_dir, |index| index.incomplete)
+    }
+
+    /// Return whether an import lives in a PEP 420 namespace whose providers must
+    /// stay external TOGETHER because at least one of them is blocked by its
+    /// distribution metadata.
+    ///
+    /// Mixing bundled and external children of one namespace breaks at runtime: a
+    /// preserved external import rebinds the namespace root to the REAL namespace,
+    /// which cannot contain the bundled-only siblings. Source-level blocks of
+    /// sibling children are already covered by the whole-directory scan of the
+    /// namespace root; this check covers the per-distribution metadata policies
+    /// (native artifacts, `.pth` hooks, runtime entry points, `Requires-Python`,
+    /// queried metadata) that record ownership would otherwise scope to a single
+    /// child.
+    fn namespace_provider_must_stay_external(
+        &self,
+        site_packages_dir: &Path,
+        import_name: &str,
+    ) -> bool {
+        let top_level = import_name.split('.').next().unwrap_or(import_name);
+        let namespace_dir = site_packages_dir.join(top_level);
+        // Only PEP 420 namespace directories can be split across distributions
+        if !namespace_dir.is_dir()
+            || namespace_dir
+                .join(crate::python::constants::INIT_FILE)
+                .is_file()
+        {
+            return false;
+        }
+        let queried = self.queried_distributions.borrow();
+        self.with_distribution_ownership_index(site_packages_dir, |index| {
+            index
+                .distributions
+                .iter()
+                .filter(|distribution| distribution.provides_under_root(top_level))
+                .any(|distribution| {
+                    distribution.ships_native_artifacts
+                        || distribution.installs_startup_hooks
+                        || distribution.has_runtime_entry_points
+                        || distribution
+                            .requires_python
+                            .as_deref()
+                            .is_some_and(|specifiers| !self.target_python_satisfies(specifiers))
+                        || (!distribution.name.is_empty()
+                            && queried
+                                .contains(&Self::normalize_distribution_name(&distribution.name)))
+                })
+        })
     }
 
     /// Return whether any distribution claiming an import declares a `Requires-Python`
@@ -7385,10 +7463,13 @@ def read(package):
         Ok(())
     }
 
-    /// In a namespace split across distributions, exact RECORD ownership decides which
-    /// distribution's policy applies to each child, not directory iteration order.
+    /// Providers of one PEP 420 namespace stay external TOGETHER: when any provider
+    /// distribution is blocked (here by `Requires-Python`), bundling a sibling
+    /// would break at runtime — the preserved external import rebinds the
+    /// namespace root to the real namespace, which cannot contain bundled-only
+    /// children. A namespace whose providers are all compatible still bundles.
     #[test]
-    fn test_bundle_third_party_namespace_split_uses_record_ownership() -> Result<()> {
+    fn test_bundle_third_party_namespace_split_keeps_providers_together() -> Result<()> {
         let temp_dir = TempDir::new()?;
         let virtualenv = temp_dir.path().join("venv");
         let site_packages = virtualenv.join("lib/python3.12/site-packages");
@@ -7413,25 +7494,49 @@ def read(package):
                 &format!("acme/{child}/__init__.py,,\n"),
             )?;
         }
+        // An unrelated compatible namespace bundles normally
+        create_test_file(
+            &site_packages.join(format!(
+                "clean_ns/provider/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("clean_provider-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: clean-provider\nVersion: 1.0\nRequires-Python: \
+             >=3.8\nImport-Namespace: clean_ns\n",
+        )?;
+        create_test_file(
+            &site_packages.join("clean_provider-1.0.dist-info/RECORD"),
+            "clean_ns/provider/__init__.py,,\n",
+        )?;
         let resolver = bundle_third_party_resolver(&virtualenv)?;
 
-        // plugin_a is record-owned by a compatible distribution and bundles
-        let plugin_a = resolver.classify_import("acme.plugin_a");
-        assert_eq!(
-            plugin_a.bundle,
-            BundleDisposition::Include,
-            "record-owned child of a compatible distribution must bundle"
-        );
-
-        // plugin_b is record-owned by the incompatible distribution and stays external,
-        // regardless of the shared Import-Namespace claims
+        // plugin_b is record-owned by the incompatible distribution and stays external
         let plugin_b = resolver.classify_import("acme.plugin_b");
         assert_eq!(
             plugin_b.bundle,
             BundleDisposition::External,
-            "record ownership must override shared namespace-prefix claims"
+            "record ownership must apply the incompatible Requires-Python policy"
         );
         assert!(resolver.resolve_module_path("acme.plugin_b")?.is_none());
+
+        // plugin_a is compatible on its own, but shares the namespace with an
+        // external provider: it must stay external too
+        let plugin_a = resolver.classify_import("acme.plugin_a");
+        assert_eq!(
+            plugin_a.bundle,
+            BundleDisposition::External,
+            "a namespace with an external provider must keep ALL its providers external"
+        );
+
+        // A namespace whose providers are all bundleable is unaffected
+        assert_eq!(
+            resolver.classify_import("clean_ns.provider").bundle,
+            BundleDisposition::Include,
+            "namespaces without external providers must keep bundling"
+        );
 
         Ok(())
     }
