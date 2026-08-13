@@ -541,6 +541,7 @@ impl UnbundlablePatternDetector {
                             &assign.value,
                             self.from_imports,
                             self.assigned,
+                            self.importlib_modules,
                         );
                     }
                     Stmt::AnnAssign(ann_assign) => {
@@ -551,6 +552,7 @@ impl UnbundlablePatternDetector {
                                 value,
                                 self.from_imports,
                                 self.assigned,
+                                self.importlib_modules,
                             );
                         }
                     }
@@ -609,19 +611,23 @@ fn record_import_module_aliases(
 }
 
 /// Track callable aliases created by (annotated) assignments such as
-/// `load = importlib.import_module`, `load = __import__`, or
-/// `load = builtins.__import__`.
+/// `load = importlib.import_module`, `load = __import__`,
+/// `load = builtins.__import__`, or `load = getattr(importlib, "import_module")`.
 ///
 /// Higher-order wrappers are tracked conservatively: when the assigned value is a
 /// call that receives an import callable as an argument (e.g.
 /// `load = functools.partial(import_module, package=__package__)`), the resulting
 /// callable can import dynamically selected modules, so the assigned name is
-/// recorded as an undiscoverable import alias too.
+/// recorded as an undiscoverable import alias too. `getattr` retrieval is treated
+/// the same: a literal import-callable attribute name (on any object), or ANY
+/// dynamic attribute retrieved from the `importlib` module, may denote an import
+/// callable.
 fn record_assigned_import_module_aliases(
     targets: &[ruff_python_ast::Expr],
     value: &ruff_python_ast::Expr,
     import_aliases: &IndexSet<String>,
     assigned_aliases: &mut IndexSet<String>,
+    importlib_module_aliases: &IndexSet<String>,
 ) {
     use ruff_python_ast::Expr;
 
@@ -643,20 +649,44 @@ fn record_assigned_import_module_aliases(
         }
     }
 
-    let value_is_import_callable = match value {
-        Expr::Call(call) => {
-            // A wrapper receiving an import callable (functools.partial and
-            // friends) yields a callable that still performs dynamic imports
-            call.arguments
-                .args
-                .iter()
-                .any(|argument| is_import_callable(argument, import_aliases, assigned_aliases))
-                || call.arguments.keywords.iter().any(|keyword| {
-                    is_import_callable(&keyword.value, import_aliases, assigned_aliases)
-                })
+    /// `getattr(obj, "import_module")` retrieves an import callable dynamically,
+    /// and `getattr(importlib, anything)` may — bundled code cannot rewrite either.
+    fn is_getattr_import_callable(
+        call: &ruff_python_ast::ExprCall,
+        importlib_module_aliases: &IndexSet<String>,
+    ) -> bool {
+        let Expr::Name(callee) = &*call.func else {
+            return false;
+        };
+        if callee.id.as_str() != "getattr" {
+            return false;
         }
-        _ => is_import_callable(value, import_aliases, assigned_aliases),
-    };
+        match call.arguments.args.get(1) {
+            Some(Expr::StringLiteral(literal)) => matches!(
+                literal.value.to_str(),
+                "import_module" | "__import__" | "reload"
+            ),
+            _ => call.arguments.args.first().is_some_and(|receiver| {
+                matches!(receiver, Expr::Name(name) if importlib_module_aliases.contains(name.id.as_str()))
+            }),
+        }
+    }
+
+    let value_is_import_callable =
+        match value {
+            Expr::Call(call) => {
+                // A wrapper receiving an import callable (functools.partial and
+                // friends) yields a callable that still performs dynamic imports
+                is_getattr_import_callable(call, importlib_module_aliases)
+                    || call.arguments.args.iter().any(|argument| {
+                        is_import_callable(argument, import_aliases, assigned_aliases)
+                    })
+                    || call.arguments.keywords.iter().any(|keyword| {
+                        is_import_callable(&keyword.value, import_aliases, assigned_aliases)
+                    })
+            }
+            _ => is_import_callable(value, import_aliases, assigned_aliases),
+        };
     if !value_is_import_callable {
         return;
     }
@@ -945,6 +975,9 @@ const RESOURCE_QUERY_FUNCTIONS: [&str; 17] = [
 ];
 /// Modules whose wildcard import binds the resource reader API.
 const RESOURCE_API_MODULES: [&str; 3] = ["importlib.resources", "importlib_resources", "pkgutil"];
+/// Canonical dotted path of `importlib.reload`: reload targets must be REAL
+/// registered modules with a usable spec, so bundled targets stay external.
+const RELOAD_FUNCTIONS: [&str; 1] = ["importlib.reload"];
 
 /// Collect every import binding a name EVER holds anywhere in a module —
 /// module level, function bodies, class bodies, and all conditional branches —
@@ -1156,8 +1189,9 @@ pub(crate) struct DistributionMetadataUsage {
     /// Verbatim requirement literals of name-taking query calls
     pub(crate) requirements: Vec<String>,
     /// Import names whose package resources are read at runtime
-    /// (`importlib.resources.files("provider")`, `pkgutil.get_data("provider", ...)`):
-    /// the target needs its installed layout and import spec, so it must stay
+    /// (`importlib.resources.files("provider")`, `pkgutil.get_data("provider", ...)`)
+    /// or that are reloaded as module objects (`importlib.reload(provider)`): the
+    /// target needs its installed layout and import spec, so it must stay
     /// external and installed
     pub(crate) resource_import_targets: Vec<String>,
     /// Whether a global enumeration API (`importlib.metadata.distributions()`,
@@ -1232,6 +1266,35 @@ pub(crate) fn queried_distribution_requirements(
             }
         }
 
+        /// Return whether an expression is a pure name/attribute reference chain.
+        fn is_pure_reference_chain(expr: &ruff_python_ast::Expr) -> bool {
+            use ruff_python_ast::Expr;
+            let mut current = expr;
+            loop {
+                match current {
+                    Expr::Attribute(attribute) => current = &attribute.value,
+                    Expr::Name(_) => return true,
+                    _ => return false,
+                }
+            }
+        }
+
+        /// Resolve a pure reference chain to the candidate canonical paths of the
+        /// FULL expression and of every attribute prefix (`md.working_set.by_key`
+        /// yields candidates for itself, `md.working_set`, and `md`).
+        fn chain_prefix_paths(&self, expr: &ruff_python_ast::Expr) -> Vec<String> {
+            use ruff_python_ast::Expr;
+            let mut paths = Vec::new();
+            let mut current = expr;
+            loop {
+                paths.extend(self.canonical_paths(current));
+                match current {
+                    Expr::Attribute(attribute) => current = &attribute.value,
+                    _ => return paths,
+                }
+            }
+        }
+
         /// Resolve a query argument to its candidate string values; the boolean
         /// reports whether the argument resolved at all.
         fn string_argument_candidates(&self, expr: &ruff_python_ast::Expr) -> (Vec<String>, bool) {
@@ -1250,30 +1313,57 @@ pub(crate) fn queried_distribution_requirements(
     impl<'a> ruff_python_ast::visitor::Visitor<'a> for QueryCollector {
         fn visit_expr(&mut self, expr: &'a ruff_python_ast::Expr) {
             use ruff_python_ast::Expr;
-            let paths = self.canonical_paths(expr);
-            // Legacy enumeration objects are observed by mere reference (iterating
-            // `pkg_resources.working_set` or a `from pkg_resources import
-            // working_set as ws` alias)
-            if paths
-                .iter()
-                .any(|path| ENUMERATION_OBJECTS.contains(&path.as_str()))
-            {
-                self.enumerates_distributions = true;
-            }
-            // Safety net for indirect access: any reference to a metadata module
-            // member OUTSIDE a recognized query callee (e.g. `query = md.version`,
-            // a metadata function passed to a helper, `Distribution.at(...)` or an
-            // aliased metadata class, `reader = resources.files`) may perform
-            // arbitrary lookups later
-            if self.recognized_callee_depth == 0
-                && paths.iter().any(|path| {
-                    QUERY_FUNCTIONS.contains(&path.as_str())
-                        || ENUMERATION_FUNCTIONS.contains(&path.as_str())
-                        || METADATA_CLASSES.contains(&path.as_str())
-                        || RESOURCE_QUERY_FUNCTIONS.contains(&path.as_str())
-                })
-            {
-                self.enumerates_distributions = true;
+            // Pure name/attribute chains are checked as a WHOLE (full path plus
+            // every prefix) and not descended into: the base of a member access
+            // such as `md.PackageNotFoundError` must not be mistaken for a bare
+            // module reference.
+            if Self::is_pure_reference_chain(expr) {
+                let prefix_paths = self.chain_prefix_paths(expr);
+                // Legacy enumeration objects are observed by mere reference
+                // (iterating `pkg_resources.working_set`, an aliased import, or a
+                // member access on the object)
+                if prefix_paths
+                    .iter()
+                    .any(|path| ENUMERATION_OBJECTS.contains(&path.as_str()))
+                {
+                    self.enumerates_distributions = true;
+                }
+                if self.recognized_callee_depth == 0 {
+                    // Safety net for indirect access: any reference to a metadata
+                    // module member OUTSIDE a recognized query callee (e.g.
+                    // `query = md.version`, a metadata function passed to a
+                    // helper, `Distribution.at(...)`, `handler = il.reload`) may
+                    // perform arbitrary lookups later
+                    if prefix_paths.iter().any(|path| {
+                        QUERY_FUNCTIONS.contains(&path.as_str())
+                            || ENUMERATION_FUNCTIONS.contains(&path.as_str())
+                            || METADATA_CLASSES.contains(&path.as_str())
+                            || RESOURCE_QUERY_FUNCTIONS.contains(&path.as_str())
+                            || RELOAD_FUNCTIONS.contains(&path.as_str())
+                    }) {
+                        self.enumerates_distributions = true;
+                    }
+                    // A BARE metadata-module reference (the full expression IS the
+                    // module) escapes the syntactic analysis: aliasing it or
+                    // retrieving members dynamically (`x = md`,
+                    // `getattr(md, name)`) allows arbitrary lookups later.
+                    // Only LOAD references count: assignment/delete targets rebind
+                    // the NAME rather than referencing the module object.
+                    let is_load_reference = match expr {
+                        Expr::Name(name) => name.ctx.is_load(),
+                        Expr::Attribute(attribute) => attribute.ctx.is_load(),
+                        _ => false,
+                    };
+                    if is_load_reference
+                        && self
+                            .canonical_paths(expr)
+                            .iter()
+                            .any(|path| METADATA_API_MODULES.contains(&path.as_str()))
+                    {
+                        self.enumerates_distributions = true;
+                    }
+                }
+                return;
             }
             if let Expr::Call(call) = expr {
                 let callee_paths = self.canonical_paths(&call.func);
@@ -1312,6 +1402,34 @@ pub(crate) fn queried_distribution_requirements(
                     }
                     // The callee itself is a recognized query reference; walk it
                     // without triggering the indirect-access safety net
+                    self.recognized_callee_depth += 1;
+                    ruff_python_ast::visitor::walk_expr(self, &call.func);
+                    self.recognized_callee_depth -= 1;
+                    for argument in &call.arguments.args {
+                        self.visit_expr(argument);
+                    }
+                    for keyword in &call.arguments.keywords {
+                        self.visit_expr(&keyword.value);
+                    }
+                    return;
+                }
+                // Reload targets must be REAL registered modules with a usable
+                // spec: bundled namespaces cannot be reloaded, so module-object
+                // targets stay external; an unresolvable target may name ANY
+                // installed module
+                let is_reload = callee_paths
+                    .iter()
+                    .any(|path| RELOAD_FUNCTIONS.contains(&path.as_str()));
+                if is_reload {
+                    let mut resolved = false;
+                    if let Some(argument) = call.arguments.args.first() {
+                        let module_candidates = self.canonical_paths(argument);
+                        resolved = !module_candidates.is_empty();
+                        self.resource_import_targets.extend(module_candidates);
+                    }
+                    if !resolved {
+                        self.enumerates_distributions = true;
+                    }
                     self.recognized_callee_depth += 1;
                     ruff_python_ast::visitor::walk_expr(self, &call.func);
                     self.recognized_callee_depth -= 1;
@@ -2948,7 +3066,9 @@ impl ModuleResolver {
     /// namespace root; this check covers the per-distribution metadata policies
     /// (native artifacts, `.pth` hooks, runtime entry points, `Requires-Python`,
     /// queried metadata) that record ownership would otherwise scope to a single
-    /// child.
+    /// child. Providers are aggregated across EVERY active metadata root: a PEP
+    /// 420 namespace may be split across roots (PYTHONPATH plus site-packages),
+    /// and a blocked provider in any of them taints the whole namespace.
     fn namespace_provider_must_stay_external(
         &self,
         site_packages_dir: &Path,
@@ -2965,7 +3085,7 @@ impl ModuleResolver {
             return false;
         }
         let queried = self.queried_distributions.borrow();
-        self.with_distribution_ownership_index(site_packages_dir, |index| {
+        let blocked_provider = |index: &DistributionOwnershipIndex| {
             index
                 .distributions
                 .iter()
@@ -2982,7 +3102,14 @@ impl ModuleResolver {
                             && queried
                                 .contains(&Self::normalize_distribution_name(&distribution.name)))
                 })
-        })
+        };
+        self.get_distribution_metadata_search_directories()
+            .iter()
+            .any(|metadata_dir| {
+                self.with_distribution_ownership_index(metadata_dir, |index| {
+                    blocked_provider(index)
+                })
+            })
     }
 
     /// Return whether any distribution claiming an import declares a `Requires-Python`
@@ -6253,6 +6380,79 @@ print(loader.from_name('hidden-name'))
         assert!(queried_distribution_requirements(parsed.syntax()).enumerates_distributions);
     }
 
+    /// Metadata access that escapes syntactic attribute analysis — `getattr` on a
+    /// metadata module, aliasing the module object — conservatively flags global
+    /// observation, and `importlib.reload` records module-object targets so they
+    /// keep their installed import spec.
+    #[test]
+    fn test_queried_distribution_dynamic_access_and_reload() {
+        // getattr retrieval of a query function
+        let source = "\
+import importlib.metadata as md
+
+query = getattr(md, 'version')
+print(query('provider'))
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        assert!(queried_distribution_requirements(parsed.syntax()).enumerates_distributions);
+
+        // Aliasing the metadata module object
+        let source = "\
+import importlib.metadata as md
+
+alias = md
+print(alias.version('provider'))
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        assert!(queried_distribution_requirements(parsed.syntax()).enumerates_distributions);
+
+        // Member access through the module is NOT a bare module reference
+        let source = "\
+import importlib.metadata as md
+
+try:
+    print(md.version('member-name'))
+except md.PackageNotFoundError:
+    raise SystemExit('missing')
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert_eq!(usage.requirements, vec!["member-name"]);
+        assert!(!usage.enumerates_distributions);
+
+        // reload records the module-object target (through importlib aliases too)
+        let source = "\
+import importlib as il
+import provider
+
+il.reload(provider)
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert_eq!(usage.resource_import_targets, vec!["provider"]);
+        assert!(!usage.enumerates_distributions);
+
+        // An unresolvable reload target may name ANY installed module
+        let source = "\
+from importlib import reload
+
+
+def refresh(module):
+    return reload(module)
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        assert!(queried_distribution_requirements(parsed.syntax()).enumerates_distributions);
+
+        // An escaping reload callable is undiscoverable
+        let source = "\
+import importlib
+
+handler = importlib.reload
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        assert!(queried_distribution_requirements(parsed.syntax()).enumerates_distributions);
+    }
+
     /// Package-resource readers (`importlib.resources.files`, `pkgutil.get_data`)
     /// record their literal or module-object anchors as resource-read targets;
     /// unresolvable anchors conservatively flag global observation.
@@ -6891,6 +7091,12 @@ def read(package):
             "import importlib\nimportlib.reload(config)\n",
             "import importlib as il\nil.reload(config)\n",
             "from importlib import reload\nreload(config)\n",
+            // Dynamically retrieved import callables: a literal import-callable
+            // attribute name on any object, or ANY attribute of importlib
+            "import importlib\nload = getattr(importlib, 'import_module')\nload('pkg.backend')\n",
+            "import importlib\nload = getattr(importlib, '__import__')\nload('pkg')\n",
+            "import importlib as il\nload = getattr(il, attribute_name)\nload('pkg')\n",
+            "import importlib\nload = getattr(importlib, 'reload')\nload(config)\n",
             // Alias chains resolve to a FIXED POINT even when a link appears in a
             // function defined before its referent's source binding
             "def run(name):\n    load = late\n    return load(name)\n\nimport importlib\nlate = \
@@ -6915,6 +7121,9 @@ def read(package):
             // raises exactly like the original
             "import importlib\nimportlib.import_module('pkg', name='other')\n",
             "import importlib\nimportlib.import_module('pkg', invalid_keyword=1)\n",
+            // getattr with a non-import attribute on a non-importlib object is not
+            // an import callable
+            "import json\nload = getattr(json, 'dumps')\nload({})\n",
         ] {
             assert!(
                 !ModuleResolver::python_source_blocks_bundling(source),
@@ -7526,6 +7735,77 @@ def read(package):
             resolver.classify_import("clean_ns.provider").bundle,
             BundleDisposition::Include,
             "namespaces without external providers must keep bundling"
+        );
+
+        Ok(())
+    }
+
+    /// Namespace provider policy aggregates across ALL active roots: a pure
+    /// provider on PYTHONPATH shares its namespace with a blocked provider in
+    /// site-packages, so both stay external together.
+    #[test]
+    fn test_bundle_third_party_namespace_split_across_roots_keeps_providers_together() -> Result<()>
+    {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        // Blocked provider in site-packages (incompatible Requires-Python)
+        create_test_file(
+            &site_packages.join(format!(
+                "acme/plugin_native/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("plugin_native-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: plugin-native\nVersion: 1.0\nRequires-Python: \
+             >=3.13\nImport-Namespace: acme\n",
+        )?;
+        create_test_file(
+            &site_packages.join("plugin_native-1.0.dist-info/RECORD"),
+            "acme/plugin_native/__init__.py,,\n",
+        )?;
+        // Pure provider of the SAME namespace on a PYTHONPATH root
+        let pythonpath_dir = temp_dir.path().join("vendored");
+        create_test_file(
+            &pythonpath_dir.join(format!(
+                "acme/plugin_pure/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &pythonpath_dir.join("plugin_pure-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: plugin-pure\nVersion: 1.0\nRequires-Python: \
+             >=3.8\nImport-Namespace: acme\n",
+        )?;
+        create_test_file(
+            &pythonpath_dir.join("plugin_pure-1.0.dist-info/RECORD"),
+            "acme/plugin_pure/__init__.py,,\n",
+        )?;
+
+        let config = Config {
+            bundle_third_party: Some(true),
+            ..Default::default()
+        };
+        let pythonpath = pythonpath_dir.to_string_lossy();
+        let virtualenv_path = virtualenv.to_string_lossy();
+        let resolver = ModuleResolver::new_with_overrides(
+            config,
+            Some(pythonpath.as_ref()),
+            Some(virtualenv_path.as_ref()),
+        )?;
+
+        assert_eq!(
+            resolver.classify_import("acme.plugin_native").bundle,
+            BundleDisposition::External,
+            "the blocked provider stays external"
+        );
+        assert_eq!(
+            resolver.classify_import("acme.plugin_pure").bundle,
+            BundleDisposition::External,
+            "a pure provider on another root shares the namespace and must stay external too"
         );
 
         Ok(())

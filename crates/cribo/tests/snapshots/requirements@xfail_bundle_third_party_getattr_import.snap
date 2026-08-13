@@ -1,0 +1,7 @@
+---
+source: crates/cribo/tests/test_bundling_snapshots.rs
+input_file: crates/cribo/tests/fixtures/xfail_bundle_third_party_getattr_import/main.py
+---
+packages:
+  - getattr-loader-pkg
+count: 1
