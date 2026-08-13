@@ -825,6 +825,24 @@ impl BundleOrchestrator {
                 }
             }
 
+            // Record imported providers whose filesystem/import-spec globals this
+            // module reads (provider.__file__, provider.__spec__.origin, ...):
+            // generated namespaces carry no faithful values, so observed targets
+            // keep their installed module identity (same policy as resource reads)
+            if self.config.bundle_third_party()
+                && (processed.source.contains("__file__")
+                    || processed.source.contains("__spec__")
+                    || processed.source.contains("__loader__")
+                    || processed.source.contains("__cached__")
+                    || processed.source.contains("__path__"))
+            {
+                params.resolver.record_resource_read_imports(
+                    crate::visitors::utils::imported_module_dunder_read_targets(
+                        &processed.ast.body,
+                    ),
+                );
+            }
+
             // Record module names whose sys.modules entries this module observes
             // (sys.modules["dep"], sys.modules[dep.__name__]): bundled targets must
             // register in sys.modules when their init runs, because static imports

@@ -59,10 +59,15 @@ class _CriboPreservedLoader:
         if getattr(module, '_cribo_machinery_loaded', False):
             module.__initialized__ = False
             module.__initializing__ = False
+        state = dict(module.__dict__)
         try:
             globals()[init](module)
             module._cribo_machinery_loaded = True
         except BaseException:
+            # Python discards a failed module entirely; a retried import must
+            # observe a FRESH namespace, not the partial mutations
+            module.__dict__.clear()
+            module.__dict__.update(state)
             module.__initializing__ = False
             raise
 

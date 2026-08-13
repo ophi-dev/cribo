@@ -18,6 +18,113 @@ use crate::{
 pub(super) struct ExpressionRewriter;
 
 impl ExpressionRewriter {
+    /// Add names to the transformer's shadowed bindings for one nested scope
+    /// (lambda parameters, comprehension targets), returning only the names that
+    /// were NEWLY added so pre-existing shadows survive the scope's removal.
+    fn add_scope_shadows(
+        transformer: &mut RecursiveImportTransformer<'_>,
+        names: Vec<String>,
+    ) -> Vec<String> {
+        names
+            .into_iter()
+            .filter(|name| transformer.state.shadowed_bindings.insert(name.clone()))
+            .collect()
+    }
+
+    /// Remove the scope shadows added by [`Self::add_scope_shadows`].
+    fn remove_scope_shadows(transformer: &mut RecursiveImportTransformer<'_>, added: Vec<String>) {
+        for name in added {
+            transformer.state.shadowed_bindings.shift_remove(&name);
+        }
+    }
+
+    /// Collect the plain names bound by comprehension targets.
+    fn comprehension_target_names(generators: &[ruff_python_ast::Comprehension]) -> Vec<String> {
+        fn collect(target: &Expr, names: &mut Vec<String>) {
+            match target {
+                Expr::Name(name) => names.push(name.id.as_str().to_owned()),
+                Expr::Tuple(tuple) => {
+                    for element in &tuple.elts {
+                        collect(element, names);
+                    }
+                }
+                Expr::List(list) => {
+                    for element in &list.elts {
+                        collect(element, names);
+                    }
+                }
+                Expr::Starred(starred) => collect(&starred.value, names),
+                _ => {}
+            }
+        }
+        let mut names = Vec::new();
+        for comprehension in generators {
+            collect(&comprehension.target, &mut names);
+        }
+        names
+    }
+
+    /// Transform the iterables and conditions of comprehension generators.
+    fn transform_comprehension_generators(
+        transformer: &mut RecursiveImportTransformer<'_>,
+        generators: &mut [ruff_python_ast::Comprehension],
+    ) {
+        for generator in generators {
+            Self::transform_expr(transformer, &mut generator.iter);
+            for if_clause in &mut generator.ifs {
+                Self::transform_expr(transformer, if_clause);
+            }
+        }
+    }
+
+    /// Transform a lambda: parameter defaults evaluate in the ENCLOSING scope,
+    /// while the body's parameter names shadow enclosing bindings (a parameter
+    /// named like an import alias dispatches to the argument at runtime).
+    fn transform_lambda(
+        transformer: &mut RecursiveImportTransformer<'_>,
+        lambda_expr: &mut ruff_python_ast::ExprLambda,
+    ) {
+        let mut parameter_names = Vec::new();
+        if let Some(parameters) = &mut lambda_expr.parameters {
+            for param in parameters
+                .posonlyargs
+                .iter_mut()
+                .chain(&mut parameters.args)
+                .chain(&mut parameters.kwonlyargs)
+            {
+                if let Some(default) = &mut param.default {
+                    Self::transform_expr(transformer, default);
+                }
+                parameter_names.push(param.parameter.name.as_str().to_owned());
+            }
+            if let Some(vararg) = &parameters.vararg {
+                parameter_names.push(vararg.name.as_str().to_owned());
+            }
+            if let Some(kwarg) = &parameters.kwarg {
+                parameter_names.push(kwarg.name.as_str().to_owned());
+            }
+        }
+        let added = Self::add_scope_shadows(transformer, parameter_names);
+        Self::transform_expr(transformer, &mut lambda_expr.body);
+        Self::remove_scope_shadows(transformer, added);
+    }
+
+    /// Transform the bounds of a slice expression.
+    fn transform_slice(
+        transformer: &mut RecursiveImportTransformer<'_>,
+        slice_expr: &mut ruff_python_ast::ExprSlice,
+    ) {
+        if let Some(lower) = &mut slice_expr.lower {
+            Self::transform_expr(transformer, lower);
+        }
+        if let Some(upper) = &mut slice_expr.upper {
+            Self::transform_expr(transformer, upper);
+        }
+        if let Some(step) = &mut slice_expr.step {
+            Self::transform_expr(transformer, step);
+        }
+    }
+
     /// Recursively transform expressions within the import transformer context
     pub(super) fn transform_expr(
         transformer: &mut RecursiveImportTransformer<'_>,
@@ -411,61 +518,59 @@ impl ExpressionRewriter {
                 }
             }
             Expr::ListComp(listcomp_expr) => {
+                let added = Self::add_scope_shadows(
+                    transformer,
+                    Self::comprehension_target_names(&listcomp_expr.generators),
+                );
                 Self::transform_expr(transformer, &mut listcomp_expr.elt);
-                for generator in &mut listcomp_expr.generators {
-                    Self::transform_expr(transformer, &mut generator.iter);
-                    for if_clause in &mut generator.ifs {
-                        Self::transform_expr(transformer, if_clause);
-                    }
-                }
+                Self::transform_comprehension_generators(
+                    transformer,
+                    &mut listcomp_expr.generators,
+                );
+                Self::remove_scope_shadows(transformer, added);
             }
             Expr::DictComp(dictcomp_expr) => {
+                let added = Self::add_scope_shadows(
+                    transformer,
+                    Self::comprehension_target_names(&dictcomp_expr.generators),
+                );
                 if let Some(key) = &mut dictcomp_expr.key {
                     Self::transform_expr(transformer, key);
                 }
                 Self::transform_expr(transformer, &mut dictcomp_expr.value);
-                for generator in &mut dictcomp_expr.generators {
-                    Self::transform_expr(transformer, &mut generator.iter);
-                    for if_clause in &mut generator.ifs {
-                        Self::transform_expr(transformer, if_clause);
-                    }
-                }
+                Self::transform_comprehension_generators(
+                    transformer,
+                    &mut dictcomp_expr.generators,
+                );
+                Self::remove_scope_shadows(transformer, added);
             }
             Expr::SetComp(setcomp_expr) => {
+                let added = Self::add_scope_shadows(
+                    transformer,
+                    Self::comprehension_target_names(&setcomp_expr.generators),
+                );
                 Self::transform_expr(transformer, &mut setcomp_expr.elt);
-                for generator in &mut setcomp_expr.generators {
-                    Self::transform_expr(transformer, &mut generator.iter);
-                    for if_clause in &mut generator.ifs {
-                        Self::transform_expr(transformer, if_clause);
-                    }
-                }
+                Self::transform_comprehension_generators(transformer, &mut setcomp_expr.generators);
+                Self::remove_scope_shadows(transformer, added);
             }
             Expr::Generator(genexp_expr) => {
+                let added = Self::add_scope_shadows(
+                    transformer,
+                    Self::comprehension_target_names(&genexp_expr.generators),
+                );
                 Self::transform_expr(transformer, &mut genexp_expr.elt);
-                for generator in &mut genexp_expr.generators {
-                    Self::transform_expr(transformer, &mut generator.iter);
-                    for if_clause in &mut generator.ifs {
-                        Self::transform_expr(transformer, if_clause);
-                    }
-                }
+                Self::transform_comprehension_generators(transformer, &mut genexp_expr.generators);
+                Self::remove_scope_shadows(transformer, added);
             }
             Expr::Subscript(subscript_expr) => {
                 Self::transform_expr(transformer, &mut subscript_expr.value);
                 Self::transform_expr(transformer, &mut subscript_expr.slice);
             }
             Expr::Slice(slice_expr) => {
-                if let Some(lower) = &mut slice_expr.lower {
-                    Self::transform_expr(transformer, lower);
-                }
-                if let Some(upper) = &mut slice_expr.upper {
-                    Self::transform_expr(transformer, upper);
-                }
-                if let Some(step) = &mut slice_expr.step {
-                    Self::transform_expr(transformer, step);
-                }
+                Self::transform_slice(transformer, slice_expr);
             }
             Expr::Lambda(lambda_expr) => {
-                Self::transform_expr(transformer, &mut lambda_expr.body);
+                Self::transform_lambda(transformer, lambda_expr);
             }
             Expr::Yield(yield_expr) => {
                 if let Some(value) = &mut yield_expr.value {

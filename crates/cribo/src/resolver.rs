@@ -2790,6 +2790,7 @@ impl ModuleResolver {
             && !source.contains("__loader__")
             && !source.contains("__cached__")
             && !source.contains("__getattr__")
+            && !source.contains("__dir__")
         {
             return false;
         }
@@ -2797,24 +2798,40 @@ impl ModuleResolver {
             // Conservative: unparsable source keeps the package external
             return true;
         };
-        // PEP 562 module-level __getattr__ hooks participate in attribute lookup
-        // only on REAL module objects; generated SimpleNamespace instances ignore
-        // instance attributes named __getattr__, so lazy exports would break
+        // PEP 562 module-level __getattr__/__dir__ hooks participate in attribute
+        // lookup only on REAL module objects; generated SimpleNamespace instances
+        // ignore instance attributes with these names, so lazy exports and
+        // advertised APIs would break. Every module-scope binding form counts:
+        // def, (annotated) assignment, and import aliases.
+        let binds_module_hook = |name: &str| matches!(name, "__getattr__" | "__dir__");
         for stmt in &parsed.syntax().body {
-            match stmt {
-                ruff_python_ast::Stmt::FunctionDef(function_def)
-                    if function_def.name.as_str() == "__getattr__" =>
-                {
-                    return true;
+            use ruff_python_ast::{Expr, Stmt};
+            let hook_bound = match stmt {
+                Stmt::FunctionDef(function_def) => binds_module_hook(function_def.name.as_str()),
+                Stmt::Assign(assign) => assign.targets.iter().any(|target| {
+                    matches!(target, Expr::Name(name) if binds_module_hook(name.id.as_str()))
+                }),
+                Stmt::AnnAssign(ann_assign) => {
+                    ann_assign.value.is_some()
+                        && matches!(&*ann_assign.target, Expr::Name(name) if binds_module_hook(name.id.as_str()))
                 }
-                ruff_python_ast::Stmt::Assign(assign)
-                    if assign.targets.iter().any(|target| {
-                        matches!(target, ruff_python_ast::Expr::Name(name) if name.id.as_str() == "__getattr__")
-                    }) =>
-                {
-                    return true;
-                }
-                _ => {}
+                Stmt::ImportFrom(import_from) => import_from.names.iter().any(|alias| {
+                    let bound = alias
+                        .asname
+                        .as_ref()
+                        .map_or_else(|| alias.name.as_str(), |name| name.as_str());
+                    binds_module_hook(bound)
+                }),
+                Stmt::Import(import_stmt) => import_stmt.names.iter().any(|alias| {
+                    alias
+                        .asname
+                        .as_ref()
+                        .is_some_and(|name| binds_module_hook(name.as_str()))
+                }),
+                _ => false,
+            };
+            if hook_bound {
+                return true;
             }
         }
         use ruff_python_ast::visitor::Visitor as _;
@@ -3675,16 +3692,14 @@ impl ModuleResolver {
     /// into an existing one: extras are unioned and version specifiers are combined
     /// (e.g. `dep<2` + `dep>=1` becomes `dep>=1,<2`).
     ///
-    /// PEP 508 cannot express a direct URL and a version specifier on one line, so a
-    /// URL-based declaration wins and the conflicting constraint is reported: the
-    /// pinned artifact is what the environment actually resolved, and emitting the
-    /// specifier as a second line would make the requirements file self-conflicting.
-    ///
-    /// Two declarations pinning DIFFERENT direct URLs cannot be reconciled at all:
-    /// the incoming declaration is returned so the caller emits it as a separate
-    /// line, making the conflict visible to the installer instead of silently
-    /// dropping one artifact constraint. Identical URLs deduplicate. Returns `None`
-    /// when the incoming declaration was fully merged.
+    /// PEP 508 cannot express a direct URL and a version specifier on one line,
+    /// but pip validates an explicit URL candidate against EVERY collected
+    /// requirement (resolvelib rejects a pinned artifact failing a version
+    /// constraint), so mixed URL/specifier declarations are returned for emission
+    /// as SEPARATE lines — the installer then enforces both, exactly like the
+    /// original installation. Two declarations pinning DIFFERENT direct URLs are
+    /// likewise both emitted so the installer reports the conflict; identical URLs
+    /// deduplicate. Returns `None` when the incoming declaration was fully merged.
     pub(crate) fn merge_requirement_constraints(
         existing: &mut pep508_rs::Requirement<pep508_rs::VerbatimUrl>,
         incoming: pep508_rs::Requirement<pep508_rs::VerbatimUrl>,
@@ -3707,22 +3722,17 @@ impl ModuleResolver {
                     current.iter().cloned().chain(additional).collect();
                 existing.version_or_url = Some(VersionOrUrl::VersionSpecifier(combined));
             }
-            (Some(VersionOrUrl::Url(url)), Some(VersionOrUrl::VersionSpecifier(dropped))) => {
-                warn!(
-                    "Requirement '{}' uses a direct URL ({url}); the version constraint \
-                     '{dropped}' declared elsewhere cannot be combined with it and is not \
-                     enforced — ensure the pinned artifact satisfies it",
-                    existing.name
-                );
+            (Some(VersionOrUrl::Url(_)), Some(VersionOrUrl::VersionSpecifier(specifiers))) => {
+                // Keep the URL pin AND emit the constraint separately: the
+                // installer validates the pinned artifact against it
+                let mut returned = existing.clone();
+                returned.version_or_url = Some(VersionOrUrl::VersionSpecifier(specifiers));
+                return Some(returned);
             }
-            (Some(VersionOrUrl::VersionSpecifier(current)), Some(VersionOrUrl::Url(url))) => {
-                warn!(
-                    "Requirement '{}' declares both a version constraint '{current}' and a \
-                     direct URL ({url}); the URL wins and the constraint is not enforced — \
-                     ensure the pinned artifact satisfies it",
-                    existing.name
-                );
-                existing.version_or_url = Some(VersionOrUrl::Url(url));
+            (Some(VersionOrUrl::VersionSpecifier(_)), Some(VersionOrUrl::Url(url))) => {
+                let mut returned = existing.clone();
+                returned.version_or_url = Some(VersionOrUrl::Url(url));
+                return Some(returned);
             }
             (Some(VersionOrUrl::Url(current)), Some(VersionOrUrl::Url(incoming_url)))
                 if current.to_string() != incoming_url.to_string() =>
@@ -3774,6 +3784,9 @@ impl ModuleResolver {
         // Top-level native artifact modules seen beside the metadata directories;
         // used to attribute unclaimed native siblings to listing-less distributions
         let mut top_level_native_modules: Vec<String> = Vec::new();
+        // Ordinary sibling directories; scanned for native artifacts when
+        // listing-less distributions exist (their file sets are unknown)
+        let mut sibling_directories: Vec<(String, PathBuf)> = Vec::new();
         let entries = match std::fs::read_dir(site_packages_dir) {
             Ok(entries) => entries,
             Err(error) => {
@@ -3803,6 +3816,8 @@ impl ModuleResolver {
                 } else if dir_name.ends_with(".egg-info") {
                     let distribution = Self::index_egg_info(&path, &mut index.incomplete);
                     index.distributions.push(distribution);
+                } else if dir_name != "__pycache__" {
+                    sibling_directories.push((dir_name.to_owned(), path.clone()));
                 }
             } else if dir_name.ends_with(".egg-info") {
                 // Legacy file-form egg-info: the file itself is PKG-INFO metadata
@@ -3872,7 +3887,91 @@ impl ModuleResolver {
             }
         }
 
+        // A listing-less distribution may also have installed native code in a
+        // sibling DIRECTORY no listing claims (e.g. `frontend/` plus
+        // `frontend.libs/libhelper.so` from the same RECORD-less wheel). Attribute
+        // each directory by its import root: when its owners include listing-less
+        // distributions, scan it and taint THOSE owners on native artifacts; a
+        // directory no distribution claims at all may belong to ANY listing-less
+        // distribution, so all of them are tainted.
+        if index
+            .distributions
+            .iter()
+            .any(|distribution| !distribution.has_file_listing)
+        {
+            for (dir_name, dir_path) in &sibling_directories {
+                let module_name = dir_name.split('.').next().unwrap_or(dir_name);
+                let owner_positions: Vec<usize> = index
+                    .distributions
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, distribution)| distribution.owns_import(module_name))
+                    .map(|(position, _)| position)
+                    .collect();
+                let listing_less_owners: Vec<usize> = owner_positions
+                    .iter()
+                    .copied()
+                    .filter(|position| !index.distributions[*position].has_file_listing)
+                    .collect();
+                if !owner_positions.is_empty() && listing_less_owners.is_empty() {
+                    // Fully attributed to listed distributions: their listings
+                    // already decided the native policy
+                    continue;
+                }
+                if !Self::directory_contains_native_artifacts(dir_path) {
+                    continue;
+                }
+                if listing_less_owners.is_empty() {
+                    // Unclaimed: any listing-less distribution may own it
+                    for distribution in &mut index.distributions {
+                        if !distribution.has_file_listing && !distribution.ships_native_artifacts {
+                            log::debug!(
+                                "Distribution '{}' has no installed-files listing and the \
+                                 unclaimed native sibling directory '{dir_name}' exists: \
+                                 treating the distribution as shipping native artifacts",
+                                distribution.name
+                            );
+                            distribution.ships_native_artifacts = true;
+                        }
+                    }
+                } else {
+                    for position in listing_less_owners {
+                        index.distributions[position].ships_native_artifacts = true;
+                    }
+                }
+            }
+        }
+
         index
+    }
+
+    /// Return whether a directory contains a native binary artifact anywhere in
+    /// its tree (`__pycache__` excluded). Read errors count as containing one:
+    /// purity cannot be proven for an unreadable tree.
+    fn directory_contains_native_artifacts(directory: &Path) -> bool {
+        let mut pending = vec![directory.to_path_buf()];
+        while let Some(current) = pending.pop() {
+            let Ok(entries) = std::fs::read_dir(&current) else {
+                return true;
+            };
+            for entry in entries {
+                let Ok(entry) = entry else {
+                    return true;
+                };
+                let path = entry.path();
+                let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                if path.is_dir() {
+                    if file_name != "__pycache__" {
+                        pending.push(path);
+                    }
+                } else if Self::is_native_artifact_file_name(file_name) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Index one modern `.dist-info` distribution (METADATA + RECORD, with
@@ -5741,10 +5840,13 @@ Import-Name: folded_module
             // Indirect reads through the module dict
             "F = globals()['__file__']\n",
             "S = globals().get('__spec__')\n",
-            // PEP 562 module-level __getattr__: SimpleNamespace instances ignore
-            // instance attributes named __getattr__
+            // PEP 562 module-level hooks: SimpleNamespace instances ignore
+            // instance attributes named __getattr__/__dir__, in EVERY binding form
             "def __getattr__(name):\n    raise AttributeError(name)\n",
             "__getattr__ = _lazy_hook\n",
+            "from ._lazy import hook as __getattr__\n",
+            "__getattr__: object = _lazy_hook\n",
+            "def __dir__():\n    return ['lazy_name']\n",
         ] {
             assert!(
                 ModuleResolver::python_source_blocks_bundling(source),
@@ -7810,6 +7912,27 @@ def read(package):
              listing-less distributions"
         );
 
+        // Native artifacts nested in an UNCLAIMED sibling DIRECTORY taint
+        // listing-less distributions too
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!("frontend/{}", crate::python::constants::INIT_FILE)),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("frontend-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: frontend\nVersion: 1.0\n",
+        )?;
+        create_test_file(&site_packages.join("frontend.libs/libhelper.so"), "")?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+        assert_eq!(
+            resolver.classify_import("frontend").bundle,
+            BundleDisposition::External,
+            "an unclaimed native sibling DIRECTORY must taint listing-less distributions"
+        );
+
         Ok(())
     }
 
@@ -7843,6 +7966,27 @@ def read(package):
             existing.to_string().contains("dep-1.0.tar.gz"),
             "the existing pin must stay intact"
         );
+
+        // A URL pin and a version specifier are BOTH emitted: pip validates the
+        // explicit artifact against every collected requirement
+        let specifier =
+            pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str("dep>=2").expect("parses");
+        let returned = ModuleResolver::merge_requirement_constraints(&mut existing, specifier)
+            .expect("a version constraint alongside a URL pin must be emitted separately");
+        assert_eq!(returned.to_string(), "dep>=2");
+        assert!(existing.to_string().contains("dep-1.0.tar.gz"));
+
+        // Symmetric order: specifier first, URL second
+        let mut spec_first =
+            pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str("dep>=2").expect("parses");
+        let url = pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(
+            "dep @ https://example.com/dep-1.0.tar.gz",
+        )
+        .expect("parses");
+        let returned = ModuleResolver::merge_requirement_constraints(&mut spec_first, url)
+            .expect("a URL pin alongside a version constraint must be emitted separately");
+        assert!(returned.to_string().contains("dep-1.0.tar.gz"));
+        assert_eq!(spec_first.to_string(), "dep>=2");
     }
 
     /// A `requirements.module-map` entry carrying a version specifier or direct URL

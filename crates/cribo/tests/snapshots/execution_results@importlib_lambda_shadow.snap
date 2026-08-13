@@ -1,0 +1,9 @@
+---
+source: crates/cribo/tests/test_bundling_snapshots.rs
+input_file: crates/cribo/tests/fixtures/importlib_lambda_shadow/main.py
+---
+ExecutionResults {
+    status: Success,
+    stdout: "lambda: fake load of untouched_helper\ncomprehension: ['A', 'B']",
+    stderr: "",
+}

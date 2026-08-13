@@ -448,6 +448,104 @@ pub(crate) fn sys_modules_observed_module_names(
     collector.observed
 }
 
+/// Collect the module names of IMPORTED modules whose filesystem/import-spec
+/// globals a consumer reads: `provider.__file__`, `provider.__spec__.origin`,
+/// `provider.__loader__`, `provider.__cached__`, `provider.__path__`.
+///
+/// A bundled provider's generated namespace carries no faithful values for
+/// these, so observed targets must keep their installed module identity.
+pub(crate) fn imported_module_dunder_read_targets(
+    body: &[ruff_python_ast::Stmt],
+) -> crate::types::FxIndexSet<String> {
+    use ruff_python_ast::{
+        Stmt,
+        visitor::{Visitor, walk_expr, walk_stmt},
+    };
+
+    use crate::types::{FxIndexMap, FxIndexSet};
+
+    /// Collect import bindings (name -> module) over the whole body.
+    struct ImportBindingCollector {
+        bindings: FxIndexMap<String, String>,
+    }
+
+    impl<'ast> Visitor<'ast> for ImportBindingCollector {
+        fn visit_stmt(&mut self, stmt: &'ast Stmt) {
+            match stmt {
+                Stmt::Import(import_stmt) => {
+                    for alias in &import_stmt.names {
+                        let module_name = alias.name.as_str();
+                        if let Some(asname) = &alias.asname {
+                            self.bindings
+                                .insert(asname.as_str().to_owned(), module_name.to_owned());
+                        } else {
+                            let top_level = module_name.split('.').next().unwrap_or(module_name);
+                            self.bindings
+                                .insert(top_level.to_owned(), top_level.to_owned());
+                        }
+                    }
+                }
+                Stmt::ImportFrom(import_from) if import_from.level == 0 => {
+                    if let Some(module) = import_from.module.as_deref() {
+                        for alias in &import_from.names {
+                            if alias.name.as_str() == "*" {
+                                continue;
+                            }
+                            let bound_name = alias
+                                .asname
+                                .as_ref()
+                                .map_or_else(|| alias.name.as_str(), |name| name.as_str());
+                            // `from pkg import sub` may bind the submodule
+                            self.bindings.insert(
+                                bound_name.to_owned(),
+                                format!("{module}.{}", alias.name.as_str()),
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+            walk_stmt(self, stmt);
+        }
+    }
+
+    struct DunderReadCollector {
+        observed: FxIndexSet<String>,
+        bindings: FxIndexMap<String, String>,
+    }
+
+    impl<'ast> Visitor<'ast> for DunderReadCollector {
+        fn visit_expr(&mut self, expr: &'ast Expr) {
+            if let Expr::Attribute(attribute) = expr
+                && matches!(
+                    attribute.attr.as_str(),
+                    "__file__" | "__spec__" | "__loader__" | "__cached__" | "__path__"
+                )
+                && let Expr::Name(base) = &*attribute.value
+                && let Some(module_name) = self.bindings.get(base.id.as_str())
+            {
+                self.observed.insert(module_name.clone());
+            }
+            walk_expr(self, expr);
+        }
+    }
+
+    let mut binding_collector = ImportBindingCollector {
+        bindings: FxIndexMap::default(),
+    };
+    for stmt in body {
+        binding_collector.visit_stmt(stmt);
+    }
+    let mut collector = DunderReadCollector {
+        observed: FxIndexSet::default(),
+        bindings: binding_collector.bindings,
+    };
+    for stmt in body {
+        collector.visit_stmt(stmt);
+    }
+    collector.observed
+}
+
 #[cfg(test)]
 mod tests {
     use ruff_python_parser::parse_module;

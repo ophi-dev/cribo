@@ -984,6 +984,71 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
                     }
                 }
             }
+            // Lambda parameters bind their own function scope: defaults evaluate in
+            // the ENCLOSING scope, while the body must not resolve a parameter name
+            // to an enclosing import (`lambda importlib: importlib.import_module(x)`
+            // dispatches to the argument at runtime)
+            Expr::Lambda(lambda) => {
+                if let Some(parameters) = &lambda.parameters {
+                    for param in parameters
+                        .posonlyargs
+                        .iter()
+                        .chain(&parameters.args)
+                        .chain(&parameters.kwonlyargs)
+                    {
+                        if let Some(default) = &param.default {
+                            self.visit_expr(default);
+                        }
+                    }
+                }
+                let mut parameter_names = FxIndexSet::default();
+                if let Some(parameters) = &lambda.parameters {
+                    for param in parameters
+                        .posonlyargs
+                        .iter()
+                        .chain(&parameters.args)
+                        .chain(&parameters.kwonlyargs)
+                    {
+                        parameter_names.insert(param.parameter.name.as_str().to_owned());
+                    }
+                    if let Some(vararg) = &parameters.vararg {
+                        parameter_names.insert(vararg.name.as_str().to_owned());
+                    }
+                    if let Some(kwarg) = &parameters.kwarg {
+                        parameter_names.insert(kwarg.name.as_str().to_owned());
+                    }
+                }
+                self.imported_names_stack.push(FxIndexMap::default());
+                self.shadowed_names_stack.push(parameter_names);
+                self.visit_expr(&lambda.body);
+                self.imported_names_stack.pop();
+                self.shadowed_names_stack.pop();
+                return;
+            }
+            // Comprehension targets bind their own function scope; shadow them
+            // for the whole expression (over-shadowing the first iterable is
+            // conservative: it preserves the original expression)
+            Expr::ListComp(_) | Expr::SetComp(_) | Expr::DictComp(_) | Expr::Generator(_) => {
+                let generators = match expr {
+                    Expr::ListComp(comp) => &comp.generators,
+                    Expr::SetComp(comp) => &comp.generators,
+                    Expr::DictComp(comp) => &comp.generators,
+                    Expr::Generator(comp) => &comp.generators,
+                    _ => unreachable!("matched comprehension variants only"),
+                };
+                let mut target_names = FxIndexSet::default();
+                for comprehension in generators {
+                    Self::collect_binding_names(&comprehension.target, &mut |name| {
+                        target_names.insert(name);
+                    });
+                }
+                self.imported_names_stack.push(FxIndexMap::default());
+                self.shadowed_names_stack.push(target_names);
+                walk_expr(self, expr);
+                self.imported_names_stack.pop();
+                self.shadowed_names_stack.pop();
+                return;
+            }
             _ => {}
         }
 

@@ -4,4 +4,5 @@ input_file: crates/cribo/tests/fixtures/xfail_bundle_third_party_module_map_url_
 ---
 packages:
   - "external-dep @ https://example.invalid/external_dep-1.0-py3-none-any.whl"
-count: 1
+  - external-dep<2
+count: 2
