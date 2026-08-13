@@ -34,19 +34,30 @@ class _CriboPreservedLoader:
         self._entry = entry
 
     def create_module(self, spec):
-        return globals()[self._entry[1]]
+        namespace = self._entry[1]
+        if namespace is not None:
+            return globals()[namespace]
+        module = _cribo.types.SimpleNamespace(__name__=spec.name)
+        for export, binding in self._entry[3].items():
+            setattr(module, export, globals()[binding])
+        return module
 
     def exec_module(self, module):
         init = self._entry[0]
-        if init is not None:
+        if init is None:
+            return
+        try:
             globals()[init](module)
+        except BaseException:
+            module.__initializing__ = False
+            raise
 class _CriboPreservedFinder:
 
     def __init__(self):
         self._targets = {}
 
-    def register(self, name, init, namespace, is_package):
-        self._targets[name] = init, namespace, is_package
+    def register(self, name, init, namespace, is_package, exports=None):
+        self._targets[name] = init, namespace, is_package, exports or {}
 
     def find_spec(self, name, path=None, target=None):
         entry = self._targets.get(name)
@@ -63,6 +74,10 @@ _cribo_finder.register('services', '_cribo_init___cribo_93a195_services', 'servi
 _cribo_finder.register('services.auth.manager', '_cribo_init___cribo_ee1d45_services_auth_manager', 'services_auth_manager', False)
 _cribo_finder.register('core.utils', '_cribo_init___cribo_c57a32_core_utils', 'core_utils', True)
 _cribo_finder.register('core', '_cribo_init___cribo_62c387_core', 'core', True)
+_cribo_finder.register('core.database', None, 'core_database', True)
+_cribo_finder.register('core.utils.helpers', None, None, False, {'Logger': 'Logger_4'})
+_cribo_finder.register('models.user', None, None, False, {'Logger': 'Logger_2', 'User': 'User_2'})
+_cribo_finder.register('core.database.connection', None, None, False, {'Connection': 'Connection_6'})
 core_utils_helpers = _cribo.types.SimpleNamespace(__name__='core.utils.helpers', __doc__='\nUtility helpers module with extensive naming conflicts\n')
 core = _cribo.types.SimpleNamespace(__name__='core', __initializing__=False, __initialized__=False, __path__=[])
 core_utils = _cribo.types.SimpleNamespace(__name__='core.utils', __initializing__=False, __initialized__=False, __path__=[])

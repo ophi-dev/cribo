@@ -34,19 +34,30 @@ class _CriboPreservedLoader:
         self._entry = entry
 
     def create_module(self, spec):
-        return globals()[self._entry[1]]
+        namespace = self._entry[1]
+        if namespace is not None:
+            return globals()[namespace]
+        module = _cribo.types.SimpleNamespace(__name__=spec.name)
+        for export, binding in self._entry[3].items():
+            setattr(module, export, globals()[binding])
+        return module
 
     def exec_module(self, module):
         init = self._entry[0]
-        if init is not None:
+        if init is None:
+            return
+        try:
             globals()[init](module)
+        except BaseException:
+            module.__initializing__ = False
+            raise
 class _CriboPreservedFinder:
 
     def __init__(self):
         self._targets = {}
 
-    def register(self, name, init, namespace, is_package):
-        self._targets[name] = init, namespace, is_package
+    def register(self, name, init, namespace, is_package, exports=None):
+        self._targets[name] = init, namespace, is_package, exports or {}
 
     def find_spec(self, name, path=None, target=None):
         entry = self._targets.get(name)
@@ -59,6 +70,14 @@ _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('services.auth.manager', '_cribo_init___cribo_6ccb3a_services_auth_manager', 'services_auth_manager', False)
 _cribo_finder.register('services.auth', None, 'services_auth', True)
 _cribo_finder.register('services', None, 'services', True)
+_cribo_finder.register('core.utils', None, 'core_utils', True)
+_cribo_finder.register('core', None, 'core', True)
+_cribo_finder.register('models', None, 'models', True)
+_cribo_finder.register('core.database', None, 'core_database', True)
+_cribo_finder.register('core.utils.helpers', None, None, False, {'Logger': 'Logger_3'})
+_cribo_finder.register('models.user', None, None, False, {'Logger': 'Logger_2', 'User': 'User_2'})
+_cribo_finder.register('core.database.connection', None, None, False, {'Connection': 'Connection_5'})
+_cribo_finder.register('models.base', None, None, False, {'BaseModel': 'BaseModel', 'Logger': 'Logger_1'})
 core = _cribo.types.SimpleNamespace(__name__='core')
 core_database = _cribo.types.SimpleNamespace(__name__='core.database')
 core.database = core_database

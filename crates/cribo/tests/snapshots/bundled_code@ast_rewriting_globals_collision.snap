@@ -34,19 +34,30 @@ class _CriboPreservedLoader:
         self._entry = entry
 
     def create_module(self, spec):
-        return globals()[self._entry[1]]
+        namespace = self._entry[1]
+        if namespace is not None:
+            return globals()[namespace]
+        module = _cribo.types.SimpleNamespace(__name__=spec.name)
+        for export, binding in self._entry[3].items():
+            setattr(module, export, globals()[binding])
+        return module
 
     def exec_module(self, module):
         init = self._entry[0]
-        if init is not None:
+        if init is None:
+            return
+        try:
             globals()[init](module)
+        except BaseException:
+            module.__initializing__ = False
+            raise
 class _CriboPreservedFinder:
 
     def __init__(self):
         self._targets = {}
 
-    def register(self, name, init, namespace, is_package):
-        self._targets[name] = init, namespace, is_package
+    def register(self, name, init, namespace, is_package, exports=None):
+        self._targets[name] = init, namespace, is_package, exports or {}
 
     def find_spec(self, name, path=None, target=None):
         entry = self._targets.get(name)
@@ -66,6 +77,7 @@ _cribo_finder.register('core.utils', '_cribo_init___cribo_e52b1d_core_utils', 'c
 _cribo_finder.register('core.database', '_cribo_init___cribo_b7b3e3_core_database', 'core_database', True)
 _cribo_finder.register('core', '_cribo_init___cribo_0ac752_core', 'core', True)
 _cribo_finder.register('core.database.connection', '_cribo_init___cribo_df9c8d_core_database_connection', 'core_database_connection', False)
+_cribo_finder.register('core.utils.helpers', None, None, False, {'Logger': 'Logger_6'})
 core_utils_helpers = _cribo.types.SimpleNamespace(__name__='core.utils.helpers', __doc__='Core utility helpers module - NO external dependencies to avoid circular imports')
 core = _cribo.types.SimpleNamespace(__name__='core', __initializing__=False, __initialized__=False, __path__=[])
 core_utils = _cribo.types.SimpleNamespace(__name__='core.utils', __initializing__=False, __initialized__=False, __path__=[])

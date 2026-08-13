@@ -18,9 +18,16 @@
 //! environments bundles actually target — nothing else provides the bundled
 //! names and the finder serves them.
 //!
-//! Registrations store the init-function and namespace-variable NAMES and the
-//! loader resolves them through `globals()` at import time, so the finder and
-//! its registrations can be emitted before the definitions they refer to.
+//! Three registration forms exist:
+//! - wrapper modules: init-function plus namespace-variable NAMES, resolved
+//!   through `globals()` at import time (registrations may precede the
+//!   definitions they refer to); the loader resets the wrapper state when the
+//!   init fails so a retried import re-executes the body, like Python
+//! - inlined modules with classes: an EXPORTS map from original attribute
+//!   names to bundle-global binding names; the loader builds a namespace on
+//!   demand exposing the very same objects (pickle identity)
+//! - inlined ancestor packages: a namespace-variable name only; their code
+//!   already ran at bundle load
 
 use ruff_python_ast::Stmt;
 
@@ -35,20 +42,31 @@ class _CriboPreservedLoader:
         self._entry = entry
 
     def create_module(self, spec):
-        return globals()[self._entry[1]]
+        namespace = self._entry[1]
+        if namespace is not None:
+            return globals()[namespace]
+        module = _cribo.types.SimpleNamespace(__name__=spec.name)
+        for export, binding in self._entry[3].items():
+            setattr(module, export, globals()[binding])
+        return module
 
     def exec_module(self, module):
         init = self._entry[0]
-        if init is not None:
+        if init is None:
+            return
+        try:
             globals()[init](module)
+        except BaseException:
+            module.__initializing__ = False
+            raise
 
 
 class _CriboPreservedFinder:
     def __init__(self):
         self._targets = {}
 
-    def register(self, name, init, namespace, is_package):
-        self._targets[name] = (init, namespace, is_package)
+    def register(self, name, init, namespace, is_package, exports=None):
+        self._targets[name] = (init, namespace, is_package, exports or {})
 
     def find_spec(self, name, path=None, target=None):
         entry = self._targets.get(name)
@@ -67,7 +85,7 @@ _cribo_finder = _CriboPreservedFinder()
 "#;
 
 /// Generate the finder class, loader class, instance, and `sys.meta_path`
-/// registration. Emitted once, only when preserved import targets exist.
+/// registration. Emitted once, only when bundled modules are registered.
 pub(crate) fn generate_preserved_import_finder() -> Vec<Stmt> {
     use cow_utils::CowUtils;
 
@@ -82,8 +100,9 @@ pub(crate) fn generate_preserved_import_finder() -> Vec<Stmt> {
 /// loader, so registrations may precede the definitions they refer to.
 ///
 /// `init_function_name` is `None` for modules without an init function
-/// (inlined ancestors of a preserved target): their code already ran at bundle
-/// load, so the loader only needs to hand their namespace to the machinery.
+/// (inlined ancestors of a registered module): their code already ran at
+/// bundle load, so the loader only needs to hand their namespace to the
+/// machinery.
 pub(crate) fn generate_preserved_target_registration(
     module_name: &str,
     init_function_name: Option<&str>,
@@ -105,6 +124,51 @@ pub(crate) fn generate_preserved_target_registration(
             init_function_name.map_or_else(expressions::none_literal, expressions::string_literal),
             expressions::string_literal(namespace_variable),
             expressions::bool_literal(is_package),
+        ],
+        vec![],
+    ))
+}
+
+/// Generate `_cribo_finder.register("name", None, None, is_package,
+/// {"Export": "bundle_binding", ...})` for an INLINED module: the loader
+/// builds a namespace on demand exposing the same top-level objects (class
+/// identity for pickle and friends), since inlined code has no init function
+/// or eager namespace object.
+pub(crate) fn generate_inlined_module_registration(
+    module_name: &str,
+    exports: &[(String, String)],
+    is_package: bool,
+) -> Stmt {
+    use ruff_python_ast::{AtomicNodeIndex, DictItem, Expr, ExprContext, ExprDict};
+    use ruff_text_size::TextRange;
+
+    use super::{expressions, statements};
+
+    let items = exports
+        .iter()
+        .map(|(export, binding)| DictItem {
+            key: Some(expressions::string_literal(export)),
+            value: expressions::string_literal(binding),
+        })
+        .collect();
+    let exports_dict = Expr::Dict(ExprDict {
+        node_index: AtomicNodeIndex::NONE,
+        range: TextRange::default(),
+        items,
+    });
+
+    statements::expr(expressions::call(
+        expressions::attribute(
+            expressions::name("_cribo_finder", ExprContext::Load),
+            "register",
+            ExprContext::Load,
+        ),
+        vec![
+            expressions::string_literal(module_name),
+            expressions::none_literal(),
+            expressions::none_literal(),
+            expressions::bool_literal(is_package),
+            exports_dict,
         ],
         vec![],
     ))

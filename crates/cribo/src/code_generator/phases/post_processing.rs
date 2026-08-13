@@ -47,7 +47,7 @@ impl PostProcessingPhase {
         // Generate the meta-path finder serving bundled modules to REAL runtime
         // imports; it resolves registrations lazily through globals(), so it can
         // ride along right after the proxy prelude (which binds the `_sys` alias)
-        proxy_statements.extend(Self::generate_module_finder_statements(bundler));
+        proxy_statements.extend(Self::generate_module_finder_statements(bundler, final_body));
 
         // Generate package child aliases
         let alias_statements = Self::generate_package_child_aliases(bundler, final_body);
@@ -125,7 +125,7 @@ impl PostProcessingPhase {
     /// Registration is lazy (`find_spec` consults it per import), so unlike eager
     /// `sys.modules` registration it cannot shadow installed distributions that
     /// are never imported under a bundled name.
-    fn generate_module_finder_statements(bundler: &Bundler<'_>) -> Vec<Stmt> {
+    fn generate_module_finder_statements(bundler: &Bundler<'_>, final_body: &[Stmt]) -> Vec<Stmt> {
         use crate::code_generator::module_registry::sanitize_module_name_for_identifier;
 
         // Every wrapper module (with an init function) is registered under its
@@ -135,16 +135,28 @@ impl PostProcessingPhase {
             .keys()
             .filter_map(|module_id| bundler.resolver.get_module_name(*module_id))
             .collect();
+        // INLINED modules that define classes are registered too: the inliner
+        // stamps `X.__module__ = "models"` (and `__name__`/`__qualname__` for
+        // renamed classes), so external consumers resolving classes by identity
+        // (pickle) import that original name — harvest the stamps to expose the
+        // same class objects through an on-demand namespace
+        let inlined_exports = Self::harvest_inlined_class_exports(bundler, final_body, &names);
         // Plus every bundled ancestor package: the machinery imports parents
         // before dotted targets (inlined ancestors register without an init)
-        for name in names.clone() {
+        let mut ancestor_names: FxIndexSet<String> = FxIndexSet::default();
+        for name in names.iter().chain(inlined_exports.keys()) {
             let mut boundary = name.len();
             while let Some(dot) = name[..boundary].rfind('.') {
                 boundary = dot;
-                names.insert(name[..boundary].to_owned());
+                ancestor_names.insert(name[..boundary].to_owned());
             }
         }
-        if names.is_empty() {
+        for ancestor in ancestor_names {
+            if !inlined_exports.contains_key(&ancestor) {
+                names.insert(ancestor);
+            }
+        }
+        if names.is_empty() && inlined_exports.is_empty() {
             return Vec::new();
         }
 
@@ -172,7 +184,82 @@ impl PostProcessingPhase {
                 ),
             );
         }
+        for (name, exports) in &inlined_exports {
+            let Some(module_id) = bundler.get_module_id(name) else {
+                continue;
+            };
+            let is_package = bundler.resolver.is_package_init(module_id)
+                || bundler.resolver.is_namespace_package(module_id);
+            log::debug!(
+                "Registering inlined class module '{name}' with the meta-path finder \
+                 (exports={exports:?}, is_package={is_package})"
+            );
+            statements.push(
+                crate::ast_builder::preserved_finder::generate_inlined_module_registration(
+                    name, exports, is_package,
+                ),
+            );
+        }
         statements
+    }
+
+    /// Harvest inlined class stamps from the final bundle body: top-level
+    /// `X.__module__ = "models"` assignments name the original module, and a
+    /// following `X.__name__ = "Item"` records the original export name for
+    /// renamed classes. Returns module name -> [(export name, bundle binding)]
+    /// for bundled modules that are not wrapper-registered.
+    fn harvest_inlined_class_exports(
+        bundler: &Bundler<'_>,
+        final_body: &[Stmt],
+        wrapper_names: &FxIndexSet<String>,
+    ) -> FxIndexMap<String, Vec<(String, String)>> {
+        use ruff_python_ast::Expr;
+
+        // binding -> original module name (from __module__ stamps)
+        let mut binding_modules: FxIndexMap<String, String> = FxIndexMap::default();
+        // binding -> original export name (from __name__ stamps on renamed classes)
+        let mut binding_exports: FxIndexMap<String, String> = FxIndexMap::default();
+        for stmt in final_body {
+            let Stmt::Assign(assign) = stmt else {
+                continue;
+            };
+            let [Expr::Attribute(attribute)] = assign.targets.as_slice() else {
+                continue;
+            };
+            let Expr::Name(binding) = &*attribute.value else {
+                continue;
+            };
+            let Expr::StringLiteral(value) = &*assign.value else {
+                continue;
+            };
+            match attribute.attr.as_str() {
+                "__module__" => {
+                    binding_modules.insert(binding.id.to_string(), value.value.to_str().to_owned());
+                }
+                "__name__" => {
+                    binding_exports.insert(binding.id.to_string(), value.value.to_str().to_owned());
+                }
+                _ => {}
+            }
+        }
+
+        let mut exports_by_module: FxIndexMap<String, Vec<(String, String)>> =
+            FxIndexMap::default();
+        for (binding, module_name) in binding_modules {
+            if wrapper_names.contains(&module_name) || bundler.get_module_id(&module_name).is_none()
+            {
+                continue;
+            }
+            let export = binding_exports
+                .get(&binding)
+                .cloned()
+                .unwrap_or_else(|| binding.clone());
+            exports_by_module
+                .entry(module_name)
+                .or_default()
+                .push((export, binding));
+        }
+        exports_by_module
     }
 
     /// Generate package child alias statements

@@ -34,19 +34,30 @@ class _CriboPreservedLoader:
         self._entry = entry
 
     def create_module(self, spec):
-        return globals()[self._entry[1]]
+        namespace = self._entry[1]
+        if namespace is not None:
+            return globals()[namespace]
+        module = _cribo.types.SimpleNamespace(__name__=spec.name)
+        for export, binding in self._entry[3].items():
+            setattr(module, export, globals()[binding])
+        return module
 
     def exec_module(self, module):
         init = self._entry[0]
-        if init is not None:
+        if init is None:
+            return
+        try:
             globals()[init](module)
+        except BaseException:
+            module.__initializing__ = False
+            raise
 class _CriboPreservedFinder:
 
     def __init__(self):
         self._targets = {}
 
-    def register(self, name, init, namespace, is_package):
-        self._targets[name] = init, namespace, is_package
+    def register(self, name, init, namespace, is_package, exports=None):
+        self._targets[name] = init, namespace, is_package, exports or {}
 
     def find_spec(self, name, path=None, target=None):
         entry = self._targets.get(name)
@@ -58,6 +69,7 @@ _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('pkg', '_cribo_init___cribo_f70f3a_pkg', 'pkg', True)
 _cribo_finder.register('pkg.core', '_cribo_init___cribo_1a829c_pkg_core', 'pkg_core', False)
+_cribo_finder.register('pkg.compat', None, None, False, {'BaseClass': 'BaseClass'})
 pkg_compat = _cribo.types.SimpleNamespace(__name__='pkg.compat', __doc__='Compat module.')
 pkg = _cribo.types.SimpleNamespace(__name__='pkg', __initializing__=False, __initialized__=False, __path__=[])
 pkg.compat = pkg_compat
