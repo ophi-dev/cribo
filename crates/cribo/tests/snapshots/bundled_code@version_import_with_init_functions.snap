@@ -81,6 +81,8 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('mypackage', None, 'mypackage', True)
+_cribo_finder.register('mypackage.utils', None, None, False, {'get_user_agent': 'get_user_agent'})
 mypackage___version__ = _cribo.types.SimpleNamespace(__name__='mypackage.__version__', __doc__='Version information for the package.')
 mypackage = _cribo.types.SimpleNamespace(__name__='mypackage', __initializing__=False, __initialized__=False, __path__=[])
 mypackage.__version__ = mypackage___version__
@@ -95,6 +97,7 @@ mypackage.utils = mypackage_utils
 def get_user_agent():
     """Return user agent string with version."""
     return f"mypackage/{__version__}"
+get_user_agent.__module__ = 'mypackage.utils'
 mypackage_utils.get_user_agent = get_user_agent
 """Test fixture for version imports with complex module initialization."""
 print(f"User agent: {mypackage.utils.get_user_agent()}")

@@ -81,8 +81,10 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('utils', None, 'utils', True)
 _cribo_finder.register('models', None, 'models', True)
 _cribo_finder.register('services', None, 'services', True)
+_cribo_finder.register('utils.helpers', None, None, False, {'format_message': 'format_message', 'calculate_total': 'calculate_total'})
 _cribo_finder.register('models.user', None, None, False, {'UserRole': 'UserRole', 'User': 'User'})
 _cribo_finder.register('services.database', None, None, False, {'DatabaseConnection': 'DatabaseConnection', 'DatabaseService': 'DatabaseService'})
 utils_helpers = _cribo.types.SimpleNamespace(__name__='utils.helpers', __doc__="\nUtility helper functions for the happy path test.\nThese functions have unique names that shouldn't conflict.\n")
@@ -92,9 +94,11 @@ utils.helpers = utils_helpers
 def format_message(greeting: str, name: str) -> str:
     """Format a greeting message."""
     return f"{greeting}, {name}!"
+format_message.__module__ = 'utils.helpers'
 def calculate_total(values: _cribo.typing.List[int]) -> int:
     """Calculate the sum of a list of integers."""
     return sum(values)
+calculate_total.__module__ = 'utils.helpers'
 utils_helpers.calculate_total = calculate_total
 utils_helpers.format_message = format_message
 models_user = _cribo.types.SimpleNamespace(__name__='models.user', __doc__='\nUser model with role enumeration.\nNo naming conflicts with other modules.\n')

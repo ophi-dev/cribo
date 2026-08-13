@@ -464,9 +464,12 @@ pub(crate) fn imported_module_dunder_read_targets(
 
     use crate::types::{FxIndexMap, FxIndexSet};
 
-    /// Collect import bindings (name -> module) over the whole body.
+    /// Collect import bindings (name -> module) over the whole body,
+    /// including assignment-derived aliases (`alias = provider`): a rebound
+    /// module object serves the same dunder reads as the import binding.
     struct ImportBindingCollector {
         bindings: FxIndexMap<String, String>,
+        changed: bool,
     }
 
     impl<'ast> Visitor<'ast> for ImportBindingCollector {
@@ -476,12 +479,10 @@ pub(crate) fn imported_module_dunder_read_targets(
                     for alias in &import_stmt.names {
                         let module_name = alias.name.as_str();
                         if let Some(asname) = &alias.asname {
-                            self.bindings
-                                .insert(asname.as_str().to_owned(), module_name.to_owned());
+                            self.insert(asname.as_str(), module_name.to_owned());
                         } else {
                             let top_level = module_name.split('.').next().unwrap_or(module_name);
-                            self.bindings
-                                .insert(top_level.to_owned(), top_level.to_owned());
+                            self.insert(top_level, top_level.to_owned());
                         }
                     }
                 }
@@ -496,16 +497,45 @@ pub(crate) fn imported_module_dunder_read_targets(
                                 .as_ref()
                                 .map_or_else(|| alias.name.as_str(), |name| name.as_str());
                             // `from pkg import sub` may bind the submodule
-                            self.bindings.insert(
-                                bound_name.to_owned(),
-                                format!("{module}.{}", alias.name.as_str()),
-                            );
+                            self.insert(bound_name, format!("{module}.{}", alias.name.as_str()));
                         }
+                    }
+                }
+                // `alias = provider` rebinds the module object under a new
+                // name; conservative over-approximation ignores control flow
+                // and later reassignments
+                Stmt::Assign(assign) => {
+                    if let Expr::Name(value) = &*assign.value
+                        && let Some(module) = self.bindings.get(value.id.as_str()).cloned()
+                    {
+                        for target in &assign.targets {
+                            if let Expr::Name(target_name) = target {
+                                self.insert(target_name.id.as_str(), module.clone());
+                            }
+                        }
+                    }
+                }
+                Stmt::AnnAssign(ann_assign) => {
+                    if let Some(value) = &ann_assign.value
+                        && let Expr::Name(value_name) = &**value
+                        && let Some(module) = self.bindings.get(value_name.id.as_str()).cloned()
+                        && let Expr::Name(target_name) = &*ann_assign.target
+                    {
+                        self.insert(target_name.id.as_str(), module);
                     }
                 }
                 _ => {}
             }
             walk_stmt(self, stmt);
+        }
+    }
+
+    impl ImportBindingCollector {
+        fn insert(&mut self, name: &str, module: String) {
+            if self.bindings.get(name) != Some(&module) {
+                self.bindings.insert(name.to_owned(), module);
+                self.changed = true;
+            }
         }
     }
 
@@ -572,9 +602,18 @@ pub(crate) fn imported_module_dunder_read_targets(
 
     let mut binding_collector = ImportBindingCollector {
         bindings: FxIndexMap::default(),
+        changed: false,
     };
-    for stmt in body {
-        binding_collector.visit_stmt(stmt);
+    // Alias chains (`a = provider; b = a`) resolve iteratively; textual order
+    // does not bound the chain depth, so run to fixpoint (bounded for safety)
+    for _ in 0..16 {
+        binding_collector.changed = false;
+        for stmt in body {
+            binding_collector.visit_stmt(stmt);
+        }
+        if !binding_collector.changed {
+            break;
+        }
     }
     let mut collector = DunderReadCollector {
         observed: FxIndexSet::default(),

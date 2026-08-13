@@ -81,6 +81,8 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('utils', None, 'utils', True)
+_cribo_finder.register('utils.calculator', None, None, False, {'add': 'add', 'multiply': 'multiply'})
 utils = _cribo.types.SimpleNamespace(__name__='utils')
 utils_calculator = _cribo.types.SimpleNamespace(__name__='utils.calculator', __doc__='Calculator module with simple operations')
 utils.calculator = utils_calculator
@@ -88,8 +90,10 @@ utils.calculator = utils_calculator
 description = "A simple calculator module"
 def add(a, b):
     return a + b
+add.__module__ = 'utils.calculator'
 def multiply(a, b):
     return a * b
+multiply.__module__ = 'utils.calculator'
 utils_calculator.add = add
 utils_calculator.description = description
 utils_calculator.multiply = multiply

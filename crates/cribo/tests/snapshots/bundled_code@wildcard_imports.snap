@@ -82,14 +82,15 @@ class _CriboPreservedFinder:
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('with_side_effects', '_cribo_init___cribo_9a9871_with_side_effects', 'with_side_effects', False)
-_cribo_finder.register('explicit_all', None, None, False, {'SafeClass': 'SafeClass'})
-_cribo_finder.register('clash_module_a', None, None, False, {'SharedClass': 'SharedClass_2'})
-_cribo_finder.register('clash_module_b', None, None, False, {'SharedClass': 'SharedClass_1'})
+_cribo_finder.register('explicit_all', None, None, False, {'safe_function': 'safe_function', 'SafeClass': 'SafeClass'})
+_cribo_finder.register('clash_module_a', None, None, False, {'shared_function': 'shared_function_2', 'SharedClass': 'SharedClass_2', 'unique_a_function': 'unique_a_function'})
+_cribo_finder.register('clash_module_b', None, None, False, {'shared_function': 'shared_function_1', 'SharedClass': 'SharedClass_1', 'unique_b_function': 'unique_b_function'})
 explicit_all = _cribo.types.SimpleNamespace(__name__='explicit_all', __doc__='Module with no side-effects and explicit __all__.')
 """Module with no side-effects and explicit __all__."""
 def safe_function():
     """A function that will be exported via __all__."""
     return "safe_function_result"
+safe_function.__module__ = 'explicit_all'
 class SafeClass:
     """A class that will be exported via __all__."""
 
@@ -172,6 +173,9 @@ clash_module_a = _cribo.types.SimpleNamespace(__name__='clash_module_a', __doc__
 def shared_function_2():
     """Function with same name in multiple modules."""
     return "shared_function_from_module_a"
+shared_function_2.__module__ = 'clash_module_a'
+shared_function_2.__name__ = 'shared_function'
+shared_function_2.__qualname__ = 'shared_function'
 class SharedClass_2:
     """Class with same name in multiple modules."""
 
@@ -184,6 +188,7 @@ SHARED_CONSTANT_2 = "SHARED_FROM_A"
 def unique_a_function():
     """Function unique to module A."""
     return "unique_a_result"
+unique_a_function.__module__ = 'clash_module_a'
 clash_module_a.shared_function = shared_function_2
 clash_module_a.SharedClass = SharedClass_2
 clash_module_a.SHARED_CONSTANT = SHARED_CONSTANT_2
@@ -193,6 +198,9 @@ clash_module_b = _cribo.types.SimpleNamespace(__name__='clash_module_b', __doc__
 def shared_function_1():
     """Function with same name in multiple modules."""
     return "shared_function_from_module_b"
+shared_function_1.__module__ = 'clash_module_b'
+shared_function_1.__name__ = 'shared_function'
+shared_function_1.__qualname__ = 'shared_function'
 class SharedClass_1:
     """Class with same name in multiple modules."""
 
@@ -205,6 +213,7 @@ SHARED_CONSTANT_1 = "SHARED_FROM_B"
 def unique_b_function():
     """Function unique to module B."""
     return "unique_b_result"
+unique_b_function.__module__ = 'clash_module_b'
 clash_module_b.shared_function = shared_function_1
 clash_module_b.SharedClass = SharedClass_1
 clash_module_b.SHARED_CONSTANT = SHARED_CONSTANT_1

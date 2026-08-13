@@ -82,7 +82,7 @@ class _CriboPreservedFinder:
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('mypkg', '_cribo_init___cribo_4c9561_mypkg', 'mypkg', True)
-_cribo_finder.register('mypkg._internal', None, None, False, {'MyClass': 'MyClass'})
+_cribo_finder.register('mypkg._internal', None, None, False, {'MyClass': 'MyClass', 'my_func': 'my_func'})
 mypkg__internal = _cribo.types.SimpleNamespace(__name__='mypkg._internal')
 mypkg = _cribo.types.SimpleNamespace(__name__='mypkg', __initializing__=False, __initialized__=False, __path__=[])
 mypkg._internal = mypkg__internal
@@ -93,6 +93,7 @@ class MyClass:
 MyClass.__module__ = 'mypkg._internal'
 def my_func():
     return "Hello from my_func"
+my_func.__module__ = 'mypkg._internal'
 mypkg__internal.MyClass = MyClass
 mypkg__internal.my_func = my_func
 def _cribo_init___cribo_4c9561_mypkg(self):

@@ -81,6 +81,7 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('pure_parent', None, None, True, {'describe': 'describe'})
 pure_child = _cribo.types.SimpleNamespace(__name__='pure_child')
 NAME = "pure_child"
 pure_child.NAME = NAME
@@ -88,5 +89,6 @@ pure_parent = _cribo.types.SimpleNamespace(__name__='pure_parent', __doc__='Bund
 """Bundled distribution that declares constrained external dependencies."""
 def describe():
     return f"parent bundling {NAME}"
+describe.__module__ = 'pure_parent'
 pure_parent.describe = describe
 print(pure_parent.describe())

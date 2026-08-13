@@ -82,6 +82,7 @@ class _CriboPreservedFinder:
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('logger', '_cribo_init___cribo_60bb0a_logger', 'logger', False)
+_cribo_finder.register('file_utils', None, None, False, {'get_current_directory': 'get_current_directory', 'get_mock_file_info': 'get_mock_file_info'})
 file_utils = _cribo.types.SimpleNamespace(__name__='file_utils', __doc__='File utilities module - no side effects, uses aliased stdlib imports.')
 """File utilities module - no side effects, uses aliased stdlib imports."""
 def get_current_directory() -> str:
@@ -89,12 +90,14 @@ def get_current_directory() -> str:
     fixed_path = "/home/user/project"
     path_obj = _cribo.pathlib.Path(fixed_path)
     return str(path_obj.name)
+get_current_directory.__module__ = 'file_utils'
 def get_mock_file_info() -> dict:
     """Get mock file information using aliased imports."""
     path_obj = _cribo.pathlib.Path("/home/user/test.txt")
     mod_time = _cribo.datetime.datetime.fromisoformat("2023-11-14T23:13:20")
     info = {"size": 1024, "name": "test.txt", "parent": "/home/user", "modified": mod_time.isoformat(), "exists": True, "is_absolute": True}
     return _cribo.json.loads(_cribo.json.dumps(info))
+get_mock_file_info.__module__ = 'file_utils'
 file_utils.get_current_directory = get_current_directory
 file_utils.get_mock_file_info = get_mock_file_info
 logger = _cribo.types.SimpleNamespace(__name__='logger', __initializing__=False, __initialized__=False)

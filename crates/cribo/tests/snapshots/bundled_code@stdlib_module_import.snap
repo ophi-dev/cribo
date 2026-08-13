@@ -81,6 +81,7 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('helper', None, None, False, {'process': 'process'})
 helper = _cribo.types.SimpleNamespace(__name__='helper', __doc__='Helper module that imports stdlib modules at module level.')
 """Helper module that imports stdlib modules at module level."""
 def process():
@@ -98,6 +99,7 @@ def process():
     lock = _cribo.threading.Lock()
     print("All modules used successfully")
     return True
+process.__module__ = 'helper'
 helper.process = process
 """Test case for stdlib module-level imports being incorrectly transformed."""
 helper.process()

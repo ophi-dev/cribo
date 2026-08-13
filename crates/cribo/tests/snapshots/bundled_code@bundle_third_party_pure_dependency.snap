@@ -81,6 +81,7 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('pure_helper', None, None, True, {'greet': 'greet'})
 pure_helper_messages = _cribo.types.SimpleNamespace(__name__='pure_helper.messages')
 pure_helper = _cribo.types.SimpleNamespace(__name__='pure_helper', __initializing__=False, __initialized__=False, __path__=[])
 pure_helper.messages = pure_helper_messages
@@ -89,6 +90,7 @@ pure_helper_messages.GREETING = GREETING
 """A pure-Python third-party dependency used by the bundling fixture."""
 def greet(name):
     return f"{GREETING}, {name}!"
+greet.__module__ = 'pure_helper'
 pure_helper.greet = greet
 print(greet("bundler"))
 messages = pure_helper.messages

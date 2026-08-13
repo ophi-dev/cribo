@@ -82,6 +82,7 @@ class _CriboPreservedFinder:
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('pkg', '_cribo_init___cribo_9c0ae3_pkg', 'pkg', True)
+_cribo_finder.register('pkg.submodule', None, None, False, {'create_object': 'create_object'})
 pkg_submodule = _cribo.types.SimpleNamespace(__name__='pkg.submodule')
 pkg = _cribo.types.SimpleNamespace(__name__='pkg', __initializing__=False, __initialized__=False, __path__=[])
 pkg.submodule = pkg_submodule
@@ -89,6 +90,7 @@ def create_object():
     """Factory function that imports from parent."""
     RealObject = _cribo_init___cribo_9c0ae3_pkg(globals()['pkg']).MyObject
     return pkg.MyObject()
+create_object.__module__ = 'pkg.submodule'
 pkg_submodule.create_object = create_object
 def _cribo_init___cribo_9c0ae3_pkg(self):
     if getattr(self, '__initialized__', False):

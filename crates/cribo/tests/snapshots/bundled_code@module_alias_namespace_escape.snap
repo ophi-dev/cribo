@@ -81,6 +81,8 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('package', None, 'package', True)
+_cribo_finder.register('package.helper', None, None, False, {'helper': 'helper'})
 package_helper = _cribo.types.SimpleNamespace(__name__='package.helper', __doc__='Simple helper module used through a module-object alias.')
 package = _cribo.types.SimpleNamespace(__name__='package', __initializing__=False, __initialized__=False, __path__=[])
 package.helper = package_helper
@@ -89,6 +91,7 @@ MESSAGE = "module namespace preserved"
 def helper():
     """Keep one callable export on the namespace for regression coverage."""
     return MESSAGE.upper()
+helper.__module__ = 'package.helper'
 package_helper.MESSAGE = MESSAGE
 package_helper.helper = helper
 """Package for module namespace tree-shaking coverage."""

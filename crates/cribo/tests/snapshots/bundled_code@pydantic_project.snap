@@ -83,6 +83,8 @@ _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('schemas.user', '_cribo_init___cribo_e6d2b7_schemas_user', 'schemas_user', False)
 _cribo_finder.register('schemas', None, 'schemas', True)
+_cribo_finder.register('utils', None, 'utils', True)
+_cribo_finder.register('utils.validation', None, None, False, {'validate_email': 'validate_email'})
 schemas_user = _cribo.types.SimpleNamespace(__name__='schemas.user', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('schemas.user', schemas_user)
 def _cribo_init___cribo_e6d2b7_schemas_user(self):
@@ -151,6 +153,7 @@ def validate_email(email: str) -> bool:
     """Simple email validation."""
     pattern = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
     return bool(_cribo.re.match(pattern, email))
+validate_email.__module__ = 'utils.validation'
 utils_validation.validate_email = validate_email
 """Utils package initialization."""
 """Pydantic test project entry point."""

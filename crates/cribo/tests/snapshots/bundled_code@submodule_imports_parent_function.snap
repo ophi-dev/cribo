@@ -82,7 +82,7 @@ class _CriboPreservedFinder:
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('pkg.submodule', '_cribo_init___cribo_dca395_pkg_submodule', 'pkg_submodule', False)
-_cribo_finder.register('pkg', None, 'pkg', True)
+_cribo_finder.register('pkg', None, None, True, {'get_base': 'get_base', 'get_result': 'get_result'})
 pkg_submodule = _cribo.types.SimpleNamespace(__name__='pkg.submodule', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('pkg.submodule', pkg_submodule)
 def _cribo_init___cribo_dca395_pkg_submodule(self):
@@ -114,11 +114,13 @@ pkg.submodule = pkg_submodule
 base_value = "base"
 def get_base():
     return base_value
+get_base.__module__ = 'pkg'
 def get_result():
     global pkg_submodule
     pkg_submodule = pkg_submodule.__init__(pkg_submodule)
     process = _cribo_init___cribo_dca395_pkg_submodule(globals()['pkg_submodule']).process
     return pkg.submodule.process()
+get_result.__module__ = 'pkg'
 pkg.base_value = base_value
 pkg.get_base = get_base
 pkg.get_result = get_result

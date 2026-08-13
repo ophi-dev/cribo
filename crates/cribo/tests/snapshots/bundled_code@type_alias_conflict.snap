@@ -81,8 +81,8 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
-_cribo_finder.register('first', None, None, False, {'Bound': 'Bound_2'})
-_cribo_finder.register('second', None, None, False, {'Bound': 'Bound_1'})
+_cribo_finder.register('first', None, None, False, {'Bound': 'Bound_2', 'alias_is_recursive': 'alias_is_recursive_2', 'alias_type_parameter_is_scoped': 'alias_type_parameter_is_scoped_2', 'alias_bound_is_renamed': 'alias_bound_is_renamed_2'})
+_cribo_finder.register('second', None, None, False, {'Bound': 'Bound_1', 'alias_is_recursive': 'alias_is_recursive_1', 'alias_type_parameter_is_scoped': 'alias_type_parameter_is_scoped_1', 'alias_bound_is_renamed': 'alias_bound_is_renamed_1'})
 first = _cribo.types.SimpleNamespace(__name__='first')
 type SharedAlias_2 = list[SharedAlias_2]
 T_2 = int
@@ -95,11 +95,20 @@ Bound_2.__qualname__ = 'Bound'
 type BoundedAlias_2[T: Bound_2] = T
 def alias_is_recursive_2():
     return SharedAlias_2.__value__.__args__[0] is SharedAlias_2
+alias_is_recursive_2.__module__ = 'first'
+alias_is_recursive_2.__name__ = 'alias_is_recursive'
+alias_is_recursive_2.__qualname__ = 'alias_is_recursive'
 def alias_type_parameter_is_scoped_2():
     parameter = ShadowedAlias_2.__type_params__[0]
     return ShadowedAlias_2.__value__.__args__[0] is parameter and T_2 is int
+alias_type_parameter_is_scoped_2.__module__ = 'first'
+alias_type_parameter_is_scoped_2.__name__ = 'alias_type_parameter_is_scoped'
+alias_type_parameter_is_scoped_2.__qualname__ = 'alias_type_parameter_is_scoped'
 def alias_bound_is_renamed_2():
     return BoundedAlias_2.__type_params__[0].__bound__ is Bound_2
+alias_bound_is_renamed_2.__module__ = 'first'
+alias_bound_is_renamed_2.__name__ = 'alias_bound_is_renamed'
+alias_bound_is_renamed_2.__qualname__ = 'alias_bound_is_renamed'
 first.Bound = Bound_2
 first.T = T_2
 first.alias_bound_is_renamed = alias_bound_is_renamed_2
@@ -117,11 +126,20 @@ Bound_1.__qualname__ = 'Bound'
 type BoundedAlias_1[T: Bound_1] = T
 def alias_is_recursive_1():
     return SharedAlias_1.__value__.__args__[0] is SharedAlias_1
+alias_is_recursive_1.__module__ = 'second'
+alias_is_recursive_1.__name__ = 'alias_is_recursive'
+alias_is_recursive_1.__qualname__ = 'alias_is_recursive'
 def alias_type_parameter_is_scoped_1():
     parameter = ShadowedAlias_1.__type_params__[0]
     return ShadowedAlias_1.__value__.__args__[0] is parameter and T_1 is str
+alias_type_parameter_is_scoped_1.__module__ = 'second'
+alias_type_parameter_is_scoped_1.__name__ = 'alias_type_parameter_is_scoped'
+alias_type_parameter_is_scoped_1.__qualname__ = 'alias_type_parameter_is_scoped'
 def alias_bound_is_renamed_1():
     return BoundedAlias_1.__type_params__[0].__bound__ is Bound_1
+alias_bound_is_renamed_1.__module__ = 'second'
+alias_bound_is_renamed_1.__name__ = 'alias_bound_is_renamed'
+alias_bound_is_renamed_1.__qualname__ = 'alias_bound_is_renamed'
 second.Bound = Bound_1
 second.T = T_1
 second.alias_bound_is_renamed = alias_bound_is_renamed_1

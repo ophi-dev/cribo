@@ -81,10 +81,15 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('simple_module', None, None, False, {'public_func': 'public_func'})
+_cribo_finder.register('nested_package.utils', None, None, False, {'helper_func': 'helper_func'})
+_cribo_finder.register('nested_package.submodule', None, None, False, {'sub_function': 'sub_function'})
+_cribo_finder.register('nested_package', None, None, True, {'exported_from_init': 'exported_from_init'})
 simple_module = _cribo.types.SimpleNamespace(__name__='simple_module')
 def public_func():
     """A public function that should be exported."""
     return "Hello from public_func"
+public_func.__module__ = 'simple_module'
 CONSTANT = 42
 simple_module.__all__ = ['public_func', 'CONSTANT']
 simple_module.public_func = public_func
@@ -95,12 +100,14 @@ nested_package.utils = nested_package_utils
 def helper_func():
     """Helper function used by other modules"""
     return "helper result"
+helper_func.__module__ = 'nested_package.utils'
 nested_package_utils.helper_func = helper_func
 nested_package_submodule = _cribo.types.SimpleNamespace(__name__='nested_package.submodule')
 nested_package.submodule = nested_package_submodule
 def sub_function():
     """Function from submodule"""
     return "Hello from submodule"
+sub_function.__module__ = 'nested_package.submodule'
 SUB_CONSTANT = "submodule_value"
 nested_package_submodule.__all__ = ['sub_function', 'SUB_CONSTANT']
 nested_package_submodule.sub_function = sub_function
@@ -108,6 +115,7 @@ nested_package_submodule.SUB_CONSTANT = SUB_CONSTANT
 def exported_from_init():
     """Function exported from package __init__.py"""
     return f"From init, using helper: {helper_func()}"
+exported_from_init.__module__ = 'nested_package'
 nested_package.exported_from_init = exported_from_init
 conflict_module = _cribo.types.SimpleNamespace(__name__='conflict_module')
 message_1 = "from conflict_module"

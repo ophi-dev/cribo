@@ -88,10 +88,10 @@ _cribo_finder.register('core.utils', None, 'core_utils', True)
 _cribo_finder.register('core', None, 'core', True)
 _cribo_finder.register('models', None, 'models', True)
 _cribo_finder.register('core.database', None, 'core_database', True)
-_cribo_finder.register('core.utils.helpers', None, None, False, {'Logger': 'Logger_3'})
-_cribo_finder.register('models.user', None, None, False, {'Logger': 'Logger_2', 'User': 'User_2'})
-_cribo_finder.register('core.database.connection', None, None, False, {'Connection': 'Connection_5'})
-_cribo_finder.register('models.base', None, None, False, {'BaseModel': 'BaseModel', 'Logger': 'Logger_1'})
+_cribo_finder.register('core.utils.helpers', None, None, False, {'Logger': 'Logger_3', 'process': 'process_5', 'validate': 'validate_5'})
+_cribo_finder.register('models.user', None, None, False, {'Logger': 'Logger_2', 'User': 'User_2', 'process_user': 'process_user'})
+_cribo_finder.register('core.database.connection', None, None, False, {'Connection': 'Connection_5', 'process': 'process_6'})
+_cribo_finder.register('models.base', None, None, False, {'BaseModel': 'BaseModel', 'initialize': 'initialize', 'validate': 'validate_2', 'process': 'process_2', 'Logger': 'Logger_1', 'connect': 'connect_1', 'shadow_test': 'shadow_test'})
 core = _cribo.types.SimpleNamespace(__name__='core')
 core_database = _cribo.types.SimpleNamespace(__name__='core.database')
 core.database = core_database
@@ -134,6 +134,9 @@ def process_5(data: _cribo.typing.Any) -> str:
         processed = str(data)
     result_5 + 1
     return f"util_processed: {processed}"
+process_5.__module__ = 'core.utils.helpers'
+process_5.__name__ = 'process'
+process_5.__qualname__ = 'process'
 def validate_5(data: _cribo.typing.Any) -> bool:
     """Utility validate function - conflicts with validate in other modules"""
     if data is None:
@@ -145,6 +148,9 @@ def validate_5(data: _cribo.typing.Any) -> bool:
     elif isinstance(data, (int, float)):
         return data >= 0
     return True
+validate_5.__module__ = 'core.utils.helpers'
+validate_5.__name__ = 'validate'
+validate_5.__qualname__ = 'validate'
 core_utils_helpers.Logger = Logger_3
 core_utils_helpers.User = User_4
 core_utils_helpers.process = process_5
@@ -243,6 +249,7 @@ def process_user(data: _cribo.typing.Any) -> str:
         processed = "model_user_invalid_data"
     result_3["last_process"] = processed
     return processed
+process_user.__module__ = 'models.user'
 models_user.Logger = Logger_2
 models_user.User = User_2
 models_user.process_user = process_user
@@ -278,6 +285,9 @@ def process_6(data):
     processed = {"db_process": True, "data": validated, "user_processing": user_result, "timestamp": "2024-01-01"}
     result_6.append(processed)
     return f"db_processed: {data}"
+process_6.__module__ = 'core.database.connection'
+process_6.__name__ = 'process'
+process_6.__qualname__ = 'process'
 core_database_connection.Connection = Connection_5
 core_database_connection.process = process_6
 core_database_connection.result = result_6
@@ -324,9 +334,13 @@ def initialize() -> str:
     logger._log_process("Base module initialized")
     new_result = f"module_init: {init_result}"
     return new_result
+initialize.__module__ = 'models.base'
 def validate_2(data: _cribo.typing.Any) -> bool:
     """Base validate function - conflicts everywhere"""
     return core_validate(data) and data != "invalid"
+validate_2.__module__ = 'models.base'
+validate_2.__name__ = 'validate'
+validate_2.__qualname__ = 'validate'
 def process_2(data: _cribo.typing.Any) -> str:
     """Base process function - conflicts everywhere"""
     validated = validate_2(data)
@@ -336,6 +350,9 @@ def process_2(data: _cribo.typing.Any) -> str:
         processed = "base_module_invalid"
     new_result = f"base_last_process: {processed}"
     return processed
+process_2.__module__ = 'models.base'
+process_2.__name__ = 'process'
+process_2.__qualname__ = 'process'
 class Logger_1:
     """Base Logger class - yet another Logger conflict"""
 
@@ -356,6 +373,9 @@ Logger_1.__qualname__ = 'Logger'
 def connect_1() -> str:
     """Base connect function"""
     return "base_connected"
+connect_1.__module__ = 'models.base'
+connect_1.__name__ = 'connect'
+connect_1.__qualname__ = 'connect'
 def shadow_test(validate: _cribo.typing.Any=None, process: _cribo.typing.Any=None, Logger: _cribo.typing.Any=None, result: _cribo.typing.Any=None, initialize: _cribo.typing.Any=None) -> _cribo.typing.Dict[str, _cribo.typing.Any]:
     """Function that shadows all major conflict names with parameters"""
     shadows = {"validate_param": validate_2, "process_param": process_2, "Logger_param": Logger_1, "result_param": result_2, "initialize_param": initialize}
@@ -367,6 +387,7 @@ def shadow_test(validate: _cribo.typing.Any=None, process: _cribo.typing.Any=Non
     logger = Logger_class("shadow_test") if Logger_class else None
     shadows.update({"validate_result": validation_result, "process_result": process_result, "logger_source": logger.source if logger else None})
     return shadows
+shadow_test.__module__ = 'models.base'
 models_base.BaseModel = BaseModel
 models_base.Logger = Logger_1
 models_base.connect = connect_1

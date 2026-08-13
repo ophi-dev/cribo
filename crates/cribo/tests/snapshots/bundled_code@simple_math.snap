@@ -81,19 +81,24 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('calculator', None, None, False, {'add': 'add', 'multiply': 'multiply'})
+_cribo_finder.register('utils', None, None, False, {'format_result': 'format_result'})
 calculator = _cribo.types.SimpleNamespace(__name__='calculator')
 def add(a, b):
     """Add two numbers."""
     return a + b
+add.__module__ = 'calculator'
 def multiply(a, b):
     """Multiply two numbers."""
     return a * b
+multiply.__module__ = 'calculator'
 calculator.add = add
 calculator.multiply = multiply
 utils = _cribo.types.SimpleNamespace(__name__='utils')
 def format_result(operation, result):
     """Format operation result for display."""
     return f"{operation}: {result}"
+format_result.__module__ = 'utils'
 utils.format_result = format_result
 def main():
     result1 = add(5, 3)

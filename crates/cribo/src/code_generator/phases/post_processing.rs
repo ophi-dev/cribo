@@ -203,11 +203,12 @@ impl PostProcessingPhase {
         statements
     }
 
-    /// Harvest inlined class stamps from the final bundle body: top-level
-    /// `X.__module__ = "models"` assignments name the original module, and a
-    /// following `X.__name__ = "Item"` records the original export name for
-    /// renamed classes. Returns module name -> [(export name, bundle binding)]
-    /// for bundled modules that are not wrapper-registered.
+    /// Harvest inlined definition stamps (classes AND functions) from the
+    /// final bundle body: top-level `X.__module__ = "models"` assignments name
+    /// the original module, and a following `X.__name__ = "Item"` records the
+    /// original export name for renamed definitions. Returns module name ->
+    /// [(export name, bundle binding)] for bundled modules that are not
+    /// wrapper-registered.
     fn harvest_inlined_class_exports(
         bundler: &Bundler<'_>,
         final_body: &[Stmt],

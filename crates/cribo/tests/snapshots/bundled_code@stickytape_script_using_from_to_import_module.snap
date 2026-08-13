@@ -81,6 +81,8 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('greetings', None, 'greetings', True)
+_cribo_finder.register('greetings.greeting', None, None, False, {'get_default_greeting': 'get_default_greeting'})
 greetings_config = _cribo.types.SimpleNamespace(__name__='greetings.config')
 greetings = _cribo.types.SimpleNamespace(__name__='greetings', __initializing__=False, __initialized__=False, __path__=[])
 greetings.config = greetings_config
@@ -92,6 +94,7 @@ config = greetings_config
 message = "Hello"
 def get_default_greeting():
     return f"{message}, {config.DEFAULT_NAME}!"
+get_default_greeting.__module__ = 'greetings.greeting'
 greetings_greeting.get_default_greeting = get_default_greeting
 greetings_greeting.message = message
 greeting = greetings_greeting

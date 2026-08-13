@@ -81,10 +81,12 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('provider', None, None, True, {'version': 'version'})
 provider = _cribo.types.SimpleNamespace(__name__='provider')
 KIND = "bundled-provider"
 def version(name):
     return f"fake-version:{name}"
+version.__module__ = 'provider'
 provider.KIND = KIND
 provider.version = version
 importlib = _cribo.importlib

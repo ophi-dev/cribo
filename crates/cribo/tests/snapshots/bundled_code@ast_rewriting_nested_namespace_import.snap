@@ -81,12 +81,15 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('greetings', None, 'greetings', True)
+_cribo_finder.register('greetings.greeting', None, None, True, {'get_greeting': 'get_greeting'})
 greetings_greeting = _cribo.types.SimpleNamespace(__name__='greetings.greeting', __doc__='Greeting module')
 greetings = _cribo.types.SimpleNamespace(__name__='greetings', __initializing__=False, __initialized__=False, __path__=[])
 greetings.greeting = greetings_greeting
 """Greeting module"""
 def get_greeting(name):
     return f"Hello, {name}!"
+get_greeting.__module__ = 'greetings.greeting'
 greetings_greeting.get_greeting = get_greeting
 """Greetings package"""
 """Test nested namespace imports"""

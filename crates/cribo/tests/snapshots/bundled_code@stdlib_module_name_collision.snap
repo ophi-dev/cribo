@@ -83,7 +83,7 @@ _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('mypkg', '_cribo_init___cribo_9a2a8c_mypkg', 'mypkg', True)
 _cribo_finder.register('mypkg.console', '_cribo_init___cribo_6558da_mypkg_console', 'mypkg_console', False)
-_cribo_finder.register('mypkg.abc', None, None, False, {'MyBaseClass': 'MyBaseClass'})
+_cribo_finder.register('mypkg.abc', None, None, False, {'MyBaseClass': 'MyBaseClass', 'create_object': 'create_object'})
 mypkg_abc = _cribo.types.SimpleNamespace(__name__='mypkg.abc', __doc__="Local 'abc' module that imports from stdlib 'abc'.")
 mypkg = _cribo.types.SimpleNamespace(__name__='mypkg', __initializing__=False, __initialized__=False, __path__=[])
 mypkg.abc = mypkg_abc
@@ -98,6 +98,7 @@ def create_object():
     class TestObject(MyBaseClass):
         pass
     return TestObject()
+create_object.__module__ = 'mypkg.abc'
 mypkg_abc.MyBaseClass = MyBaseClass
 mypkg_abc.create_object = create_object
 mypkg_console = _cribo.types.SimpleNamespace(__name__='mypkg.console', __initializing__=False, __initialized__=False)

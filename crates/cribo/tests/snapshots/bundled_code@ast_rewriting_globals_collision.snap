@@ -91,7 +91,7 @@ _cribo_finder.register('core.utils', '_cribo_init___cribo_e52b1d_core_utils', 'c
 _cribo_finder.register('core.database', '_cribo_init___cribo_b7b3e3_core_database', 'core_database', True)
 _cribo_finder.register('core', '_cribo_init___cribo_0ac752_core', 'core', True)
 _cribo_finder.register('core.database.connection', '_cribo_init___cribo_df9c8d_core_database_connection', 'core_database_connection', False)
-_cribo_finder.register('core.utils.helpers', None, None, False, {'Logger': 'Logger_6'})
+_cribo_finder.register('core.utils.helpers', None, None, False, {'process': 'process_7', 'validate': 'validate_6', 'Logger': 'Logger_6', 'sanitize': 'sanitize', 'format_result': 'format_result'})
 core_utils_helpers = _cribo.types.SimpleNamespace(__name__='core.utils.helpers', __doc__='Core utility helpers module - NO external dependencies to avoid circular imports')
 core = _cribo.types.SimpleNamespace(__name__='core', __initializing__=False, __initialized__=False, __path__=[])
 core_utils = _cribo.types.SimpleNamespace(__name__='core.utils', __initializing__=False, __initialized__=False, __path__=[])
@@ -106,6 +106,9 @@ def process_7(data):
     global process_count
     process_count += 1
     return f"utils_process: {data} (#{process_count})"
+process_7.__module__ = 'core.utils.helpers'
+process_7.__name__ = 'process'
+process_7.__qualname__ = 'process'
 def validate_6(data):
     """Validate function in utils module"""
     if data in validate_cache:
@@ -113,6 +116,9 @@ def validate_6(data):
     result = f"utils_validate: {data}"
     validate_cache[data] = result
     return result
+validate_6.__module__ = 'core.utils.helpers'
+validate_6.__name__ = 'validate'
+validate_6.__qualname__ = 'validate'
 class Logger_6:
     """Logger class in utils module"""
 
@@ -131,9 +137,11 @@ Logger_6.__qualname__ = 'Logger'
 def sanitize(text):
     """Utility function without conflicts"""
     return text.strip().lower()
+sanitize.__module__ = 'core.utils.helpers'
 def format_result(result):
     """Another utility function"""
     return f"formatted: {result}"
+format_result.__module__ = 'core.utils.helpers'
 core_utils_helpers.Logger = Logger_6
 core_utils_helpers.format_result = format_result
 core_utils_helpers.process = process_7

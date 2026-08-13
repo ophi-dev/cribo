@@ -22,8 +22,23 @@ use ruff_python_ast::{
 /// local resolution for that name (`def f(__package__): return __package__`
 /// returns the argument), and a class body that binds a name stops rewriting it
 /// inside that class body.
-struct ImportGlobalRewriter<'a> {
-    module_var_name: &'a str,
+/// How rewritten import globals are replaced.
+#[derive(Clone, Copy)]
+pub(crate) enum ImportGlobalReplacement<'a> {
+    /// Rewrite to attribute loads of a namespace variable (`self.__name__`):
+    /// wrapper init functions stamp the real values on the namespace object.
+    NamespaceAttribute(&'a str),
+    /// Rewrite to literal values known at bundle time: inlined modules have no
+    /// namespace object, and their import-system values are static.
+    Literals {
+        module_name: &'a str,
+        package: &'a str,
+        doc: Option<&'a str>,
+    },
+}
+
+pub(crate) struct ImportGlobalRewriter<'a> {
+    replacement: ImportGlobalReplacement<'a>,
     /// The import globals still rewritten in the current scope
     names: Vec<&'static str>,
 }
@@ -39,10 +54,48 @@ const IMPORT_GLOBALS: &[&str] = &["__name__", "__package__", "__doc__"];
 fn rewrite_import_globals_in_expr(expr: &mut Expr) {
     use ruff_python_ast::visitor::transformer::Transformer as _;
     let rewriter = ImportGlobalRewriter {
-        module_var_name: SELF_PARAM,
+        replacement: ImportGlobalReplacement::NamespaceAttribute(SELF_PARAM),
         names: IMPORT_GLOBALS.to_vec(),
     };
     rewriter.visit_expr(expr);
+}
+
+/// Rewrite import globals in an inlined module's statements to their literal
+/// bundle-time values, scope-aware: the inlined code executes in the bundle
+/// entry's global namespace, whose `__name__`/`__package__`/`__doc__` describe
+/// the ENTRY module, not the inlined one. Module-level rebindings of a name
+/// disable its rewrite for the whole module (the module then observes its own
+/// binding).
+pub(crate) fn rewrite_import_globals_to_literals(
+    body: &mut [Stmt],
+    module_name: &str,
+    package: &str,
+    doc: Option<&str>,
+) {
+    use ruff_python_ast::visitor::transformer::Transformer as _;
+    let mut bound = FxIndexSet::default();
+    {
+        let no_globals = FxIndexSet::default();
+        let mut collector = crate::visitors::LocalVarCollector::new(&mut bound, &no_globals);
+        collector.collect_from_stmts(body);
+    }
+    let names: Vec<&'static str> = IMPORT_GLOBALS
+        .iter()
+        .copied()
+        .filter(|name| !bound.contains(*name))
+        .collect();
+    if names.is_empty() {
+        return;
+    }
+    let rewriter = ImportGlobalRewriter {
+        replacement: ImportGlobalReplacement::Literals {
+            module_name,
+            package,
+            doc,
+        },
+        names,
+    };
+    rewriter.visit_body(body);
 }
 
 impl ImportGlobalRewriter<'_> {
@@ -131,7 +184,7 @@ impl ImportGlobalRewriter<'_> {
         let inner_names = self.unshadowed_names(Some(&func_def.parameters), &func_def.body);
         if !inner_names.is_empty() {
             let inner = ImportGlobalRewriter {
-                module_var_name: self.module_var_name,
+                replacement: self.replacement,
                 names: inner_names,
             };
             inner.visit_body(&mut func_def.body);
@@ -164,7 +217,7 @@ impl ImportGlobalRewriter<'_> {
         }
         if !inner_names.is_empty() {
             let inner = ImportGlobalRewriter {
-                module_var_name: self.module_var_name,
+                replacement: self.replacement,
                 names: inner_names,
             };
             inner.visit_body(&mut class_def.body);
@@ -190,11 +243,27 @@ impl ruff_python_ast::visitor::transformer::Transformer for ImportGlobalRewriter
             Expr::Name(name)
                 if self.names.contains(&name.id.as_str()) && name.ctx == ExprContext::Load =>
             {
-                *expr = ast_builder::expressions::attribute(
-                    ast_builder::expressions::name(self.module_var_name, ExprContext::Load),
-                    name.id.as_str(),
-                    ExprContext::Load,
-                );
+                *expr = match self.replacement {
+                    ImportGlobalReplacement::NamespaceAttribute(module_var_name) => {
+                        ast_builder::expressions::attribute(
+                            ast_builder::expressions::name(module_var_name, ExprContext::Load),
+                            name.id.as_str(),
+                            ExprContext::Load,
+                        )
+                    }
+                    ImportGlobalReplacement::Literals {
+                        module_name,
+                        package,
+                        doc,
+                    } => match name.id.as_str() {
+                        "__name__" => ast_builder::expressions::string_literal(module_name),
+                        "__package__" => ast_builder::expressions::string_literal(package),
+                        _ => doc.map_or_else(
+                            ast_builder::expressions::none_literal,
+                            ast_builder::expressions::string_literal,
+                        ),
+                    },
+                };
             }
             // Lambda parameters bind their own scope: defaults evaluate in the
             // enclosing scope, and a parameter named like an import global keeps
@@ -228,7 +297,7 @@ impl ruff_python_ast::visitor::transformer::Transformer for ImportGlobalRewriter
                     .collect();
                 if !inner_names.is_empty() {
                     let inner = ImportGlobalRewriter {
-                        module_var_name: self.module_var_name,
+                        replacement: self.replacement,
                         names: inner_names,
                     };
                     inner.visit_expr(&mut lambda.body);
@@ -257,7 +326,7 @@ impl ruff_python_ast::visitor::transformer::Transformer for ImportGlobalRewriter
                     walk_expr(self, expr);
                 } else if !inner_names.is_empty() {
                     let inner = ImportGlobalRewriter {
-                        module_var_name: self.module_var_name,
+                        replacement: self.replacement,
                         names: inner_names,
                     };
                     walk_expr(&inner, expr);
@@ -523,7 +592,7 @@ pub(crate) fn process_statements_for_init_function(
                 let mut class_def_clone = class_def.clone();
                 {
                     let rewriter = ImportGlobalRewriter {
-                        module_var_name: SELF_PARAM,
+                        replacement: ImportGlobalReplacement::NamespaceAttribute(SELF_PARAM),
                         names: IMPORT_GLOBALS.to_vec(),
                     };
                     rewriter.rewrite_class(&mut class_def_clone);
@@ -567,7 +636,7 @@ pub(crate) fn process_statements_for_init_function(
                 // resolution, independent of the global_info transform below
                 {
                     let rewriter = ImportGlobalRewriter {
-                        module_var_name: SELF_PARAM,
+                        replacement: ImportGlobalReplacement::NamespaceAttribute(SELF_PARAM),
                         names: IMPORT_GLOBALS.to_vec(),
                     };
                     rewriter.rewrite_function(&mut func_def_clone);
@@ -1902,7 +1971,7 @@ fn transform_stmt_for_module_vars_with_bundler(
     {
         use ruff_python_ast::visitor::transformer::Transformer as _;
         let rewriter = ImportGlobalRewriter {
-            module_var_name: ctx.module_var_name,
+            replacement: ImportGlobalReplacement::NamespaceAttribute(ctx.module_var_name),
             names: IMPORT_GLOBALS.to_vec(),
         };
         rewriter.visit_stmt(stmt);

@@ -84,6 +84,9 @@ _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('mypackage.utils', '_cribo_init___cribo_99e487_mypackage_utils', 'mypackage_utils', True)
 _cribo_finder.register('mypackage.config', '_cribo_init___cribo_de6c46_mypackage_config', 'mypackage_config', False)
 _cribo_finder.register('mypackage', '_cribo_init___cribo_a81151_mypackage', 'mypackage', True)
+_cribo_finder.register('mypackage.data_processor', None, None, False, {'process_data': 'process_data'})
+_cribo_finder.register('mypackage.formatter', None, None, False, {'format_data': 'format_data'})
+_cribo_finder.register('mypackage.utils.helper', None, None, False, {'helper_function': 'helper_function'})
 mypackage_data_processor = _cribo.types.SimpleNamespace(__name__='mypackage.data_processor', __doc__='Data processing module.')
 mypackage = _cribo.types.SimpleNamespace(__name__='mypackage', __initializing__=False, __initialized__=False, __path__=[])
 mypackage.data_processor = mypackage_data_processor
@@ -93,6 +96,7 @@ def process_data(data):
     processed = data.copy()
     processed["processed"] = True
     return processed
+process_data.__module__ = 'mypackage.data_processor'
 mypackage_data_processor.process_data = process_data
 mypackage_formatter = _cribo.types.SimpleNamespace(__name__='mypackage.formatter', __doc__='Data formatting module.')
 mypackage.formatter = mypackage_formatter
@@ -100,6 +104,7 @@ mypackage.formatter = mypackage_formatter
 def format_data(data):
     """Format the processed data."""
     return f"Formatted: {data}"
+format_data.__module__ = 'mypackage.formatter'
 mypackage_formatter.format_data = format_data
 mypackage_config = _cribo.types.SimpleNamespace(__name__='mypackage.config', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('mypackage.config', mypackage_config)
@@ -140,6 +145,7 @@ mypackage_utils.helper = mypackage_utils_helper
 def helper_function(data):
     """Helper function for processing data."""
     return f"Helped: {data}"
+helper_function.__module__ = 'mypackage.utils.helper'
 mypackage_utils_helper.helper_function = helper_function
 mypackage_utils_constants = _cribo.types.SimpleNamespace(__name__='mypackage.utils.constants', __doc__='Constants module.')
 mypackage_utils.constants = mypackage_utils_constants

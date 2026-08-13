@@ -82,13 +82,17 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('module_a', None, None, False, {'func_a': 'func_a'})
+_cribo_finder.register('module_b', None, None, False, {'func_b': 'func_b'})
 module_a = _cribo.types.SimpleNamespace(__name__='module_a')
 def func_a():
     print("Function A")
+func_a.__module__ = 'module_a'
 module_a.func_a = func_a
 module_b = _cribo.types.SimpleNamespace(__name__='module_b')
 def func_b():
     print("Function B")
+func_b.__module__ = 'module_b'
 module_b.func_b = func_b
 def main():
     func_a()

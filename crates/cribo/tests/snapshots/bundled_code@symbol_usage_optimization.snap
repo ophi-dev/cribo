@@ -81,6 +81,8 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('submodule.helpers', None, None, False, {'format_string': 'format_string'})
+_cribo_finder.register('submodule', None, None, True, {'process_data': 'process_data'})
 submodule_helpers = _cribo.types.SimpleNamespace(__name__='submodule.helpers', __doc__='Helper functions module.')
 submodule = _cribo.types.SimpleNamespace(__name__='submodule', __initializing__=False, __initialized__=False, __path__=[])
 submodule.helpers = submodule_helpers
@@ -88,11 +90,13 @@ submodule.helpers = submodule_helpers
 def format_string(s: str) -> str:
     """Format a string."""
     return f"Formatted: {s}"
+format_string.__module__ = 'submodule.helpers'
 submodule_helpers.format_string = format_string
 """Submodule that re-exports from helpers."""
 def process_data(data: str) -> str:
     """Process data using only format_string, not the other helpers."""
     return format_string(data)
+process_data.__module__ = 'submodule'
 submodule.process_data = process_data
 """Test that unused imports in function bodies are not initialized."""
 def main():

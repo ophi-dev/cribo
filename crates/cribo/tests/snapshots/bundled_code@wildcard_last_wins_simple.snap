@@ -81,20 +81,30 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('first', None, None, False, {'shared_value': 'shared_value_2', 'unique_first': 'unique_first'})
+_cribo_finder.register('second', None, None, False, {'shared_value': 'shared_value_1', 'unique_second': 'unique_second'})
 first = _cribo.types.SimpleNamespace(__name__='first', __doc__='First module with shared and unique symbols.')
 """First module with shared and unique symbols."""
 def shared_value_2():
     return "from_first"
+shared_value_2.__module__ = 'first'
+shared_value_2.__name__ = 'shared_value'
+shared_value_2.__qualname__ = 'shared_value'
 def unique_first():
     return "unique_to_first"
+unique_first.__module__ = 'first'
 first.shared_value = shared_value_2
 first.unique_first = unique_first
 second = _cribo.types.SimpleNamespace(__name__='second', __doc__='Second module with shared and unique symbols.')
 """Second module with shared and unique symbols."""
 def shared_value_1():
     return "from_second"
+shared_value_1.__module__ = 'second'
+shared_value_1.__name__ = 'shared_value'
+shared_value_1.__qualname__ = 'shared_value'
 def unique_second():
     return "unique_to_second"
+unique_second.__module__ = 'second'
 second.shared_value = shared_value_1
 second.unique_second = unique_second
 """Test that 'last import wins' semantics work with wildcard imports."""

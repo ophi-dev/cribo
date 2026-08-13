@@ -81,17 +81,25 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('module_a', None, None, False, {'process_data': 'process_data_2'})
+_cribo_finder.register('module_b', None, None, False, {'process_data': 'process_data_1'})
 module_a = _cribo.types.SimpleNamespace(__name__='module_a', __doc__='\nModule A with a process_data function.\nThis will conflict with module_b.process_data when bundled.\n')
 """\nModule A with a process_data function.\nThis will conflict with module_b.process_data when bundled.\n"""
 def process_data_2(input_data: str) -> str:
     """Process data in module A's way."""
     return f"Module A processed: {input_data.upper()}"
+process_data_2.__module__ = 'module_a'
+process_data_2.__name__ = 'process_data'
+process_data_2.__qualname__ = 'process_data'
 module_a.process_data = process_data_2
 module_b = _cribo.types.SimpleNamespace(__name__='module_b', __doc__='\nModule B with a process_data function.\nThis will conflict with module_a.process_data when bundled.\n')
 """\nModule B with a process_data function.\nThis will conflict with module_a.process_data when bundled.\n"""
 def process_data_1(input_data: str) -> str:
     """Process data in module B's way."""
     return f"Module B processed: {input_data.lower()}"
+process_data_1.__module__ = 'module_b'
+process_data_1.__name__ = 'process_data'
+process_data_1.__qualname__ = 'process_data'
 module_b.process_data = process_data_1
 """\nFunction name collision test.\nBoth modules define a function with the same name.\n"""
 process_a = module_a.process_data

@@ -81,10 +81,12 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('late_checker', None, None, False, {'check': 'check'})
 late_checker = _cribo.types.SimpleNamespace(__name__='late_checker', __doc__="First-party module querying the provider's metadata after it was discovered.")
 """First-party module querying the provider's metadata after it was discovered."""
 def check():
     return _cribo.importlib.metadata.version("provider")
+check.__module__ = 'late_checker'
 late_checker.check = check
 importlib = _cribo.importlib
 provider = importlib.import_module("provider")

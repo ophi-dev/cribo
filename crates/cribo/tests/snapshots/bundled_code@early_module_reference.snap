@@ -83,7 +83,7 @@ _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('mypkg', '_cribo_init___cribo_b0d212_mypkg', 'mypkg', True)
 _cribo_finder.register('mypkg.api', '_cribo_init___cribo_d2a83c_mypkg_api', 'mypkg_api', False)
-_cribo_finder.register('mypkg.sessions', None, None, False, {'Session': 'Session'})
+_cribo_finder.register('mypkg.sessions', None, None, False, {'Session': 'Session', 'session': 'session'})
 mypkg_sessions = _cribo.types.SimpleNamespace(__name__='mypkg.sessions', __doc__='Sessions module with Session class.')
 mypkg = _cribo.types.SimpleNamespace(__name__='mypkg', __initializing__=False, __initialized__=False, __path__=[])
 mypkg.sessions = mypkg_sessions
@@ -110,6 +110,7 @@ Session.__module__ = 'mypkg.sessions'
 def session():
     """Create a new session."""
     return Session()
+session.__module__ = 'mypkg.sessions'
 mypkg_sessions.Session = Session
 mypkg_sessions.session = session
 mypkg_api = _cribo.types.SimpleNamespace(__name__='mypkg.api', __initializing__=False, __initialized__=False)

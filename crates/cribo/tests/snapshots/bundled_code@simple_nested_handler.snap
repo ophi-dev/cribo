@@ -81,13 +81,21 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('foo', None, None, False, {'handler': 'handler_3'})
+_cribo_finder.register('boo', None, None, False, {'handler': 'handler_2'})
 foo = _cribo.types.SimpleNamespace(__name__='foo')
 def handler_3() -> str:
     return "Hello from foo.py"
+handler_3.__module__ = 'foo'
+handler_3.__name__ = 'handler'
+handler_3.__qualname__ = 'handler'
 foo.handler = handler_3
 boo = _cribo.types.SimpleNamespace(__name__='boo')
 def handler_2() -> str:
     return "Hello from boo.py"
+handler_2.__module__ = 'boo'
+handler_2.__name__ = 'handler'
+handler_2.__qualname__ = 'handler'
 boo.handler = handler_2
 boo_handler = boo.handler
 pprint = _cribo.pprint

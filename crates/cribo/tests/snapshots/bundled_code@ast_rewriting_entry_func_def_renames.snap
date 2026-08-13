@@ -81,7 +81,7 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
-_cribo_finder.register('helpers', None, None, False, {'Schema': 'Schema_2'})
+_cribo_finder.register('helpers', None, None, False, {'make_tag': 'make_tag_2', 'Schema': 'Schema_2'})
 helpers = _cribo.types.SimpleNamespace(__name__='helpers', __doc__='\nHelper module that defines symbols colliding with the entry module.\nThe conflict resolver will rename one copy; this fixture verifies that\ndefinition-time expressions (decorators, defaults, annotations) in entry\nmodule functions are rewritten to use the renamed identifiers.\n')
 """\nHelper module that defines symbols colliding with the entry module.\nThe conflict resolver will rename one copy; this fixture verifies that\ndefinition-time expressions (decorators, defaults, annotations) in entry\nmodule functions are rewritten to use the renamed identifiers.\n"""
 def make_tag_2(func):
@@ -90,6 +90,9 @@ def make_tag_2(func):
     def wrapper(*args, **kwargs):
         return f"[helpers.tagged] {func(*args, **kwargs)}"
     return wrapper
+make_tag_2.__module__ = 'helpers'
+make_tag_2.__name__ = 'make_tag'
+make_tag_2.__qualname__ = 'make_tag'
 DEFAULT_MODE_2 = "helpers_mode"
 class Schema_2:
     """Type used for annotations."""

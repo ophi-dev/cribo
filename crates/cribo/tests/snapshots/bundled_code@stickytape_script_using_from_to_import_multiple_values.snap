@@ -81,10 +81,12 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('greeting', None, None, False, {'print_stdout': 'print_stdout'})
 greeting = _cribo.types.SimpleNamespace(__name__='greeting')
 message = "Hello"
 def print_stdout(value):
     print(value)
+print_stdout.__module__ = 'greeting'
 greeting.message = message
 greeting.print_stdout = print_stdout
 print_stdout(message)

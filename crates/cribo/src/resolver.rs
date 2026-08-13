@@ -888,6 +888,11 @@ struct DistributionInfo {
     /// read: without one, the distribution's full file set is unknown and purity
     /// cannot be proven distribution-wide
     has_file_listing: bool,
+    /// Whether the mandatory core-metadata file (`METADATA` / `PKG-INFO`) is
+    /// absent: the distribution's name, version, `Requires-Python`, and
+    /// `Requires-Dist` constraints are all unknown, so its imports cannot be
+    /// bundled or omitted from requirements safely
+    missing_core_metadata: bool,
 }
 
 impl DistributionInfo {
@@ -973,7 +978,7 @@ const METADATA_API_MODULES: [&str; 3] =
 /// (import name or module object) as their anchor. Reading a package's resources
 /// requires its installed layout and import spec, so literal targets must stay
 /// external and installed even when the target itself contains no blocking code.
-const RESOURCE_QUERY_FUNCTIONS: [&str; 17] = [
+const RESOURCE_QUERY_FUNCTIONS: [&str; 23] = [
     "importlib.resources.files",
     "importlib.resources.read_text",
     "importlib.resources.read_binary",
@@ -991,9 +996,22 @@ const RESOURCE_QUERY_FUNCTIONS: [&str; 17] = [
     "importlib_resources.path",
     "importlib_resources.is_resource",
     "pkgutil.get_data",
+    // Legacy pkg_resources readers resolve the anchor package through the
+    // import system and its installed loader/layout
+    "pkg_resources.resource_filename",
+    "pkg_resources.resource_stream",
+    "pkg_resources.resource_string",
+    "pkg_resources.resource_listdir",
+    "pkg_resources.resource_isdir",
+    "pkg_resources.resource_exists",
 ];
 /// Modules whose wildcard import binds the resource reader API.
-const RESOURCE_API_MODULES: [&str; 3] = ["importlib.resources", "importlib_resources", "pkgutil"];
+const RESOURCE_API_MODULES: [&str; 4] = [
+    "importlib.resources",
+    "importlib_resources",
+    "pkgutil",
+    "pkg_resources",
+];
 /// Canonical dotted path of `importlib.reload`: reload targets must be REAL
 /// registered modules with a usable spec, so bundled targets stay external.
 const RELOAD_FUNCTIONS: [&str; 1] = ["importlib.reload"];
@@ -2090,6 +2108,11 @@ impl ModuleResolver {
         package_context: Option<&str>,
     ) -> Option<(String, PathBuf)> {
         // Handle relative imports with package context
+        // CPython raises TypeError for a relative name with a falsy package
+        // anchor, so such calls must stay verbatim rather than resolve
+        if module_name.starts_with('.') && package_context.is_none_or(str::is_empty) {
+            return None;
+        }
         let resolved_name = package_context.map_or_else(
             || module_name.to_owned(),
             |package| {
@@ -2564,6 +2587,17 @@ impl ModuleResolver {
             return true;
         }
 
+        // A distribution without its core-metadata file has an unknown name,
+        // version, and requirement constraints: bundling it would omit an
+        // undeclarable dependency from the requirements output
+        if self.distribution_missing_core_metadata_owns_import(search_root, module_name) {
+            debug!(
+                "Import '{module_name}' is owned by a distribution whose core metadata is \
+                 missing; keeping it external"
+            );
+            return true;
+        }
+
         // Providers of one PEP 420 namespace stay external TOGETHER: bundling one
         // child while a sibling provider stays external would rebind the namespace
         // root to the real namespace at runtime, hiding the bundled-only children
@@ -2802,37 +2836,12 @@ impl ModuleResolver {
         // lookup only on REAL module objects; generated SimpleNamespace instances
         // ignore instance attributes with these names, so lazy exports and
         // advertised APIs would break. Every module-scope binding form counts:
-        // def, (annotated) assignment, and import aliases.
-        let binds_module_hook = |name: &str| matches!(name, "__getattr__" | "__dir__");
-        for stmt in &parsed.syntax().body {
-            use ruff_python_ast::{Expr, Stmt};
-            let hook_bound = match stmt {
-                Stmt::FunctionDef(function_def) => binds_module_hook(function_def.name.as_str()),
-                Stmt::Assign(assign) => assign.targets.iter().any(|target| {
-                    matches!(target, Expr::Name(name) if binds_module_hook(name.id.as_str()))
-                }),
-                Stmt::AnnAssign(ann_assign) => {
-                    ann_assign.value.is_some()
-                        && matches!(&*ann_assign.target, Expr::Name(name) if binds_module_hook(name.id.as_str()))
-                }
-                Stmt::ImportFrom(import_from) => import_from.names.iter().any(|alias| {
-                    let bound = alias
-                        .asname
-                        .as_ref()
-                        .map_or_else(|| alias.name.as_str(), |name| name.as_str());
-                    binds_module_hook(bound)
-                }),
-                Stmt::Import(import_stmt) => import_stmt.names.iter().any(|alias| {
-                    alias
-                        .asname
-                        .as_ref()
-                        .is_some_and(|name| binds_module_hook(name.as_str()))
-                }),
-                _ => false,
-            };
-            if hook_bound {
-                return true;
-            }
+        // def, (annotated) assignment, and import aliases — including inside
+        // module-level control flow (a conditional `if enabled: def __getattr__`
+        // still binds the hook at module scope), without entering nested
+        // function/class scopes where the names are ordinary locals.
+        if Self::stmts_bind_module_hook(&parsed.syntax().body) {
+            return true;
         }
         use ruff_python_ast::visitor::Visitor as _;
         let mut detector = UnbundlablePatternDetector::default();
@@ -2843,6 +2852,69 @@ impl ModuleResolver {
             detector.visit_stmt(stmt);
         }
         detector.found
+    }
+
+    /// Whether a module-scope statement list binds a PEP 562 hook
+    /// (`__getattr__`/`__dir__`), looking through module-level control-flow
+    /// suites (if/try/for/while/with/match execute their bodies at module
+    /// scope) but NOT into nested function or class scopes, where the names
+    /// are ordinary locals.
+    fn stmts_bind_module_hook(body: &[ruff_python_ast::Stmt]) -> bool {
+        use ruff_python_ast::{Expr, Stmt};
+        let binds_module_hook = |name: &str| matches!(name, "__getattr__" | "__dir__");
+        body.iter().any(|stmt| match stmt {
+            Stmt::FunctionDef(function_def) => binds_module_hook(function_def.name.as_str()),
+            Stmt::Assign(assign) => assign.targets.iter().any(|target| {
+                matches!(target, Expr::Name(name) if binds_module_hook(name.id.as_str()))
+            }),
+            Stmt::AnnAssign(ann_assign) => {
+                ann_assign.value.is_some()
+                    && matches!(&*ann_assign.target, Expr::Name(name) if binds_module_hook(name.id.as_str()))
+            }
+            Stmt::ImportFrom(import_from) => import_from.names.iter().any(|alias| {
+                let bound = alias
+                    .asname
+                    .as_ref()
+                    .map_or_else(|| alias.name.as_str(), |name| name.as_str());
+                binds_module_hook(bound)
+            }),
+            Stmt::Import(import_stmt) => import_stmt.names.iter().any(|alias| {
+                alias
+                    .asname
+                    .as_ref()
+                    .is_some_and(|name| binds_module_hook(name.as_str()))
+            }),
+            Stmt::If(if_stmt) => {
+                Self::stmts_bind_module_hook(&if_stmt.body)
+                    || if_stmt
+                        .elif_else_clauses
+                        .iter()
+                        .any(|clause| Self::stmts_bind_module_hook(&clause.body))
+            }
+            Stmt::Try(try_stmt) => {
+                Self::stmts_bind_module_hook(&try_stmt.body)
+                    || try_stmt.handlers.iter().any(|handler| {
+                        let ruff_python_ast::ExceptHandler::ExceptHandler(handler) = handler;
+                        Self::stmts_bind_module_hook(&handler.body)
+                    })
+                    || Self::stmts_bind_module_hook(&try_stmt.orelse)
+                    || Self::stmts_bind_module_hook(&try_stmt.finalbody)
+            }
+            Stmt::For(for_stmt) => {
+                Self::stmts_bind_module_hook(&for_stmt.body)
+                    || Self::stmts_bind_module_hook(&for_stmt.orelse)
+            }
+            Stmt::While(while_stmt) => {
+                Self::stmts_bind_module_hook(&while_stmt.body)
+                    || Self::stmts_bind_module_hook(&while_stmt.orelse)
+            }
+            Stmt::With(with_stmt) => Self::stmts_bind_module_hook(&with_stmt.body),
+            Stmt::Match(match_stmt) => match_stmt
+                .cases
+                .iter()
+                .any(|case| Self::stmts_bind_module_hook(&case.body)),
+            _ => false,
+        })
     }
 
     fn get_virtualenv_site_packages_search_directories(
@@ -2993,22 +3065,17 @@ impl ModuleResolver {
     }
 
     /// Detect common virtual environment directory names beside the working
-    /// directory and beside the entry file's project directory
+    /// directory and along the entry file's ancestor directories: with a nested
+    /// source layout (`/project/src/main.py`), the project environment
+    /// conventionally lives at `/project/.venv`, so out-of-directory invocation
+    /// must look above the entry directory too. The nearest ancestor containing
+    /// an environment wins and stops the upward search, so unrelated
+    /// environments higher up the tree are never picked over the project's own.
     fn detect_fallback_virtualenv_paths(&self) -> Vec<PathBuf> {
-        let mut candidate_roots: IndexSet<PathBuf> = IndexSet::new();
-        if let Ok(current_dir) = std::env::current_dir() {
-            candidate_roots.insert(current_dir);
-        }
-        // A project's virtualenv commonly lives next to its entry point; include it so
-        // invoking Cribo from outside the project (e.g. a monorepo root) still works
-        if let Some(entry_dir) = &self.entry_dir {
-            candidate_roots.insert(self.canonicalize_path(entry_dir.clone()));
-        }
-
-        let mut venv_paths = Vec::new();
-        for candidate_root in candidate_roots {
+        let venvs_in_root = |root: &Path| -> Vec<PathBuf> {
+            let mut found = Vec::new();
             for venv_name in AUTO_DETECTED_VIRTUALENV_NAMES {
-                let venv_path = candidate_root.join(venv_name);
+                let venv_path = root.join(venv_name);
                 if venv_path.is_dir() {
                     // Check if it looks like a virtual environment
                     let has_bin =
@@ -3016,8 +3083,31 @@ impl ModuleResolver {
                     let has_lib = venv_path.join("lib").is_dir();
 
                     if has_bin || has_lib {
-                        venv_paths.push(venv_path);
+                        found.push(venv_path);
                     }
+                }
+            }
+            found
+        };
+
+        let mut venv_paths: Vec<PathBuf> = Vec::new();
+        if let Ok(current_dir) = std::env::current_dir() {
+            venv_paths.extend(venvs_in_root(&current_dir));
+        }
+        // A project's virtualenv commonly lives next to its entry point or above
+        // it; search the entry ancestors so invoking Cribo from outside the
+        // project (e.g. a monorepo root) still works
+        if let Some(entry_dir) = &self.entry_dir {
+            let canonical_entry = self.canonicalize_path(entry_dir.clone());
+            for ancestor in canonical_entry.ancestors() {
+                let found = venvs_in_root(ancestor);
+                if !found.is_empty() {
+                    for venv_path in found {
+                        if !venv_paths.contains(&venv_path) {
+                            venv_paths.push(venv_path);
+                        }
+                    }
+                    break;
                 }
             }
         }
@@ -3178,6 +3268,7 @@ impl ModuleResolver {
                     distribution.ships_native_artifacts
                         || distribution.installs_startup_hooks
                         || distribution.has_runtime_entry_points
+                        || distribution.missing_core_metadata
                         || distribution
                             .requires_python
                             .as_deref()
@@ -3224,6 +3315,23 @@ impl ModuleResolver {
                 .owning_distributions(import_name)
                 .iter()
                 .any(|distribution| distribution.has_runtime_entry_points)
+        })
+    }
+
+    /// Return whether any distribution claiming an import lacks its core-metadata
+    /// file (`METADATA` / `PKG-INFO`): its name, version, and requirement
+    /// constraints are unknown, so bundling it would silently drop an
+    /// undeclarable dependency from the requirements output.
+    fn distribution_missing_core_metadata_owns_import(
+        &self,
+        site_packages_dir: &Path,
+        import_name: &str,
+    ) -> bool {
+        self.with_distribution_ownership_index(site_packages_dir, |index| {
+            index
+                .owning_distributions(import_name)
+                .iter()
+                .any(|distribution| distribution.missing_core_metadata)
         })
     }
 
@@ -3985,6 +4093,10 @@ impl ModuleResolver {
         let metadata_file = dist_info_dir.join("METADATA");
         if let Some(metadata) = Self::read_metadata_sidecar(&metadata_file, incomplete) {
             Self::index_distribution_metadata(&metadata, &mut distribution);
+        } else {
+            // METADATA is mandatory for .dist-info: without it the distribution's
+            // name, version, and requirement constraints are all unknown
+            distribution.missing_core_metadata = true;
         }
 
         Self::index_top_level_declarations(dist_info_dir, &mut distribution, incomplete);
@@ -4034,6 +4146,10 @@ impl ModuleResolver {
         let metadata_file = egg_info_dir.join("PKG-INFO");
         if let Some(metadata) = Self::read_metadata_sidecar(&metadata_file, incomplete) {
             Self::index_distribution_metadata(&metadata, &mut distribution);
+        } else {
+            // PKG-INFO is the egg-info core-metadata file; without it the
+            // distribution's identity and constraints are unknown
+            distribution.missing_core_metadata = true;
         }
 
         Self::index_top_level_declarations(egg_info_dir, &mut distribution, incomplete);
@@ -5624,6 +5740,62 @@ Import-Name: folded_module
         ModuleResolver::new_with_overrides(config, Some(""), Some(virtualenv_path.as_ref()))
     }
 
+    /// Fallback environment discovery searches the entry file's ancestors: a
+    /// nested source layout (`/project/src/main.py` with `/project/.venv`)
+    /// finds the project environment even when Cribo runs from elsewhere.
+    #[test]
+    fn test_bundle_third_party_finds_virtualenv_in_entry_ancestors() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let project = temp_dir.path().join("project");
+
+        // Conventional project environment above the entry directory
+        let site_packages = project.join(".venv/lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!(
+                "ancestor_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("ancestor_pkg-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: ancestor-pkg\nVersion: 1.0\nImport-Name: ancestor_pkg\n",
+        )?;
+
+        // Nested source layout: the entry lives below the project root
+        let entry_file = project.join("src/main.py");
+        create_test_file(&entry_file, "import ancestor_pkg\n")?;
+
+        // No virtualenv override: only fallback discovery can find the environment
+        let config = Config {
+            bundle_third_party: Some(true),
+            ..Default::default()
+        };
+        let mut resolver = ModuleResolver::new_with_overrides(config, Some(""), None)?;
+        resolver.set_entry_file(&entry_file, &entry_file);
+
+        let classification = resolver.classify_import("ancestor_pkg");
+        assert_eq!(classification.origin, ImportOrigin::ThirdParty);
+        assert_eq!(
+            classification.bundle,
+            BundleDisposition::Include,
+            "the project environment above the entry directory must be discovered"
+        );
+        assert_eq!(
+            resolver.resolve_module_path("ancestor_pkg")?,
+            Some(
+                site_packages
+                    .join(format!(
+                        "ancestor_pkg/{}",
+                        crate::python::constants::INIT_FILE
+                    ))
+                    .canonicalize()?
+            )
+        );
+
+        Ok(())
+    }
+
     /// Pure-Python site-packages distributions are classified for bundling and resolve
     /// to real site-packages paths when third-party bundling is enabled.
     #[test]
@@ -5847,6 +6019,13 @@ Import-Name: folded_module
             "from ._lazy import hook as __getattr__\n",
             "__getattr__: object = _lazy_hook\n",
             "def __dir__():\n    return ['lazy_name']\n",
+            // Hooks bound inside module-level control flow still register at
+            // module scope when the branch executes
+            "if _enabled:\n    def __getattr__(name):\n        raise AttributeError(name)\n",
+            "try:\n    from ._accel import __getattr__\nexcept ImportError:\n    def \
+             __getattr__(name):\n        raise AttributeError(name)\n",
+            "with _ctx():\n    __getattr__ = _lazy_hook\n",
+            "for _ in range(1):\n    def __dir__():\n        return []\n",
         ] {
             assert!(
                 ModuleResolver::python_source_blocks_bundling(source),
@@ -5860,6 +6039,11 @@ Import-Name: folded_module
             "file = 'not the dunder'\nprint(file)\n",
             // Class-level __getattr__ is ordinary Python, not a PEP 562 hook
             "class Lazy:\n    def __getattr__(self, name):\n        return name\n",
+            // Function-local __getattr__ is an ordinary local, not a module hook
+            "def _factory():\n    def __getattr__(name):\n        return name\n    return \
+             __getattr__\n",
+            "if _enabled:\n    class Lazy:\n        def __getattr__(self, name):\n            \
+             return name\n",
         ] {
             assert!(
                 !ModuleResolver::python_source_blocks_bundling(source),
@@ -6270,6 +6454,39 @@ Import-Name: folded_module
             classification.bundle,
             BundleDisposition::External,
             "packages whose distribution metadata files cannot be read must stay external"
+        );
+
+        Ok(())
+    }
+
+    /// A `.dist-info` with a readable `RECORD` but no `METADATA` names a
+    /// distribution whose identity and requirement constraints are unknown:
+    /// its imports stay external so the dependency is not silently dropped.
+    #[test]
+    fn test_bundle_third_party_keeps_distribution_without_core_metadata_external() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!(
+                "headless_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        // RECORD claims ownership, but the mandatory METADATA file is absent
+        create_test_file(
+            &site_packages.join("headless_pkg-1.0.dist-info/RECORD"),
+            "headless_pkg/__init__.py,sha256=abc,20\nheadless_pkg-1.0.dist-info/RECORD,,\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let classification = resolver.classify_import("headless_pkg");
+        assert_eq!(classification.origin, ImportOrigin::ThirdParty);
+        assert_eq!(
+            classification.bundle,
+            BundleDisposition::External,
+            "distributions without their core-metadata file must stay external"
         );
 
         Ok(())

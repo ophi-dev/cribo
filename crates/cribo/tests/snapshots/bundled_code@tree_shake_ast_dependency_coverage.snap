@@ -81,35 +81,50 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('operations', None, None, False, {'await_value': 'await_value', 'named_value': 'named_value', 'lambda_value': 'lambda_value', 'yield_value': 'yield_value', 'yield_from_values': 'yield_from_values', 'starred_values': 'starred_values', 'sequence_values': 'sequence_values', 'slice_lower': 'slice_lower', 'slice_upper': 'slice_upper', 'slice_step': 'slice_step', 'annotated_value': 'annotated_value', 'class_annotation_value': 'class_annotation_value', 'nested_function_annotation': 'nested_function_annotation', 'nested_method_annotation': 'nested_method_annotation', 'annotation_scope_value': 'annotation_scope_value', 'augmented_value': 'augmented_value', 'delete_index': 'delete_index', 'type_alias_value': 'type_alias_value', 'generated_value': 'generated_value', 'delegated_values': 'delegated_values', 'exercise': 'exercise'})
 operations = _cribo.types.SimpleNamespace(__name__='operations')
 async def await_value() -> str:
     return "await"
+await_value.__module__ = 'operations'
 def named_value() -> str:
     return "named"
+named_value.__module__ = 'operations'
 def lambda_value() -> str:
     return "lambda"
+lambda_value.__module__ = 'operations'
 def yield_value() -> str:
     return "yield"
+yield_value.__module__ = 'operations'
 def yield_from_values() -> list[str]:
     return ["yield-from"]
+yield_from_values.__module__ = 'operations'
 def starred_values() -> list[str]:
     return ["starred"]
+starred_values.__module__ = 'operations'
 def sequence_values() -> list[str]:
     return ["before", "slice", "after"]
+sequence_values.__module__ = 'operations'
 def slice_lower() -> int:
     return 1
+slice_lower.__module__ = 'operations'
 def slice_upper() -> int:
     return 2
+slice_upper.__module__ = 'operations'
 def slice_step() -> int:
     return 1
+slice_step.__module__ = 'operations'
 def annotated_value() -> str:
     return "annotated"
+annotated_value.__module__ = 'operations'
 def class_annotation_value() -> str:
     return "class-annotation"
+class_annotation_value.__module__ = 'operations'
 def nested_function_annotation():
     return str
+nested_function_annotation.__module__ = 'operations'
 def nested_method_annotation():
     return str
+nested_method_annotation.__module__ = 'operations'
 def annotation_scope_value() -> str:
     local: function_local_annotation
 
@@ -123,16 +138,22 @@ def annotation_scope_value() -> str:
             local: method_local_annotation
             return f"{self.__annotations__['retained']()}-{value}"
     return Annotated().read(nested("nested-annotations"))
+annotation_scope_value.__module__ = 'operations'
 def augmented_value() -> str:
     return "-augmented"
+augmented_value.__module__ = 'operations'
 def delete_index() -> int:
     return 0
+delete_index.__module__ = 'operations'
 def type_alias_value():
     return str
+type_alias_value.__module__ = 'operations'
 def generated_value():
     yield yield_value()
+generated_value.__module__ = 'operations'
 def delegated_values():
     yield from yield_from_values()
+delegated_values.__module__ = 'operations'
 async def exercise() -> str:
     named = (result := named_value())
     callback = lambda: lambda_value()
@@ -149,6 +170,7 @@ async def exercise() -> str:
     type RuntimeAlias = type_alias_value()
     values = [named, result, callback(), awaited, *generated, *delegated, *starred, *sliced, annotated, annotation_scope_value(), augmented, *deleted, RuntimeAlias.__value__.__name__]
     return "|".join(values)
+exercise.__module__ = 'operations'
 operations.annotated_value = annotated_value
 operations.annotation_scope_value = annotation_scope_value
 operations.augmented_value = augmented_value

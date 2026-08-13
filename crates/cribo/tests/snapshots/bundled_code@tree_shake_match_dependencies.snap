@@ -82,9 +82,11 @@ class _CriboPreservedFinder:
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('routing', '_cribo_init___cribo_6c62dc_routing', 'routing', False)
+_cribo_finder.register('formatting', None, None, False, {'format_kind': 'format_kind'})
 formatting = _cribo.types.SimpleNamespace(__name__='formatting')
 def format_kind(kind: str) -> str:
     return f"handled:{kind}"
+format_kind.__module__ = 'formatting'
 formatting.format_kind = format_kind
 routing = _cribo.types.SimpleNamespace(__name__='routing', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('routing', routing)

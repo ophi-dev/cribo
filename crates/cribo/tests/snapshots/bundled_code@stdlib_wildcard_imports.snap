@@ -81,6 +81,7 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('myhelper', None, None, False, {'process_data': 'process_data'})
 myhelper = _cribo.types.SimpleNamespace(__name__='myhelper', __doc__='Helper module to test import aliasing that shadows stdlib names.')
 """Helper module to test import aliasing that shadows stdlib names."""
 def process_data(data):
@@ -88,6 +89,7 @@ def process_data(data):
     if isinstance(data, dict):
         return {"processed": True, "original": data}
     return {"processed": True, "original": str(data)}
+process_data.__module__ = 'myhelper'
 myhelper.process_data = process_data
 """Test fixture for stdlib wildcard imports and local shadowing."""
 from collections import *

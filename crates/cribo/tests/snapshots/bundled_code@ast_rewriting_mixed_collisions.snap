@@ -89,9 +89,9 @@ _cribo_finder.register('services.auth.manager', '_cribo_init___cribo_ee1d45_serv
 _cribo_finder.register('core.utils', '_cribo_init___cribo_c57a32_core_utils', 'core_utils', True)
 _cribo_finder.register('core', '_cribo_init___cribo_62c387_core', 'core', True)
 _cribo_finder.register('core.database', None, 'core_database', True)
-_cribo_finder.register('core.utils.helpers', None, None, False, {'Logger': 'Logger_4'})
-_cribo_finder.register('models.user', None, None, False, {'Logger': 'Logger_2', 'User': 'User_2'})
-_cribo_finder.register('core.database.connection', None, None, False, {'Connection': 'Connection_6'})
+_cribo_finder.register('core.utils.helpers', None, None, False, {'Logger': 'Logger_4', 'process': 'process_6', 'validate': 'validate_6'})
+_cribo_finder.register('models.user', None, None, False, {'Logger': 'Logger_2', 'User': 'User_2', 'process_user': 'process_user'})
+_cribo_finder.register('core.database.connection', None, None, False, {'Connection': 'Connection_6', 'process': 'process_7'})
 core_utils_helpers = _cribo.types.SimpleNamespace(__name__='core.utils.helpers', __doc__='\nUtility helpers module with extensive naming conflicts\n')
 core = _cribo.types.SimpleNamespace(__name__='core', __initializing__=False, __initialized__=False, __path__=[])
 core_utils = _cribo.types.SimpleNamespace(__name__='core.utils', __initializing__=False, __initialized__=False, __path__=[])
@@ -133,6 +133,9 @@ def process_6(data: _cribo.typing.Any) -> str:
         processed = str(data)
     result_6 += 1
     return f"util_processed: {processed}"
+process_6.__module__ = 'core.utils.helpers'
+process_6.__name__ = 'process'
+process_6.__qualname__ = 'process'
 def validate_6(data: _cribo.typing.Any) -> bool:
     """Utility validate function - conflicts with validate in other modules"""
     if data is None:
@@ -144,6 +147,9 @@ def validate_6(data: _cribo.typing.Any) -> bool:
     elif isinstance(data, (int, float)):
         return data >= 0
     return True
+validate_6.__module__ = 'core.utils.helpers'
+validate_6.__name__ = 'validate'
+validate_6.__qualname__ = 'validate'
 core_utils_helpers.Logger = Logger_4
 core_utils_helpers.User = User_4
 core_utils_helpers.process = process_6
@@ -284,6 +290,7 @@ def process_user(data: _cribo.typing.Any) -> str:
         processed = "model_user_invalid_data"
     result_3["last_process"] = processed
     return processed
+process_user.__module__ = 'models.user'
 models_user.Logger = Logger_2
 models_user.User = User_2
 models_user.connection = connection_3
@@ -498,6 +505,9 @@ def process_7(data):
     processed = {"db_process": True, "data": validated, "user_processing": user_result, "timestamp": "2024-01-01"}
     result_8.append(processed)
     return f"db_processed: {data}"
+process_7.__module__ = 'core.database.connection'
+process_7.__name__ = 'process'
+process_7.__qualname__ = 'process'
 core_database_connection.Connection = Connection_6
 core_database_connection.connection = connection_5
 core_database_connection.process = process_7

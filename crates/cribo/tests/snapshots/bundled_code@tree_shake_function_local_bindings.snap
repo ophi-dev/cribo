@@ -82,6 +82,8 @@ class _CriboPreservedFinder:
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('class_side_effects', '_cribo_init___cribo_b0c5db_class_side_effects', 'class_side_effects', False)
+_cribo_finder.register('scoped_imports', None, None, False, {'nested_value': 'nested_value', 'method_value': 'method_value'})
+_cribo_finder.register('scope_cases', None, None, False, {'exercise': 'exercise'})
 registry = _cribo.types.SimpleNamespace(__name__='registry')
 events = []
 registry.events = events
@@ -110,8 +112,10 @@ class_side_effects.__init__ = _cribo_init___cribo_b0c5db_class_side_effects
 scoped_imports = _cribo.types.SimpleNamespace(__name__='scoped_imports')
 def nested_value():
     return "import"
+nested_value.__module__ = 'scoped_imports'
 def method_value():
     return "method-import"
+method_value.__module__ = 'scoped_imports'
 scoped_imports.method_value = method_value
 scoped_imports.nested_value = nested_value
 scope_cases = _cribo.types.SimpleNamespace(__name__='scope_cases')
@@ -143,6 +147,7 @@ def exercise(parameter: str) -> str:
     module_state += "-dependency"
     values = [parameter, local_assignment, *comprehension_values, exception_value, pattern_value, loop_value, str(_cribo.math.prod((2, 3))), nested(), LocalType.value(), module_state]
     return "|".join(values)
+exercise.__module__ = 'scope_cases'
 scope_cases.exercise = exercise
 scope_cases.module_state = module_state
 class_side_effects = _cribo_init___cribo_b0c5db_class_side_effects(class_side_effects)

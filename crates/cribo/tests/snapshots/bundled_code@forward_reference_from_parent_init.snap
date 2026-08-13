@@ -85,7 +85,7 @@ _cribo_finder.register('parent', '_cribo_init___cribo_710264_parent', 'parent', 
 _cribo_finder.register('parent.subpkg', '_cribo_init___cribo_0ac738_parent_subpkg', 'parent_subpkg', True)
 _cribo_finder.register('parent.base', None, None, False, {'BaseClass': 'BaseClass'})
 _cribo_finder.register('parent.another', None, None, False, {'AnotherClass': 'AnotherClass'})
-_cribo_finder.register('parent.child', None, None, False, {'MyClass': 'MyClass'})
+_cribo_finder.register('parent.child', None, None, False, {'MyClass': 'MyClass', 'helper_function': 'helper_function'})
 _cribo_finder.register('parent.subpkg.submodule', None, None, False, {'SubpkgClass': 'SubpkgClass'})
 parent_base = _cribo.types.SimpleNamespace(__name__='parent.base', __doc__='Base module defining base classes.')
 parent = _cribo.types.SimpleNamespace(__name__='parent', __initializing__=False, __initialized__=False, __path__=[])
@@ -123,6 +123,7 @@ MyClass.__module__ = 'parent.child'
 def helper_function():
     """A helper function."""
     return "helper"
+helper_function.__module__ = 'parent.child'
 parent_child.MyClass = MyClass
 parent_child.helper_function = helper_function
 parent_subpkg_submodule = _cribo.types.SimpleNamespace(__name__='parent.subpkg.submodule', __doc__='Submodule in subpackage.')

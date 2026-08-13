@@ -84,6 +84,7 @@ _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('package', '_cribo_init___cribo_cca96f_package', 'package', True)
 _cribo_finder.register('package._subpackage', '_cribo_init___cribo_66c36f_package__subpackage', 'package__subpackage', True)
 _cribo_finder.register('package._subpackage.module_a', None, None, False, {'MyClass': 'MyClass'})
+_cribo_finder.register('package._subpackage.module_b', None, None, False, {'my_function': 'my_function'})
 package__subpackage_module_a = _cribo.types.SimpleNamespace(__name__='package._subpackage.module_a', __doc__='Module A with MyClass.')
 package = _cribo.types.SimpleNamespace(__name__='package', __initializing__=False, __initialized__=False, __path__=[])
 package__subpackage = _cribo.types.SimpleNamespace(__name__='package._subpackage', __initializing__=False, __initialized__=False, __path__=[])
@@ -103,6 +104,7 @@ package__subpackage.module_b = package__subpackage_module_b
 def my_function():
     """A function exported through wildcards."""
     return "from module_b"
+my_function.__module__ = 'package._subpackage.module_b'
 package__subpackage_module_b.my_function = my_function
 def _cribo_init___cribo_cca96f_package(self):
     if getattr(self, '__initialized__', False):

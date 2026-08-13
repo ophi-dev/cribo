@@ -81,6 +81,8 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('myrequests', None, 'myrequests', True)
+_cribo_finder.register('myrequests.compat', None, None, False, {'is_str': 'is_str'})
 myrequests_compat = _cribo.types.SimpleNamespace(__name__='myrequests.compat', __doc__='Compatibility module similar to requests.compat')
 myrequests = _cribo.types.SimpleNamespace(__name__='myrequests', __initializing__=False, __initialized__=False, __path__=[])
 myrequests.compat = myrequests_compat
@@ -91,6 +93,7 @@ builtin_str = str
 def is_str(value):
     """Check if value is a string"""
     return isinstance(value, str)
+is_str.__module__ = 'myrequests.compat'
 myrequests_compat.JSONDecodeError = JSONDecodeError_2
 myrequests_compat.MutableMapping = MutableMapping_2
 myrequests_compat.builtin_str = builtin_str

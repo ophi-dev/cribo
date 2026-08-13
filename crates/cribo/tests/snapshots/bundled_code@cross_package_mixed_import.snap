@@ -85,7 +85,11 @@ _cribo_finder.register('models', '_cribo_init___cribo_563ea2_models', 'models', 
 _cribo_finder.register('core.database.connection', '_cribo_init___cribo_1f0c3d_core_database_connection', 'core_database_connection', False)
 _cribo_finder.register('core.database', '_cribo_init___cribo_782908_core_database', 'core_database', True)
 _cribo_finder.register('core', '_cribo_init___cribo_f00e4b_core', 'core', True)
+_cribo_finder.register('core.utils', None, 'core_utils', True)
+_cribo_finder.register('core.utils.helpers', None, None, False, {'validate': 'validate'})
+_cribo_finder.register('core.utils.config', None, None, False, {'set_config_reference': 'set_config_reference', 'get_config': 'get_config', 'is_debug': 'is_debug'})
 _cribo_finder.register('models.base', None, None, False, {'BaseModel': 'BaseModel'})
+_cribo_finder.register('models.user', None, None, False, {'process_user': 'process_user'})
 core_utils_helpers = _cribo.types.SimpleNamespace(__name__='core.utils.helpers', __doc__='Helper utilities for the core package.')
 core = _cribo.types.SimpleNamespace(__name__='core', __initializing__=False, __initialized__=False, __path__=[])
 core_utils = _cribo.types.SimpleNamespace(__name__='core.utils', __initializing__=False, __initialized__=False, __path__=[])
@@ -95,6 +99,7 @@ core_utils.helpers = core_utils_helpers
 def validate(value: str) -> bool:
     """Validate a string value.\n\n    This function is imported by core.database.connection using\n    a relative import (..utils.helpers), demonstrating relative\n    imports within the same package hierarchy.\n    """
     return bool(value and not value.startswith("_"))
+validate.__module__ = 'core.utils.helpers'
 core_utils_helpers.validate = validate
 core_version = _cribo.types.SimpleNamespace(__name__='core.version', __doc__='Version module separate from __init__ to avoid circular imports.')
 core.version = core_version
@@ -109,16 +114,19 @@ def set_config_reference(config):
     """Set the configuration reference - called by parent package."""
     global _module_config
     _module_config = config
+set_config_reference.__module__ = 'core.utils.config'
 def get_config():
     """Get the current configuration."""
     if _module_config is None:
         return {"debug": False}
     return _module_config.copy()
+get_config.__module__ = 'core.utils.config'
 def is_debug():
     """Check if debug mode is enabled."""
     if _module_config is None:
         return False
     return _module_config.get("debug", False)
+is_debug.__module__ = 'core.utils.config'
 core_utils_config.get_config = get_config
 core_utils_config.is_debug = is_debug
 core_utils_config.set_config_reference = set_config_reference
@@ -201,6 +209,7 @@ models.user = models_user
 def process_user(name: str) -> str:
     """Process a user-related string.\n\n    This function is imported by core.database.connection,\n    demonstrating a cross-package absolute import.\n    """
     return f"user_{name}_processed"
+process_user.__module__ = 'models.user'
 models_user.process_user = process_user
 _cribo_models__base_model = None
 def _cribo_init___cribo_563ea2_models(self):

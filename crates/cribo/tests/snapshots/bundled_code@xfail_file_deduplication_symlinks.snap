@@ -81,16 +81,20 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('lib', None, 'lib', True)
+_cribo_finder.register('lib.helpers', None, None, False, {'get_location': 'get_location', 'increment_counter': 'increment_counter'})
 lib = _cribo.types.SimpleNamespace(__name__='lib')
 lib_helpers = _cribo.types.SimpleNamespace(__name__='lib.helpers')
 lib.helpers = lib_helpers
 def get_location():
     return "lib/helpers.py"
+get_location.__module__ = 'lib.helpers'
 counter = 0
 def increment_counter():
     global counter
     counter += 1
     return counter
+increment_counter.__module__ = 'lib.helpers'
 lib_helpers.counter = counter
 lib_helpers.get_location = get_location
 lib_helpers.increment_counter = increment_counter

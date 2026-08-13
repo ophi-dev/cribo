@@ -81,10 +81,12 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('pure_parent', None, None, True, {'describe': 'describe'})
 pure_parent = _cribo.types.SimpleNamespace(__name__='pure_parent', __doc__='Bundled distribution constraining a dependency the project also imports.')
 """Bundled distribution constraining a dependency the project also imports."""
 def describe():
     return "parent"
+describe.__module__ = 'pure_parent'
 pure_parent.describe = describe
 import external_dep
 print(pure_parent.describe(), external_dep.NAME)

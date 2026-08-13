@@ -83,6 +83,7 @@ _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('mypackage', None, 'mypackage', True)
 _cribo_finder.register('mypackage.abc', None, None, False, {'MyClass': 'MyClass'})
+_cribo_finder.register('mypackage.pretty', None, None, False, {'format_object': 'format_object'})
 mypackage_abc = _cribo.types.SimpleNamespace(__name__='mypackage.abc', __doc__="Local module named 'abc' - should not be confused with stdlib abc.")
 mypackage = _cribo.types.SimpleNamespace(__name__='mypackage', __initializing__=False, __initialized__=False, __path__=[])
 mypackage.abc = mypackage_abc
@@ -103,6 +104,7 @@ mypackage.pretty = mypackage_pretty
 def format_object(obj: MyClass) -> str:
     """Format an object from the local abc module."""
     return f"Formatted: {obj}"
+format_object.__module__ = 'mypackage.pretty'
 mypackage_pretty.format_object = format_object
 """Test case for modules with same name as stdlib modules."""
 result = format_object(MyClass())

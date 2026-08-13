@@ -81,6 +81,8 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('initpkg', None, 'initpkg', True)
+_cribo_finder.register('initpkg.sub', None, None, False, {'describe': 'describe'})
 initpkg = _cribo.types.SimpleNamespace(__name__='initpkg', __doc__='Parent initializer whose side effect must run before the submodule loads.')
 """Parent initializer whose side effect must run before the submodule loads."""
 BANNER = "parent initialized"
@@ -89,6 +91,7 @@ initpkg_sub = _cribo.types.SimpleNamespace(__name__='initpkg.sub')
 initpkg.sub = initpkg_sub
 def describe():
     return f"sub sees: {BANNER}"
+describe.__module__ = 'initpkg.sub'
 initpkg_sub.describe = describe
 importlib = _cribo.importlib
 sub = _cribo.types.SimpleNamespace(describe=describe)

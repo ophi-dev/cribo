@@ -83,6 +83,7 @@ _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('pkg._internal', '_cribo_init___cribo_73cafd_pkg__internal', 'pkg__internal', False)
 _cribo_finder.register('pkg', None, 'pkg', True)
+_cribo_finder.register('pkg.consumer', None, None, False, {'get_validators': 'get_validators'})
 pkg__internal = _cribo.types.SimpleNamespace(__name__='pkg._internal', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('pkg._internal', pkg__internal)
 def _cribo_init___cribo_73cafd_pkg__internal(self):
@@ -133,6 +134,7 @@ def get_validators():
     assert pkg._internal._HEADER_VALIDATORS_BYTE is not None
     assert pkg._internal._HEADER_VALIDATORS_STR is not None
     return pkg._internal.HEADER_VALIDATORS
+get_validators.__module__ = 'pkg.consumer'
 pkg_consumer.get_validators = get_validators
 """Test case for bundling modules that have private module variables accessed by other modules."""
 validators = get_validators()

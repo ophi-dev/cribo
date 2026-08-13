@@ -82,16 +82,20 @@ class _CriboPreservedFinder:
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('external_plugin', '_cribo_init___cribo_f23a44_external_plugin', 'external_plugin', False)
+_cribo_finder.register('state', None, None, False, {'get_state': 'get_state', 'add_plugin': 'add_plugin'})
+_cribo_finder.register('utils', None, None, False, {'unused_function': 'unused_function'})
 state = _cribo.types.SimpleNamespace(__name__='state', __doc__='Shared state module to avoid circular imports.')
 """Shared state module to avoid circular imports."""
 _registered_plugins = []
 def get_state():
     """Get a copy of the current state."""
     return _registered_plugins.copy()
+get_state.__module__ = 'state'
 def add_plugin(name):
     """Add a plugin to the registry."""
     _registered_plugins.append(name)
     return name
+add_plugin.__module__ = 'state'
 state.add_plugin = add_plugin
 state.get_state = get_state
 external_plugin = _cribo.types.SimpleNamespace(__name__='external_plugin', __initializing__=False, __initialized__=False)
@@ -124,6 +128,7 @@ utils = _cribo.types.SimpleNamespace(__name__='utils', __doc__='Utility module w
 def unused_function():
     """This function is imported but never used."""
     return "unused"
+unused_function.__module__ = 'utils'
 utils.unused_function = unused_function
 """Test that side-effect imports are preserved even when symbols are unused."""
 registered_plugins = []

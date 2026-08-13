@@ -155,12 +155,18 @@ pub(crate) fn statically_raises_type_error(call: &ExprCall) -> bool {
 /// `pkg.mod.sub` even when `pkg.mod` is a plain module (and then fails at runtime).
 ///
 /// Returns `None` when the anchor has fewer components than the relative level
-/// requires; CPython raises `ImportError` for that call, so it must be preserved
-/// verbatim.
+/// requires (CPython raises `ImportError`) or when the anchor is empty (CPython
+/// raises `TypeError` for a falsy package with a relative name); either call
+/// must be preserved verbatim so the exception surfaces at runtime.
 pub(crate) fn resolve_relative_name(name: &str, package: &str) -> Option<String> {
     let level = name.chars().take_while(|&c| c == '.').count();
     if level == 0 {
         return Some(name.to_owned());
+    }
+    // CPython: "the 'package' argument is required to perform a relative
+    // import" — an empty anchor raises TypeError before any import machinery
+    if package.is_empty() {
+        return None;
     }
     let name_part = name.trim_start_matches('.');
     let mut anchor_parts: Vec<&str> = package.split('.').collect();

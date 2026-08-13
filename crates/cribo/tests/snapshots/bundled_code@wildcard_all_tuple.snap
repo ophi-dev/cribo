@@ -81,11 +81,13 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
+_cribo_finder.register('exporter', None, None, False, {'used': 'used'})
 exporter = _cribo.types.SimpleNamespace(__name__='exporter', __doc__='Export a single public symbol through tuple-based __all__.')
 """Export a single public symbol through tuple-based __all__."""
 def used():
     """Return the symbol that should survive wildcard import tree-shaking."""
     return "used from tuple __all__"
+used.__module__ = 'exporter'
 exporter.used = used
 """Exercise wildcard imports from modules whose __all__ is declared as a tuple."""
 used = exporter.used

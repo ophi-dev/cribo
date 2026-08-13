@@ -81,12 +81,13 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
-_cribo_finder.register('utils', None, None, False, {'UtilityClass': 'UtilityClass'})
+_cribo_finder.register('utils', None, None, False, {'helper_function': 'helper_function', 'UtilityClass': 'UtilityClass'})
 utils = _cribo.types.SimpleNamespace(__name__='utils', __doc__='\nUtility module that demonstrates __all__ handling.\nOnly exports helper_function and UtilityClass, not _internal_function.\n')
 """\nUtility module that demonstrates __all__ handling.\nOnly exports helper_function and UtilityClass, not _internal_function.\n"""
 def helper_function():
     """A public helper function."""
     return "helper_result"
+helper_function.__module__ = 'utils'
 class UtilityClass:
     """A utility class that should be exposed."""
 

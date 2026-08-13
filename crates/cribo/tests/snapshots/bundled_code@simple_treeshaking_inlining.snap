@@ -81,7 +81,7 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
-_cribo_finder.register('speaking', None, None, False, {'PersonTitle': 'PersonTitle', 'Person': 'Person', 'Phrase': 'Phrase'})
+_cribo_finder.register('speaking', None, None, False, {'PersonTitle': 'PersonTitle', 'Person': 'Person', 'create_ms': 'create_ms', 'Phrase': 'Phrase', 'say': 'say'})
 speaking = _cribo.types.SimpleNamespace(__name__='speaking')
 class PersonTitle(_cribo.enum.Enum):
     MR = "Mr."
@@ -101,6 +101,7 @@ class Person:
 Person.__module__ = 'speaking'
 def create_ms(name: str) -> Person:
     return Person(name, PersonTitle.MS)
+create_ms.__module__ = 'speaking'
 ALICE_NAME = "Alice"
 class Phrase(_cribo.typing.TypedDict):
     what: str
@@ -108,6 +109,7 @@ class Phrase(_cribo.typing.TypedDict):
 Phrase.__module__ = 'speaking'
 def say(phrase: Phrase) -> str:
     return f"{phrase['what']} {phrase['whom'].greet()}"
+say.__module__ = 'speaking'
 speaking.ALICE_NAME = ALICE_NAME
 speaking.Person = Person
 speaking.PersonTitle = PersonTitle
