@@ -1595,6 +1595,11 @@ pub struct ModuleResolver {
     /// modules, registered in `sys.modules`, and eagerly initialized so the
     /// preserved runtime call resolves them
     preserved_importlib_module_targets: RefCell<IndexSet<String>>,
+    /// Module names whose `sys.modules` entries CONSUMER modules observe
+    /// (`sys.modules["dep"]`, `sys.modules[dep.__name__]`): bundled targets must
+    /// register in `sys.modules` when their init runs, because static imports
+    /// bypass the import machinery
+    sys_modules_observed_targets: RefCell<IndexSet<String>>,
     /// Cache of resolved environment site-packages roots (hot path for resolution)
     site_packages_dirs_cache: RefCell<Option<Vec<PathBuf>>>,
     /// Distribution ownership indexed once for each searched filesystem root
@@ -1649,6 +1654,7 @@ impl ModuleResolver {
             resource_read_import_targets: RefCell::new(IndexSet::new()),
             global_distribution_enumeration: std::cell::Cell::new(false),
             preserved_importlib_module_targets: RefCell::new(IndexSet::new()),
+            sys_modules_observed_targets: RefCell::new(IndexSet::new()),
             site_packages_dirs_cache: RefCell::new(None),
             distribution_ownership_cache: RefCell::new(IndexMap::new()),
             entry_dir: None,
@@ -2023,6 +2029,11 @@ impl ModuleResolver {
     /// Return whether any parent component of a dotted module name resolves in the
     /// normal (non-fallback) search roots: the child must then come from that parent
     /// (or fail), never from the site-packages fallback.
+    ///
+    /// Only CONCRETE modules and regular packages stop the search. A PEP 420
+    /// namespace portion (directory without `__init__.py`) does not: Python keeps
+    /// scanning the remaining roots and a regular package found later wins, so the
+    /// fallback must stay reachable through local namespace portions.
     fn dotted_parent_resolves_locally(&self, module_name: &str) -> bool {
         let Some((parents, _)) = module_name.rsplit_once('.') else {
             return false;
@@ -2036,7 +2047,9 @@ impl ModuleResolver {
             prefix.push_str(part);
             let descriptor = ImportModuleDescriptor::from_module_name(&prefix);
             for search_dir in &search_dirs {
-                if self.resolve_in_directory(search_dir, &descriptor).is_some() {
+                if let Some(resolved) = self.resolve_in_directory(search_dir, &descriptor)
+                    && !matches!(resolved.source, ImportSource::NamespacePackage)
+                {
                     debug!(
                         "Parent '{prefix}' of '{module_name}' resolves in a normal search root; \
                          the site-packages fallback must not supply the child"
@@ -3199,6 +3212,28 @@ impl ModuleResolver {
             .contains(module_name)
     }
 
+    /// Record module names whose `sys.modules` entries consumer modules observe
+    /// (`sys.modules["dep"]`, `sys.modules[dep.__name__]`): bundled targets must
+    /// register in `sys.modules` when their init runs, because static imports
+    /// invoke the generated initializer directly rather than the import
+    /// machinery.
+    pub(crate) fn record_sys_modules_observed_targets(
+        &self,
+        module_names: impl IntoIterator<Item = String>,
+    ) {
+        let mut targets = self.sys_modules_observed_targets.borrow_mut();
+        for name in module_names {
+            targets.insert(name);
+        }
+    }
+
+    /// Return whether a consumer observes this module's `sys.modules` entry.
+    pub(crate) fn is_sys_modules_observed_target(&self, module_name: &str) -> bool {
+        self.sys_modules_observed_targets
+            .borrow()
+            .contains(module_name)
+    }
+
     /// Record import names whose package resources bundled code reads at runtime
     /// (`importlib.resources.files("provider")`, `pkgutil.get_data("provider", ..)`):
     /// the target needs its installed layout and import spec, so it and its package
@@ -3499,7 +3534,12 @@ impl ModuleResolver {
                     .iter_mut()
                     .find(|existing| existing.marker == parsed.marker)
                 {
-                    Self::merge_requirement_constraints(existing, parsed);
+                    if let Some(unmergeable) = Self::merge_requirement_constraints(existing, parsed)
+                    {
+                        // Conflicting direct URLs: emit both lines so the installer
+                        // reports the conflict
+                        branches.push(unmergeable);
+                    }
                 } else {
                     branches.push(parsed);
                 }
@@ -3523,10 +3563,16 @@ impl ModuleResolver {
     /// URL-based declaration wins and the conflicting constraint is reported: the
     /// pinned artifact is what the environment actually resolved, and emitting the
     /// specifier as a second line would make the requirements file self-conflicting.
+    ///
+    /// Two declarations pinning DIFFERENT direct URLs cannot be reconciled at all:
+    /// the incoming declaration is returned so the caller emits it as a separate
+    /// line, making the conflict visible to the installer instead of silently
+    /// dropping one artifact constraint. Identical URLs deduplicate. Returns `None`
+    /// when the incoming declaration was fully merged.
     pub(crate) fn merge_requirement_constraints(
         existing: &mut pep508_rs::Requirement<pep508_rs::VerbatimUrl>,
         incoming: pep508_rs::Requirement<pep508_rs::VerbatimUrl>,
-    ) {
+    ) -> Option<pep508_rs::Requirement<pep508_rs::VerbatimUrl>> {
         use pep508_rs::VersionOrUrl;
         for extra in &incoming.extras {
             if !existing.extras.contains(extra) {
@@ -3562,8 +3608,22 @@ impl ModuleResolver {
                 );
                 existing.version_or_url = Some(VersionOrUrl::Url(url));
             }
+            (Some(VersionOrUrl::Url(current)), Some(VersionOrUrl::Url(incoming_url)))
+                if current.to_string() != incoming_url.to_string() =>
+            {
+                warn!(
+                    "Requirement '{}' is pinned to two DIFFERENT direct URLs ({current} \
+                     and {incoming_url}); both are emitted so the installer reports the \
+                     conflict",
+                    existing.name
+                );
+                let mut returned = existing.clone();
+                returned.version_or_url = Some(VersionOrUrl::Url(incoming_url));
+                return Some(returned);
+            }
             _ => {}
         }
+        None
     }
 
     /// Normalize a distribution name per PEP 503 for set comparisons.
@@ -7618,6 +7678,38 @@ def read(package):
         );
 
         Ok(())
+    }
+
+    /// Duplicate requirement declarations pinning DIFFERENT direct URLs cannot be
+    /// reconciled: both lines are kept so the installer reports the conflict, while
+    /// identical URLs deduplicate silently.
+    #[test]
+    fn test_merge_requirement_constraints_conflicting_urls() {
+        use std::str::FromStr;
+        let mut existing = pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(
+            "dep @ https://example.com/dep-1.0.tar.gz",
+        )
+        .expect("requirement should parse");
+
+        // Identical URLs deduplicate: nothing is returned
+        let duplicate = existing.clone();
+        assert!(
+            ModuleResolver::merge_requirement_constraints(&mut existing, duplicate).is_none(),
+            "identical direct URLs must deduplicate"
+        );
+
+        // Conflicting URLs are unmergeable: the incoming pin is handed back
+        let conflicting = pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(
+            "dep @ https://example.com/dep-2.0.tar.gz",
+        )
+        .expect("requirement should parse");
+        let returned = ModuleResolver::merge_requirement_constraints(&mut existing, conflicting)
+            .expect("conflicting direct URLs must be returned for separate emission");
+        assert!(returned.to_string().contains("dep-2.0.tar.gz"));
+        assert!(
+            existing.to_string().contains("dep-1.0.tar.gz"),
+            "the existing pin must stay intact"
+        );
     }
 
     /// A distribution whose installed files include a top-level `.pth` startup hook

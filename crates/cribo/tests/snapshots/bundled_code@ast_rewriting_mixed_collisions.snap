@@ -55,6 +55,7 @@ class _CriboPreservedFinder:
 
     def __init__(self):
         self._targets = {}
+        self._loader = _CriboPreservedLoader
 
     def register(self, name, init, namespace, is_package, exports=None):
         self._targets[name] = init, namespace, is_package, exports or {}
@@ -64,7 +65,7 @@ class _CriboPreservedFinder:
         if entry is None:
             return None
         from importlib.machinery import ModuleSpec
-        return ModuleSpec(name, _CriboPreservedLoader(entry), is_package=entry[2])
+        return ModuleSpec(name, self._loader(entry), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('models.base', '_cribo_init___cribo_bca2f6_models_base', 'models_base', False)
@@ -141,6 +142,7 @@ def _cribo_init___cribo_62c387_core(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'core'
     CoreLogger = Logger_4
     core.CoreLogger = CoreLogger
     core_process = process_6
@@ -160,6 +162,7 @@ def _cribo_init___cribo_c57a32_core_utils(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'core.utils'
     Logger = Logger_4
     core_utils.Logger = Logger
     process = process_6
@@ -279,6 +282,7 @@ def _cribo_init___cribo_98ecc1_models(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'models'
     global models_base
     User = User_2
     models.User = User
@@ -308,6 +312,7 @@ def _cribo_init___cribo_bca2f6_models_base(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'models'
     global _cribo_models_base_result
     """\nBase model functionality with relative import conflicts\n"""
     Any = _cribo.typing.Any
@@ -477,6 +482,7 @@ def _cribo_init___cribo_ee1d45_services_auth_manager(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'services.auth'
     global _cribo_services_auth_manager_result
     global models_base
     """\nAuthentication manager with complex naming conflicts\n"""
@@ -637,6 +643,7 @@ def _cribo_init___cribo_93a195_services(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'services'
     global services_auth_manager
     __cribo_init_result = _cribo_init___cribo_b16105_services_auth(services_auth)
     for attr in dir(__cribo_init_result):
@@ -663,6 +670,7 @@ def _cribo_init___cribo_b16105_services_auth(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'services.auth'
     global services_auth_manager
     services_auth_manager = _cribo_init___cribo_ee1d45_services_auth_manager(services_auth_manager)
     User = services_auth_manager.User

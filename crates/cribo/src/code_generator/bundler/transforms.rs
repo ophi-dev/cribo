@@ -1855,12 +1855,14 @@ impl Bundler<'_> {
             Expr::Name(name_expr) => {
                 let name_str = name_expr.id.as_str();
 
-                // Special case: transform __name__ to module.__name__
-                if name_str == "__name__" && matches!(name_expr.ctx, ExprContext::Load) {
-                    // Transform __name__ -> module.__name__
+                // Special case: transform import globals to module attributes
+                // (__package__ is stamped on the namespace by the init prologue)
+                if matches!(name_str, "__name__" | "__package__")
+                    && matches!(name_expr.ctx, ExprContext::Load)
+                {
                     *expr = expressions::attribute(
                         expressions::name(module_var_name, ExprContext::Load),
-                        "__name__",
+                        name_str,
                         ExprContext::Load,
                     );
                 }

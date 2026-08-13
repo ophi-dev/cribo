@@ -80,19 +80,46 @@ impl InitializationPhase {
             ast_builder::expressions::bool_literal(true),
         ));
 
+        // Stamp __package__ with its real import-system value: a package is its own
+        // package, a submodule belongs to its parent, a top-level module to "".
+        // Body references to __package__ are rewritten to self.__package__, so
+        // conditionals, registry keys, and logger names observe the original value
+        // instead of the bundle entry's.
+        let module_is_package = bundler.get_module_id(ctx.module_name).is_some_and(|id| {
+            bundler.resolver.is_package_init(id) || bundler.resolver.is_namespace_package(id)
+        });
+        let package_value = if module_is_package {
+            ctx.module_name.to_owned()
+        } else {
+            ctx.module_name
+                .rsplit_once('.')
+                .map(|(parent, _)| parent.to_owned())
+                .unwrap_or_default()
+        };
+        state.body.push(ast_builder::statements::assign_attribute(
+            SELF_PARAM,
+            "__package__",
+            ast_builder::expressions::string_literal(&package_value),
+        ));
+
         // Register the module in sys.modules before executing its body, exactly like
         // Python's import machinery, but ONLY for modules that inspect sys.modules
-        // (self-references such as `sys.modules[__name__]`, membership checks):
-        // registering every bundled module would shadow installed distributions
-        // that native extensions re-import while the bundled copy is still
-        // initializing. Preserved import_module targets do NOT need this: their
-        // calls run through the real import machinery (via the bundle's meta-path
-        // finder), which manages sys.modules itself.
+        // (self-references such as `sys.modules[__name__]`, membership checks) or
+        // whose entry a CONSUMER observes (`sys.modules[dep.__name__]`, literal
+        // keys): registering every bundled module would shadow installed
+        // distributions that native extensions re-import while the bundled copy is
+        // still initializing. Preserved import_module targets do NOT need this:
+        // their calls run through the real import machinery (via the bundle's
+        // meta-path finder), which manages sys.modules itself.
         // The import machinery reads `__spec__` unguarded on registered parents when
         // resolving real submodule imports, so it must exist (None is valid).
         // self.__spec__ = None
         // _sys.modules[self.__name__] = self
-        if crate::visitors::utils::accesses_own_sys_modules_entry(&ast.body) {
+        if crate::visitors::utils::accesses_own_sys_modules_entry(&ast.body)
+            || bundler
+                .resolver
+                .is_sys_modules_observed_target(ctx.module_name)
+        {
             state.registers_in_sys_modules = true;
             state.body.push(ast_builder::statements::assign_attribute(
                 SELF_PARAM,

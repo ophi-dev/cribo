@@ -55,6 +55,7 @@ class _CriboPreservedFinder:
 
     def __init__(self):
         self._targets = {}
+        self._loader = _CriboPreservedLoader
 
     def register(self, name, init, namespace, is_package, exports=None):
         self._targets[name] = init, namespace, is_package, exports or {}
@@ -64,7 +65,7 @@ class _CriboPreservedFinder:
         if entry is None:
             return None
         from importlib.machinery import ModuleSpec
-        return ModuleSpec(name, _CriboPreservedLoader(entry), is_package=entry[2])
+        return ModuleSpec(name, self._loader(entry), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('child_with_init', '_cribo_init___cribo_651687_child_with_init', 'child_with_init', False)
@@ -78,6 +79,7 @@ def _cribo_init___cribo_651687_child_with_init(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = ''
     global _cribo_child_with_init__initialized
     global main
     """Child module with initialization code that imports from parent (circular dependency)."""
@@ -122,6 +124,7 @@ def _cribo_init___cribo_24f0c8_main(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = ''
     global child_with_init
     """Entry module with a child that imports back from it (circular dependency)."""
     child_with_init = _cribo_init___cribo_651687_child_with_init(child_with_init)

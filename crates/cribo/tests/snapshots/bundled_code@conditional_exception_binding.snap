@@ -55,6 +55,7 @@ class _CriboPreservedFinder:
 
     def __init__(self):
         self._targets = {}
+        self._loader = _CriboPreservedLoader
 
     def register(self, name, init, namespace, is_package, exports=None):
         self._targets[name] = init, namespace, is_package, exports or {}
@@ -64,7 +65,7 @@ class _CriboPreservedFinder:
         if entry is None:
             return None
         from importlib.machinery import ModuleSpec
-        return ModuleSpec(name, _CriboPreservedLoader(entry), is_package=entry[2])
+        return ModuleSpec(name, self._loader(entry), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('exception_source', '_cribo_init___cribo_b407bb_exception_source', 'exception_source', False)
@@ -77,6 +78,7 @@ def _cribo_init___cribo_124c30_exception_observer(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = ''
     global exception_source
     exception_source = _cribo_init___cribo_b407bb_exception_source(exception_source)
     self.exception_source = exception_source
@@ -98,6 +100,7 @@ def _cribo_init___cribo_b407bb_exception_source(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = ''
     global exception_observer
     try:
         raise RuntimeError("visible")

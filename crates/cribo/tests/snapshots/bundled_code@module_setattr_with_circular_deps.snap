@@ -55,6 +55,7 @@ class _CriboPreservedFinder:
 
     def __init__(self):
         self._targets = {}
+        self._loader = _CriboPreservedLoader
 
     def register(self, name, init, namespace, is_package, exports=None):
         self._targets[name] = init, namespace, is_package, exports or {}
@@ -64,7 +65,7 @@ class _CriboPreservedFinder:
         if entry is None:
             return None
         from importlib.machinery import ModuleSpec
-        return ModuleSpec(name, _CriboPreservedLoader(entry), is_package=entry[2])
+        return ModuleSpec(name, self._loader(entry), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('pkg', '_cribo_init___cribo_1fb248_pkg', 'pkg', True)
@@ -118,6 +119,7 @@ def _cribo_init___cribo_1fb248_pkg(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'pkg'
     self.AsyncStream = pkg__types.AsyncStream
     self.SyncStream = pkg__types.SyncStream
     global pkg__client, pkg__main
@@ -155,6 +157,7 @@ def _cribo_init___cribo_7e63ae_pkg__client(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'pkg'
     """Client module with circular import and other dependencies."""
     AsyncStream = pkg.AsyncStream
     self.AsyncStream = AsyncStream
@@ -190,6 +193,7 @@ def _cribo_init___cribo_fc6bcd_pkg__main(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'pkg'
     global pkg__client
     """Main module that imports client which imports back to parent."""
     pkg__client = _cribo_init___cribo_7e63ae_pkg__client(pkg__client)

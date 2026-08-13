@@ -55,6 +55,7 @@ class _CriboPreservedFinder:
 
     def __init__(self):
         self._targets = {}
+        self._loader = _CriboPreservedLoader
 
     def register(self, name, init, namespace, is_package, exports=None):
         self._targets[name] = init, namespace, is_package, exports or {}
@@ -64,7 +65,7 @@ class _CriboPreservedFinder:
         if entry is None:
             return None
         from importlib.machinery import ModuleSpec
-        return ModuleSpec(name, _CriboPreservedLoader(entry), is_package=entry[2])
+        return ModuleSpec(name, self._loader(entry), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('my_package', '_cribo_init___cribo_c04dc3_my_package', 'my_package', True)
@@ -88,6 +89,7 @@ def _cribo_init___cribo_c04dc3_my_package(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'my_package'
     global my_package_mod_a
     my_package_mod_a = _cribo_init___cribo_e90488_my_package_mod_a(my_package_mod_a)
     mod_a = my_package.mod_a
@@ -106,6 +108,7 @@ def _cribo_init___cribo_e90488_my_package_mod_a(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'my_package'
     global my_package_mod_b
     my_package_mod_b = _cribo_init___cribo_d862bd_my_package_mod_b(my_package_mod_b)
     mod_b = my_package.mod_b
@@ -122,6 +125,7 @@ def _cribo_init___cribo_d862bd_my_package_mod_b(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'my_package'
     global my_package_mod_c
     my_package_mod_c = _cribo_init___cribo_748052_my_package_mod_c(my_package_mod_c)
     mod_c = my_package.mod_c
@@ -144,6 +148,7 @@ def _cribo_init___cribo_748052_my_package_mod_c(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'my_package'
     global my_package_mod_a
     my_package_mod_a = _cribo_init___cribo_e90488_my_package_mod_a(my_package_mod_a)
     mod_a = my_package.mod_a

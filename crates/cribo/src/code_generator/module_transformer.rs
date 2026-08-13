@@ -11,6 +11,32 @@ use ruff_python_ast::{
     ExceptHandler, Expr, ExprCall, ExprContext, ModModule, Stmt, StmtAssign, StmtFunctionDef,
 };
 
+/// Rewrite Load-context import globals (`__name__`, `__package__`) to attributes
+/// of the module namespace object, everywhere inside function and class bodies:
+/// they resolve to the MODULE's values at call time, and nested scopes capture
+/// the init parameter lexically. The namespace carries `__name__` from creation
+/// and `__package__` from the init prologue.
+struct ImportGlobalRewriter<'a> {
+    module_var_name: &'a str,
+}
+
+impl ruff_python_ast::visitor::transformer::Transformer for ImportGlobalRewriter<'_> {
+    fn visit_expr(&self, expr: &mut Expr) {
+        if let Expr::Name(name) = expr
+            && matches!(name.id.as_str(), "__name__" | "__package__")
+            && name.ctx == ExprContext::Load
+        {
+            *expr = ast_builder::expressions::attribute(
+                ast_builder::expressions::name(self.module_var_name, ExprContext::Load),
+                name.id.as_str(),
+                ExprContext::Load,
+            );
+            return;
+        }
+        ruff_python_ast::visitor::transformer::walk_expr(self, expr);
+    }
+}
+
 use crate::{
     ast_builder,
     code_generator::{
@@ -208,8 +234,17 @@ pub(crate) fn process_statements_for_init_function(
                 // process_body_recursive in the bundler, so we don't need to add them here
             }
             Stmt::ClassDef(class_def) => {
-                // Add class definition
-                body.push(stmt.clone());
+                // Add class definition, with import globals (__name__, __package__)
+                // in the class body rewritten to namespace attributes
+                let mut class_def_clone = class_def.clone();
+                {
+                    use ruff_python_ast::visitor::transformer::Transformer as _;
+                    let rewriter = ImportGlobalRewriter {
+                        module_var_name: SELF_PARAM,
+                    };
+                    rewriter.visit_body(&mut class_def_clone.body);
+                }
+                body.push(Stmt::ClassDef(class_def_clone));
 
                 let symbol_name = class_def.name.to_string();
 
@@ -243,6 +278,18 @@ pub(crate) fn process_statements_for_init_function(
             Stmt::FunctionDef(func_def) => {
                 // Clone the function for transformation
                 let mut func_def_clone = func_def.clone();
+
+                // Import globals (__name__, __package__) resolve to the MODULE's
+                // values at call time: rewrite them to namespace attributes in the
+                // whole function (nested scopes capture the init parameter
+                // lexically), independent of the global_info transform below
+                {
+                    use ruff_python_ast::visitor::transformer::Transformer as _;
+                    let rewriter = ImportGlobalRewriter {
+                        module_var_name: SELF_PARAM,
+                    };
+                    rewriter.visit_body(&mut func_def_clone.body);
+                }
 
                 // Transform nested functions to use module attributes for module-level vars
                 if let Some(ref global_info) = ctx.global_info {
@@ -662,12 +709,12 @@ pub(crate) fn transform_expr_for_module_vars(
 ) {
     match expr {
         Expr::Name(name) if name.ctx == ExprContext::Load => {
-            // Special case: transform __name__ to module.__name__
-            if name.id.as_str() == "__name__" {
-                // Transform __name__ -> module.__name__
+            // Special case: transform import globals to module attributes
+            // (__package__ is stamped on the namespace by the init prologue)
+            if matches!(name.id.as_str(), "__name__" | "__package__") {
                 *expr = ast_builder::expressions::attribute(
                     ast_builder::expressions::name(module_var_name, ExprContext::Load),
-                    "__name__",
+                    name.id.as_str(),
                     ExprContext::Load,
                 );
             }
@@ -1906,12 +1953,14 @@ fn transform_expr_for_module_vars_with_locals(
         Expr::Name(name_expr) => {
             let name_str = name_expr.id.as_str();
 
-            // Special case: transform __name__ to module.__name__
-            if name_str == "__name__" && matches!(name_expr.ctx, ExprContext::Load) {
-                // Transform __name__ -> module.__name__
+            // Special case: transform import globals to module attributes
+            // (__package__ is stamped on the namespace by the init prologue)
+            if matches!(name_str, "__name__" | "__package__")
+                && matches!(name_expr.ctx, ExprContext::Load)
+            {
                 *expr = ast_builder::expressions::attribute(
                     ast_builder::expressions::name(module_var_name, ExprContext::Load),
-                    "__name__",
+                    name_str,
                     ExprContext::Load,
                 );
             }

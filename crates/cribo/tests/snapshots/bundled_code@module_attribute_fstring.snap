@@ -55,6 +55,7 @@ class _CriboPreservedFinder:
 
     def __init__(self):
         self._targets = {}
+        self._loader = _CriboPreservedLoader
 
     def register(self, name, init, namespace, is_package, exports=None):
         self._targets[name] = init, namespace, is_package, exports or {}
@@ -64,7 +65,7 @@ class _CriboPreservedFinder:
         if entry is None:
             return None
         from importlib.machinery import ModuleSpec
-        return ModuleSpec(name, _CriboPreservedLoader(entry), is_package=entry[2])
+        return ModuleSpec(name, self._loader(entry), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('mypackage', '_cribo_init___cribo_a9fdaa_mypackage', 'mypackage', True)
@@ -82,6 +83,7 @@ def _cribo_init___cribo_a9fdaa_mypackage(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'mypackage'
     global mypackage_utils
     mypackage_utils = _cribo_init___cribo_dbce9e_mypackage_utils(mypackage_utils)
     get_version = mypackage_utils.get_version
@@ -98,6 +100,7 @@ def _cribo_init___cribo_dbce9e_mypackage_utils(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'mypackage'
     VERSION = mypackage_constants.VERSION
     mypackage_utils.VERSION = VERSION
 

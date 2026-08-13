@@ -1,0 +1,9 @@
+---
+source: crates/cribo/tests/test_bundling_snapshots.rs
+input_file: crates/cribo/tests/fixtures/sys_modules_consumer_identity/main.py
+---
+ExecutionResults {
+    status: Success,
+    stdout: "dep loaded\nby dynamic key: True\nby literal key: True\nvalue: observable",
+    stderr: "",
+}

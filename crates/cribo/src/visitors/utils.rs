@@ -259,6 +259,195 @@ pub(crate) fn accesses_own_sys_modules_entry(body: &[ruff_python_ast::Stmt]) -> 
     detector.found
 }
 
+/// Collect the module names whose `sys.modules` entries a CONSUMER module
+/// observes: literal keys (`sys.modules["dep"]`) and import-resolved dynamic
+/// keys (`sys.modules[dep.__name__]` where `dep` is bound by `import dep`),
+/// through subscripts, `in`/`not in` membership, and `.get`/`.setdefault`/
+/// `.pop` calls on `sys.modules` (including aliased forms).
+///
+/// Bundled modules observed this way must register in `sys.modules` when their
+/// init runs: static imports call the generated initializer directly rather
+/// than the import machinery, so nothing else would populate the entry.
+pub(crate) fn sys_modules_observed_module_names(
+    body: &[ruff_python_ast::Stmt],
+) -> crate::types::FxIndexSet<String> {
+    use ruff_python_ast::{
+        CmpOp, Stmt,
+        visitor::{Visitor, walk_expr, walk_stmt},
+    };
+
+    use crate::types::FxIndexSet;
+
+    /// Collect `sys`/`sys.modules` aliases plus import bindings (name -> module).
+    struct ConsumerAliasCollector {
+        sys_aliases: FxIndexSet<String>,
+        modules_aliases: FxIndexSet<String>,
+        import_bindings: crate::types::FxIndexMap<String, String>,
+    }
+
+    impl<'ast> Visitor<'ast> for ConsumerAliasCollector {
+        fn visit_stmt(&mut self, stmt: &'ast Stmt) {
+            match stmt {
+                Stmt::Import(import_stmt) => {
+                    for alias in &import_stmt.names {
+                        let module_name = alias.name.as_str();
+                        if module_name == "sys" {
+                            let bound_name = alias
+                                .asname
+                                .as_ref()
+                                .map_or_else(|| alias.name.as_str(), |name| name.as_str());
+                            self.sys_aliases.insert(bound_name.to_owned());
+                            continue;
+                        }
+                        if let Some(asname) = &alias.asname {
+                            self.import_bindings
+                                .insert(asname.as_str().to_owned(), module_name.to_owned());
+                        } else {
+                            let top_level = module_name.split('.').next().unwrap_or(module_name);
+                            self.import_bindings
+                                .insert(top_level.to_owned(), top_level.to_owned());
+                        }
+                    }
+                }
+                Stmt::ImportFrom(import_from) if import_from.level == 0 => {
+                    if let Some(module) = import_from.module.as_deref() {
+                        for alias in &import_from.names {
+                            if alias.name.as_str() == "*" {
+                                continue;
+                            }
+                            let bound_name = alias
+                                .asname
+                                .as_ref()
+                                .map_or_else(|| alias.name.as_str(), |name| name.as_str());
+                            if module == "sys" && alias.name.as_str() == "modules" {
+                                self.modules_aliases.insert(bound_name.to_owned());
+                                continue;
+                            }
+                            // `from pkg import sub` may bind the submodule
+                            self.import_bindings.insert(
+                                bound_name.to_owned(),
+                                format!("{module}.{}", alias.name.as_str()),
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+            walk_stmt(self, stmt);
+        }
+    }
+
+    struct ObservedKeyCollector {
+        observed: FxIndexSet<String>,
+        sys_aliases: FxIndexSet<String>,
+        modules_aliases: FxIndexSet<String>,
+        import_bindings: crate::types::FxIndexMap<String, String>,
+    }
+
+    impl ObservedKeyCollector {
+        fn is_sys_modules(&self, expr: &Expr) -> bool {
+            match expr {
+                Expr::Attribute(attribute) if attribute.attr.as_str() == "modules" => {
+                    match &*attribute.value {
+                        Expr::Name(name) => self.sys_aliases.contains(name.id.as_str()),
+                        Expr::Attribute(inner) => inner.attr.as_str() == "sys",
+                        _ => false,
+                    }
+                }
+                Expr::Name(name) => self.modules_aliases.contains(name.id.as_str()),
+                _ => false,
+            }
+        }
+
+        /// Resolve a key expression to a module name: a string literal, or an
+        /// `<import binding>.__name__` chain.
+        fn resolve_key(&self, expr: &Expr) -> Option<String> {
+            match expr {
+                Expr::StringLiteral(literal) => Some(literal.value.to_str().to_owned()),
+                Expr::Attribute(attribute) if attribute.attr.as_str() == "__name__" => {
+                    let mut segments: Vec<&str> = Vec::new();
+                    let mut current = &*attribute.value;
+                    loop {
+                        match current {
+                            Expr::Attribute(inner) => {
+                                segments.push(inner.attr.as_str());
+                                current = &inner.value;
+                            }
+                            Expr::Name(name) => {
+                                let base = self.import_bindings.get(name.id.as_str())?;
+                                let mut path = base.clone();
+                                for segment in segments.iter().rev() {
+                                    path.push('.');
+                                    path.push_str(segment);
+                                }
+                                return Some(path);
+                            }
+                            _ => return None,
+                        }
+                    }
+                }
+                _ => None,
+            }
+        }
+
+        fn record_key(&mut self, expr: &Expr) {
+            if let Some(name) = self.resolve_key(expr) {
+                self.observed.insert(name);
+            }
+        }
+    }
+
+    impl<'ast> Visitor<'ast> for ObservedKeyCollector {
+        fn visit_expr(&mut self, expr: &'ast Expr) {
+            match expr {
+                Expr::Subscript(subscript) if self.is_sys_modules(&subscript.value) => {
+                    self.record_key(&subscript.slice);
+                }
+                Expr::Compare(compare) => {
+                    for (op, comparator) in compare.ops.iter().zip(compare.comparators.iter()) {
+                        if matches!(op, CmpOp::In | CmpOp::NotIn) && self.is_sys_modules(comparator)
+                        {
+                            self.record_key(&compare.left);
+                        }
+                    }
+                }
+                Expr::Call(call) => {
+                    if let Expr::Attribute(method) = &*call.func
+                        && matches!(method.attr.as_str(), "get" | "setdefault" | "pop")
+                        && self.is_sys_modules(&method.value)
+                        && let Some(key) = call.arguments.args.first()
+                    {
+                        self.record_key(key);
+                    }
+                }
+                _ => {}
+            }
+            walk_expr(self, expr);
+        }
+    }
+
+    let mut alias_collector = ConsumerAliasCollector {
+        sys_aliases: FxIndexSet::default(),
+        modules_aliases: FxIndexSet::default(),
+        import_bindings: crate::types::FxIndexMap::default(),
+    };
+    alias_collector.sys_aliases.insert("sys".to_owned());
+    for stmt in body {
+        alias_collector.visit_stmt(stmt);
+    }
+
+    let mut collector = ObservedKeyCollector {
+        observed: FxIndexSet::default(),
+        sys_aliases: alias_collector.sys_aliases,
+        modules_aliases: alias_collector.modules_aliases,
+        import_bindings: alias_collector.import_bindings,
+    };
+    for stmt in body {
+        collector.visit_stmt(stmt);
+    }
+    collector.observed
+}
+
 #[cfg(test)]
 mod tests {
     use ruff_python_parser::parse_module;

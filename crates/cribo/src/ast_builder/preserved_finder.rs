@@ -64,6 +64,9 @@ class _CriboPreservedLoader:
 class _CriboPreservedFinder:
     def __init__(self):
         self._targets = {}
+        # Captured at definition time, in the bundle prelude: user code may
+        # legally rebind or delete the module-level class name later
+        self._loader = _CriboPreservedLoader
 
     def register(self, name, init, namespace, is_package, exports=None):
         self._targets[name] = (init, namespace, is_package, exports or {})
@@ -75,7 +78,7 @@ class _CriboPreservedFinder:
         from importlib.machinery import ModuleSpec
         return ModuleSpec(
             name,
-            _CriboPreservedLoader(entry),
+            self._loader(entry),
             is_package=entry[2],
         )
 

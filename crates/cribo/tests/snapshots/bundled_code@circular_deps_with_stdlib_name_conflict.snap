@@ -55,6 +55,7 @@ class _CriboPreservedFinder:
 
     def __init__(self):
         self._targets = {}
+        self._loader = _CriboPreservedLoader
 
     def register(self, name, init, namespace, is_package, exports=None):
         self._targets[name] = init, namespace, is_package, exports or {}
@@ -64,7 +65,7 @@ class _CriboPreservedFinder:
         if entry is None:
             return None
         from importlib.machinery import ModuleSpec
-        return ModuleSpec(name, _CriboPreservedLoader(entry), is_package=entry[2])
+        return ModuleSpec(name, self._loader(entry), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('pkg.abc', '_cribo_init___cribo_5f60be_pkg_abc', 'pkg_abc', False)
@@ -90,6 +91,7 @@ def _cribo_init___cribo_6b1af6_pkg(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'pkg'
     global pkg_abc, pkg_console, pkg_pretty
     """Package with circular dependencies and stdlib-conflicting module names."""
     pkg_console = _cribo_init___cribo_f0224b_pkg_console(pkg_console)
@@ -114,6 +116,7 @@ def _cribo_init___cribo_5f60be_pkg_abc(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'pkg'
     global pkg_console
     """Module with stdlib-conflicting name that imports from stdlib abc."""
     ABC = _cribo.abc.ABC
@@ -164,6 +167,7 @@ def _cribo_init___cribo_02808e_pkg_color(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'pkg'
     """Color module that participates in circular dependencies."""
     typing = _cribo.typing
     self.typing = typing
@@ -221,6 +225,7 @@ def _cribo_init___cribo_f0224b_pkg_console(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'pkg'
     global pkg_abc, pkg_color, pkg_pretty, pkg_style
     """Console module that has circular dependencies with abc and pretty."""
     sys = _cribo.sys
@@ -294,6 +299,7 @@ def _cribo_init___cribo_2353ad_pkg_pretty(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'pkg'
     global pkg_abc, pkg_console
     """Pretty printing module with circular dependency on console."""
     Any = _cribo.typing.Any
@@ -343,6 +349,7 @@ def _cribo_init___cribo_4c91ba_pkg_style(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'pkg'
     global pkg_color
     """Style module that participates in circular dependencies."""
     Optional = _cribo.typing.Optional

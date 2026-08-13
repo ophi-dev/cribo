@@ -55,6 +55,7 @@ class _CriboPreservedFinder:
 
     def __init__(self):
         self._targets = {}
+        self._loader = _CriboPreservedLoader
 
     def register(self, name, init, namespace, is_package, exports=None):
         self._targets[name] = init, namespace, is_package, exports or {}
@@ -64,7 +65,7 @@ class _CriboPreservedFinder:
         if entry is None:
             return None
         from importlib.machinery import ModuleSpec
-        return ModuleSpec(name, _CriboPreservedLoader(entry), is_package=entry[2])
+        return ModuleSpec(name, self._loader(entry), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('package.submodule', '_cribo_init___cribo_75ebb7_package_submodule', 'package_submodule', False)
@@ -77,6 +78,7 @@ def _cribo_init___cribo_26ef78_mymodule(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = ''
     print("mymodule.py is being executed!")
     counter = 1
     self.counter = counter
@@ -93,6 +95,7 @@ def _cribo_init___cribo_20ca72_package(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'package'
     print("package/__init__.py is being executed!")
     self.__initialized__ = True
     self.__initializing__ = False
@@ -105,6 +108,7 @@ def _cribo_init___cribo_75ebb7_package_submodule(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'package'
     print("package/submodule.py is being executed!")
     sub_counter = 10
     self.sub_counter = sub_counter

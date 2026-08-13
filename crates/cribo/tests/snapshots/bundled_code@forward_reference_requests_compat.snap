@@ -55,6 +55,7 @@ class _CriboPreservedFinder:
 
     def __init__(self):
         self._targets = {}
+        self._loader = _CriboPreservedLoader
 
     def register(self, name, init, namespace, is_package, exports=None):
         self._targets[name] = init, namespace, is_package, exports or {}
@@ -64,7 +65,7 @@ class _CriboPreservedFinder:
         if entry is None:
             return None
         from importlib.machinery import ModuleSpec
-        return ModuleSpec(name, _CriboPreservedLoader(entry), is_package=entry[2])
+        return ModuleSpec(name, self._loader(entry), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('myrequests', '_cribo_init___cribo_a5ac5e_myrequests', 'myrequests', True)
@@ -79,6 +80,7 @@ def _cribo_init___cribo_5ad29b_myrequests_compat(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'myrequests'
     """Compat module that provides base classes and utilities used by other modules."""
     try:
         import simplejson as json
@@ -132,6 +134,7 @@ def _cribo_init___cribo_a5ac5e_myrequests(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'myrequests'
     global myrequests_compat, myrequests_cookies, myrequests_exceptions, myrequests_utils
     """Main package that imports from multiple submodules."""
     myrequests_compat = _cribo_init___cribo_5ad29b_myrequests_compat(myrequests_compat)
@@ -168,6 +171,7 @@ def _cribo_init___cribo_135ee1_myrequests_cookies(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'myrequests'
     global myrequests_compat
     """Cookies module that uses compat's MutableMapping in class inheritance."""
     myrequests_compat = _cribo_init___cribo_5ad29b_myrequests_compat(myrequests_compat)
@@ -221,6 +225,7 @@ def _cribo_init___cribo_530a30_myrequests_exceptions(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'myrequests'
     global myrequests_compat
     """Exceptions module that uses compat types in class inheritance."""
     myrequests_compat = _cribo_init___cribo_5ad29b_myrequests_compat(myrequests_compat)
@@ -258,6 +263,7 @@ def _cribo_init___cribo_ce8acb_myrequests_utils(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'myrequests'
     global myrequests_compat
     """Utils module that also uses compat."""
     myrequests_compat = _cribo_init___cribo_5ad29b_myrequests_compat(myrequests_compat)

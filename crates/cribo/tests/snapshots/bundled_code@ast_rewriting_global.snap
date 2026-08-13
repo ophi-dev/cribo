@@ -55,6 +55,7 @@ class _CriboPreservedFinder:
 
     def __init__(self):
         self._targets = {}
+        self._loader = _CriboPreservedLoader
 
     def register(self, name, init, namespace, is_package, exports=None):
         self._targets[name] = init, namespace, is_package, exports or {}
@@ -64,7 +65,7 @@ class _CriboPreservedFinder:
         if entry is None:
             return None
         from importlib.machinery import ModuleSpec
-        return ModuleSpec(name, _CriboPreservedLoader(entry), is_package=entry[2])
+        return ModuleSpec(name, self._loader(entry), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('module_mixed_patterns', '_cribo_init___cribo_c75306_module_mixed_patterns', 'module_mixed_patterns', False)
@@ -89,6 +90,7 @@ def _cribo_init___cribo_5101f4_module_globals_dict(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = ''
     """Module demonstrating globals() dictionary access."""
     bar = "module2_bar"
     self.bar = bar
@@ -134,6 +136,7 @@ def _cribo_init___cribo_c75306_module_mixed_patterns(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = ''
     global _cribo_module_mixed_patterns_counter, _cribo_module_mixed_patterns_foo
     """Module demonstrating mixed global access patterns."""
     foo = "module3_foo"

@@ -825,6 +825,16 @@ impl BundleOrchestrator {
                 }
             }
 
+            // Record module names whose sys.modules entries this module observes
+            // (sys.modules["dep"], sys.modules[dep.__name__]): bundled targets must
+            // register in sys.modules when their init runs, because static imports
+            // invoke the initializer directly rather than the import machinery
+            if processed.source.contains("modules") {
+                params.resolver.record_sys_modules_observed_targets(
+                    crate::visitors::utils::sys_modules_observed_module_names(&processed.ast.body),
+                );
+            }
+
             // Extract imports from the processed AST
             let imports_with_context = self.extract_imports_from_facts(
                 &processed.facts.discovered_imports,
@@ -2108,8 +2118,14 @@ impl BundleOrchestrator {
                     // Same-marker duplicates intersect their constraints: extras are
                     // unioned and version-specifier sets combined, so a module-map
                     // override and a bundled distribution's Requires-Dist entry both
-                    // apply, like a normal installation would resolve them
-                    ModuleResolver::merge_requirement_constraints(existing, parsed);
+                    // apply, like a normal installation would resolve them.
+                    // Conflicting direct URLs are unmergeable: both lines are
+                    // emitted so the installer reports the conflict.
+                    if let Some(unmergeable) =
+                        ModuleResolver::merge_requirement_constraints(existing, parsed)
+                    {
+                        branches.push(unmergeable);
+                    }
                 } else {
                     branches.push(parsed);
                 }

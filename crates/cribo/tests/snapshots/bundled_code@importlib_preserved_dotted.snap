@@ -55,6 +55,7 @@ class _CriboPreservedFinder:
 
     def __init__(self):
         self._targets = {}
+        self._loader = _CriboPreservedLoader
 
     def register(self, name, init, namespace, is_package, exports=None):
         self._targets[name] = init, namespace, is_package, exports or {}
@@ -64,7 +65,7 @@ class _CriboPreservedFinder:
         if entry is None:
             return None
         from importlib.machinery import ModuleSpec
-        return ModuleSpec(name, _CriboPreservedLoader(entry), is_package=entry[2])
+        return ModuleSpec(name, self._loader(entry), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('pkg', '_cribo_init___cribo_95bf5f_pkg', 'pkg', True)
@@ -76,6 +77,7 @@ def _cribo_init___cribo_95bf5f_pkg(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'pkg'
     print("pkg package initialized")
     PACKAGE_FLAG = "pkg-init"
     self.PACKAGE_FLAG = PACKAGE_FLAG
@@ -90,6 +92,7 @@ def _cribo_init___cribo_fd3e12_pkg_sub(self):
     if getattr(self, '__initializing__', False):
         return self
     self.__initializing__ = True
+    self.__package__ = 'pkg'
     print("pkg.sub initialized")
     VALUE = "sub value"
     self.VALUE = VALUE
