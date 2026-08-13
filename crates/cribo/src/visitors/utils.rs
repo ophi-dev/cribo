@@ -544,14 +544,17 @@ pub(crate) fn imported_module_dunder_read_targets(
         bindings: FxIndexMap<String, String>,
     }
 
-    /// Source-inspection APIs that need a REAL module with a source file.
-    const SOURCE_INSPECTION_APIS: [&str; 6] = [
+    /// Inspect APIs that need a REAL module object: source-inspection needs an
+    /// on-disk source file, and `ismodule` tests the object's TYPE, which a
+    /// generated `SimpleNamespace` fails.
+    const SOURCE_INSPECTION_APIS: [&str; 7] = [
         "getsource",
         "getsourcefile",
         "getsourcelines",
         "getfile",
         "getabsfile",
         "findsource",
+        "ismodule",
     ];
 
     impl DunderReadCollector {

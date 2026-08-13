@@ -893,6 +893,10 @@ struct DistributionInfo {
     /// `Requires-Dist` constraints are all unknown, so its imports cannot be
     /// bundled or omitted from requirements safely
     missing_core_metadata: bool,
+    /// Top-level `.pth` file names claimed by this distribution's installed-files
+    /// listing; used to attribute sibling `.pth` hooks to listing-less
+    /// distributions
+    claimed_pth_files: IndexSet<String>,
 }
 
 impl DistributionInfo {
@@ -3064,13 +3068,14 @@ impl ModuleResolver {
         packages
     }
 
-    /// Detect common virtual environment directory names beside the working
-    /// directory and along the entry file's ancestor directories: with a nested
-    /// source layout (`/project/src/main.py`), the project environment
+    /// Detect common virtual environment directory names along the entry
+    /// file's ancestor directories and beside the working directory: with a
+    /// nested source layout (`/project/src/main.py`), the project environment
     /// conventionally lives at `/project/.venv`, so out-of-directory invocation
     /// must look above the entry directory too. The nearest ancestor containing
     /// an environment wins and stops the upward search, so unrelated
-    /// environments higher up the tree are never picked over the project's own.
+    /// environments higher up the tree are never picked over the project's own;
+    /// the entry project's environment is ordered before the caller's.
     fn detect_fallback_virtualenv_paths(&self) -> Vec<PathBuf> {
         let current_dir = std::env::current_dir().ok();
         let entry_dir = self
@@ -3105,22 +3110,23 @@ impl ModuleResolver {
         };
 
         let mut venv_paths: Vec<PathBuf> = Vec::new();
-        if let Some(current_dir) = current_dir {
-            venv_paths.extend(venvs_in_root(current_dir));
-        }
-        // A project's virtualenv commonly lives next to its entry point or above
-        // it; search the entry ancestors so invoking Cribo from outside the
-        // project (e.g. a monorepo root) still works
+        // The entry project's environment takes priority: a dependency installed
+        // both beside the caller and in the entry project must resolve from the
+        // project containing --entry. The working-directory environment remains
+        // as a lower-priority fallback.
         if let Some(entry_dir) = entry_dir {
             for ancestor in entry_dir.ancestors() {
                 let found = venvs_in_root(ancestor);
                 if !found.is_empty() {
-                    for venv_path in found {
-                        if !venv_paths.contains(&venv_path) {
-                            venv_paths.push(venv_path);
-                        }
-                    }
+                    venv_paths.extend(found);
                     break;
+                }
+            }
+        }
+        if let Some(current_dir) = current_dir {
+            for venv_path in venvs_in_root(current_dir) {
+                if !venv_paths.contains(&venv_path) {
+                    venv_paths.push(venv_path);
                 }
             }
         }
@@ -3905,6 +3911,9 @@ impl ModuleResolver {
         // Top-level native artifact modules seen beside the metadata directories;
         // used to attribute unclaimed native siblings to listing-less distributions
         let mut top_level_native_modules: Vec<String> = Vec::new();
+        // Top-level `.pth` startup hooks seen beside the metadata directories;
+        // an unclaimed one may have been installed by any listing-less distribution
+        let mut top_level_pth_files: Vec<String> = Vec::new();
         // Ordinary sibling directories; scanned for native artifacts when
         // listing-less distributions exist (their file sets are unknown)
         let mut sibling_directories: Vec<(String, PathBuf)> = Vec::new();
@@ -3960,6 +3969,8 @@ impl ModuleResolver {
                 {
                     top_level_native_modules.push(module_name.to_owned());
                 }
+            } else if Self::is_top_level_pth_path(dir_name) {
+                top_level_pth_files.push(dir_name.to_owned());
             }
         }
 
@@ -4004,6 +4015,32 @@ impl ModuleResolver {
             } else {
                 for position in owners {
                     index.distributions[position].ships_native_artifacts = true;
+                }
+            }
+        }
+
+        // Attribute top-level `.pth` startup hooks: a listing-claimed hook already
+        // flagged its owner during the listing scan, but an UNCLAIMED one may have
+        // been installed by ANY distribution lacking an installed-files listing,
+        // so none of those can be proven hook-free. Python executes the hook at
+        // startup regardless of which distribution shipped it.
+        for pth_file in top_level_pth_files {
+            let claimed = index
+                .distributions
+                .iter()
+                .any(|distribution| distribution.claimed_pth_files.contains(&pth_file));
+            if claimed {
+                continue;
+            }
+            for distribution in &mut index.distributions {
+                if !distribution.has_file_listing && !distribution.installs_startup_hooks {
+                    log::debug!(
+                        "Distribution '{}' has no installed-files listing and the unclaimed \
+                         startup hook '{pth_file}' exists: treating the distribution as \
+                         installing startup hooks",
+                        distribution.name
+                    );
+                    distribution.installs_startup_hooks = true;
                 }
             }
         }
@@ -4068,7 +4105,9 @@ impl ModuleResolver {
 
     /// Return whether a directory contains a native binary artifact anywhere in
     /// its tree (`__pycache__` excluded). Read errors count as containing one:
-    /// purity cannot be proven for an unreadable tree.
+    /// purity cannot be proven for an unreadable tree. Directory symlinks are
+    /// conservatively rejected like the package scanner does: following them
+    /// could cycle or escape into unrelated filesystem content.
     fn directory_contains_native_artifacts(directory: &Path) -> bool {
         let mut pending = vec![directory.to_path_buf()];
         while let Some(current) = pending.pop() {
@@ -4079,14 +4118,21 @@ impl ModuleResolver {
                 let Ok(entry) = entry else {
                     return true;
                 };
+                let Ok(file_type) = entry.file_type() else {
+                    return true;
+                };
                 let path = entry.path();
                 let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
                     continue;
                 };
-                if path.is_dir() {
+                if file_type.is_dir() {
                     if file_name != "__pycache__" {
                         pending.push(path);
                     }
+                } else if file_type.is_symlink() {
+                    // A symlink may point at a directory tree (cycles, escapes)
+                    // or at a native artifact; treat it as unprovable purity
+                    return true;
                 } else if Self::is_native_artifact_file_name(file_name) {
                     return true;
                 }
@@ -4130,6 +4176,7 @@ impl ModuleResolver {
                 }
                 if Self::is_top_level_pth_path(&path_part) {
                     distribution.installs_startup_hooks = true;
+                    distribution.claimed_pth_files.insert(path_part.clone());
                 }
             }
         }
@@ -4190,6 +4237,7 @@ impl ModuleResolver {
                 }
                 if Self::is_top_level_pth_path(normalized) {
                     distribution.installs_startup_hooks = true;
+                    distribution.claimed_pth_files.insert(normalized.to_owned());
                 }
             }
         }
@@ -5785,6 +5833,22 @@ Import-Name: folded_module
             vec![project.join(".venv")],
             "the nearest ancestor environment must be discovered, and the upward search must \
              stop there"
+        );
+
+        // With a caller-directory environment too, the entry project's wins
+        let caller = temp_dir.path().join("caller");
+        create_test_file(
+            &caller.join(".venv/lib/python3.12/site-packages/caller_pkg/__init__.py"),
+            "VALUE = 1\n",
+        )?;
+        let discovered = ModuleResolver::fallback_virtualenv_paths(
+            Some(caller.as_path()),
+            Some(entry_dir.as_path()),
+        );
+        assert_eq!(
+            discovered,
+            vec![project.join(".venv"), caller.join(".venv")],
+            "the entry project's environment must be ordered before the caller's"
         );
 
         Ok(())
@@ -8142,6 +8206,74 @@ def read(package):
             resolver.classify_import("frontend").bundle,
             BundleDisposition::External,
             "an unclaimed native sibling DIRECTORY must taint listing-less distributions"
+        );
+
+        Ok(())
+    }
+
+    /// An unclaimed top-level `.pth` startup hook beside a listing-less
+    /// distribution taints it: the hook may belong to that distribution, and
+    /// Python executes it at startup, which the bundle neither ships nor
+    /// reproduces. A hook claimed by another distribution's listing does not.
+    #[test]
+    fn test_bundle_third_party_keeps_listing_less_distribution_with_pth_sibling_external()
+    -> Result<()> {
+        // Unclaimed startup hook: the listing-less distribution stays external
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!("frontend/{}", crate::python::constants::INIT_FILE)),
+            "VALUE = 1\n",
+        )?;
+        // No RECORD, no top_level.txt, no Import-Name header
+        create_test_file(
+            &site_packages.join("frontend-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: frontend\nVersion: 1.0\n",
+        )?;
+        create_test_file(
+            &site_packages.join("frontend_startup.pth"),
+            "import frontend_startup_hook\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+        assert_eq!(
+            resolver.classify_import("frontend").bundle,
+            BundleDisposition::External,
+            "a listing-less distribution beside an unclaimed .pth hook may own it and cannot \
+             be proven hook-free"
+        );
+
+        // Control: the same hook CLAIMED by another distribution's RECORD leaves
+        // the listing-less pure distribution bundleable
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!("frontend/{}", crate::python::constants::INIT_FILE)),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("frontend-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: frontend\nVersion: 1.0\n",
+        )?;
+        create_test_file(
+            &site_packages.join("frontend_startup.pth"),
+            "import frontend_startup_hook\n",
+        )?;
+        create_test_file(
+            &site_packages.join("hook_owner-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: hook-owner\nVersion: 1.0\n",
+        )?;
+        create_test_file(
+            &site_packages.join("hook_owner-1.0.dist-info/RECORD"),
+            "frontend_startup.pth,,\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+        assert_eq!(
+            resolver.classify_import("frontend").bundle,
+            BundleDisposition::Include,
+            "a .pth hook claimed by another distribution's listing must not taint pure \
+             listing-less distributions"
         );
 
         Ok(())
