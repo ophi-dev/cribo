@@ -614,6 +614,49 @@ pub(crate) fn imported_module_dunder_read_targets(
                 None => false,
             }
         }
+
+        /// The inspected object of an inspect API call: the first positional
+        /// argument or the `object=` keyword (CPython's parameter name).
+        fn first_or_object_argument(call: &ruff_python_ast::ExprCall) -> Option<&Expr> {
+            call.arguments.args.first().or_else(|| {
+                call.arguments
+                    .keywords
+                    .iter()
+                    .find(|keyword| {
+                        keyword
+                            .arg
+                            .as_ref()
+                            .is_some_and(|name| name.as_str() == "object")
+                    })
+                    .map(|keyword| &keyword.value)
+            })
+        }
+
+        /// The plain name whose module identity an expression exposes:
+        /// `type(name)` calls and `name.__class__` attributes.
+        fn module_typed_subject(expr: &Expr) -> Option<&str> {
+            match expr {
+                Expr::Call(call) => {
+                    let Expr::Name(callee) = &*call.func else {
+                        return None;
+                    };
+                    if callee.id.as_str() != "type" || call.arguments.args.len() != 1 {
+                        return None;
+                    }
+                    match call.arguments.args.first() {
+                        Some(Expr::Name(name)) => Some(name.id.as_str()),
+                        _ => None,
+                    }
+                }
+                Expr::Attribute(attribute) if attribute.attr.as_str() == "__class__" => {
+                    match &*attribute.value {
+                        Expr::Name(name) => Some(name.id.as_str()),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        }
     }
 
     impl<'ast> Visitor<'ast> for DunderReadCollector {
@@ -632,7 +675,7 @@ pub(crate) fn imported_module_dunder_read_targets(
             // source file; record import-bound arguments
             if let Expr::Call(call) = expr
                 && self.is_source_inspection_call(call)
-                && let Some(Expr::Name(argument)) = call.arguments.args.first()
+                && let Some(Expr::Name(argument)) = Self::first_or_object_argument(call)
                 && let Some(module_name) = self.bindings.get(argument.id.as_str())
                 && module_name != "inspect"
             {
@@ -647,6 +690,29 @@ pub(crate) fn imported_module_dunder_read_targets(
                 && module_name != "types"
             {
                 self.observed.insert(module_name.clone());
+            }
+            // Exact module-type identity checks (`type(provider) is
+            // types.ModuleType`, `provider.__class__ is types.ModuleType`)
+            // observe the same distinction
+            if let Expr::Compare(compare) = expr {
+                let operands: Vec<&Expr> = std::iter::once(&*compare.left)
+                    .chain(compare.comparators.iter())
+                    .collect();
+                for pair in operands.windows(2) {
+                    let subject = if self.is_module_type_expr(pair[0]) {
+                        pair[1]
+                    } else if self.is_module_type_expr(pair[1]) {
+                        pair[0]
+                    } else {
+                        continue;
+                    };
+                    if let Some(name) = Self::module_typed_subject(subject)
+                        && let Some(module_name) = self.bindings.get(name)
+                        && module_name != "types"
+                    {
+                        self.observed.insert(module_name.clone());
+                    }
+                }
             }
             walk_expr(self, expr);
         }

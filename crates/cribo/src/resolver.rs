@@ -3628,6 +3628,37 @@ impl ModuleResolver {
         requirements
     }
 
+    /// Requirement lines pinning EVERY installed distribution, emitted when
+    /// bundled code enumerates distributions globally
+    /// (`importlib.metadata.distributions()`, `entry_points()`,
+    /// `packages_distributions()`): providers discovered through enumeration
+    /// (plugins located by entry-point group) are runtime dependencies even
+    /// when no module of theirs is ever imported, so an isolated deployment
+    /// must install the same set the original environment enumerated.
+    pub(crate) fn globally_enumerated_distribution_requirements(&self) -> Vec<String> {
+        if !self.global_distribution_enumeration.get() {
+            return Vec::new();
+        }
+        let mut requirements: IndexSet<String> = IndexSet::new();
+        for metadata_dir in self.get_distribution_metadata_search_directories() {
+            self.with_distribution_ownership_index(&metadata_dir, |index| {
+                for distribution in &index.distributions {
+                    if distribution.name.is_empty() {
+                        continue;
+                    }
+                    let name = Self::normalize_distribution_name(&distribution.name);
+                    // Pin the enumerated version: enumeration observes the
+                    // installed metadata, so the deployment must reproduce it
+                    match &distribution.version {
+                        Some(version) => requirements.insert(format!("{name}=={version}")),
+                        None => requirements.insert(name),
+                    };
+                }
+            });
+        }
+        requirements.into_iter().collect()
+    }
+
     /// Return whether the configured target Python version satisfies a PEP 440
     /// specifier set. The minor-only target is checked across its whole patch range
     /// (both `3.X.0` and a high patch sentinel), so patch-sensitive bounds like

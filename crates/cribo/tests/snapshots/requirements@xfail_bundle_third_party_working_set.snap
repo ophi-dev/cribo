@@ -4,5 +4,5 @@ input_file: crates/cribo/tests/fixtures/xfail_bundle_third_party_working_set/mai
 ---
 packages:
   - pkg-resources
-  - provider
+  - provider==1.0
 count: 2

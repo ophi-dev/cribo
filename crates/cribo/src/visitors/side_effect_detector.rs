@@ -125,6 +125,14 @@ impl SideEffectDetector {
         matches!(&assign.targets[0], Expr::Name(name) if name.id.as_str() == "__all__")
     }
 
+    /// Return whether a name is an import global whose module-level rebinding
+    /// requires the wrapper path: inlined code shares the bundle entry's
+    /// globals, so rebinding would mutate the entry's own values, while the
+    /// wrapper namespace carries the rebound value in source order.
+    fn is_import_global(name: &str) -> bool {
+        matches!(name, "__name__" | "__package__" | "__doc__")
+    }
+
     /// Check if a statement is an augmented assignment to __all__
     fn is_all_augmented_assignment(&self, stmt: &Stmt) -> bool {
         if let Stmt::AugAssign(aug_assign) = stmt {
@@ -298,6 +306,16 @@ impl<'a> Visitor<'a> for SideEffectDetector {
 
             // Annotated assignments need checking if they have a value
             Stmt::AnnAssign(ann_assign) => {
+                // Rebinding an import global (__name__/__package__/__doc__) at
+                // module scope needs the wrapper path: the namespace attribute
+                // then carries the rebound value in source order, while inlined
+                // code would mutate the bundle entry's own global
+                if ann_assign.value.is_some()
+                    && matches!(&*ann_assign.target, Expr::Name(name) if Self::is_import_global(name.id.as_str()))
+                {
+                    self.has_side_effects = true;
+                    return;
+                }
                 if let Some(value) = &ann_assign.value {
                     // Check if the assignment value has side effects
                     self.in_expression_context = true;
@@ -309,6 +327,14 @@ impl<'a> Visitor<'a> for SideEffectDetector {
 
             // Assignments need checking
             Stmt::Assign(assign) => {
+                // Rebinding an import global at module scope needs the wrapper
+                // path (see the AnnAssign arm)
+                if assign.targets.iter().any(
+                    |target| matches!(target, Expr::Name(name) if Self::is_import_global(name.id.as_str())),
+                ) {
+                    self.has_side_effects = true;
+                    return;
+                }
                 // Special case: __all__ assignments are metadata, not side effects
                 if !self.is_all_assignment(assign) {
                     // Check if the assignment value has side effects

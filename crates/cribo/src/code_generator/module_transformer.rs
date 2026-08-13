@@ -713,20 +713,21 @@ pub(crate) fn process_statements_for_init_function(
                     // exported ones
                     let module_level_vars = get_exported_module_vars(bundler, ctx);
 
-                    // Special handling for assignments involving built-in types
-                    // We need to transform any reference to a built-in that will be assigned
-                    // as a local variable later in this function
-                    transform_expr_for_builtin_shadowing(&mut assign_clone.value, builtin_locals);
-
                     // Import globals (__name__, __package__, __doc__) resolve
                     // to the MODULE's values: rewrite them to namespace
-                    // attributes, scope-aware so lambda parameters and
-                    // comprehension targets that rebind one of the names keep
-                    // their own resolution
+                    // attributes BEFORE builtin shadowing (which would otherwise
+                    // send a locally rebound __name__ read to builtins),
+                    // scope-aware so lambda parameters and comprehension targets
+                    // that rebind one of the names keep their own resolution
                     rewrite_import_globals_in_expr(&mut assign_clone.value);
                     for target in &mut assign_clone.targets {
                         rewrite_import_globals_in_expr(target);
                     }
+
+                    // Special handling for assignments involving built-in types
+                    // We need to transform any reference to a built-in that will be assigned
+                    // as a local variable later in this function
+                    transform_expr_for_builtin_shadowing(&mut assign_clone.value, builtin_locals);
 
                     // Also transform module-level variable references
                     // Inside the init function, use "self" to refer to the module
@@ -864,12 +865,10 @@ pub(crate) fn process_statements_for_init_function(
 
                     // Transform references to built-ins that will be shadowed
                     if let Some(ref mut value) = ann_assign_clone.value {
-                        transform_expr_for_builtin_shadowing(value, builtin_locals);
-
                         // Import globals resolve to the MODULE's values,
-                        // rewritten scope-aware (lambda parameters and
-                        // comprehension targets keep their own resolution)
+                        // rewritten scope-aware BEFORE builtin shadowing
                         rewrite_import_globals_in_expr(value);
+                        transform_expr_for_builtin_shadowing(value, builtin_locals);
 
                         // Also transform module-level variable references
                         // Inside the init function, use "self" to refer to the module
@@ -883,11 +882,11 @@ pub(crate) fn process_statements_for_init_function(
                     }
 
                     // Transform the annotation expression as well
+                    rewrite_import_globals_in_expr(&mut ann_assign_clone.annotation);
                     transform_expr_for_builtin_shadowing(
                         &mut ann_assign_clone.annotation,
                         builtin_locals,
                     );
-                    rewrite_import_globals_in_expr(&mut ann_assign_clone.annotation);
                     transform_expr_for_module_vars(
                         &mut ann_assign_clone.annotation,
                         &module_level_vars,

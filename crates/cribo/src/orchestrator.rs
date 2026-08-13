@@ -2163,6 +2163,12 @@ impl BundleOrchestrator {
             for requirement in resolver.queried_installed_distribution_requirements() {
                 record_entry(requirement, &mut entries_by_name);
             }
+            // Global enumeration (entry_points(), packages_distributions())
+            // observes EVERY installed distribution, including plugin providers
+            // that are never imported: carry them all into requirements
+            for requirement in resolver.globally_enumerated_distribution_requirements() {
+                record_entry(requirement, &mut entries_by_name);
+            }
         }
         for declared in resolver.bundled_distribution_requirements(&bundled_third_party_imports) {
             record_entry(declared, &mut entries_by_name);
