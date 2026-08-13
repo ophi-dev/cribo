@@ -836,7 +836,8 @@ impl BundleOrchestrator {
                     || processed.source.contains("__loader__")
                     || processed.source.contains("__cached__")
                     || processed.source.contains("__path__")
-                    || processed.source.contains("inspect"))
+                    || processed.source.contains("inspect")
+                    || processed.source.contains("ModuleType"))
             {
                 params.resolver.record_resource_read_imports(
                     crate::visitors::utils::imported_module_dunder_read_targets(

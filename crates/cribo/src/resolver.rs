@@ -447,7 +447,18 @@ impl UnbundlablePatternDetector {
                 Some(DynamicImportKind::Undiscoverable)
             }
             Expr::Attribute(attribute) if attribute.attr.as_str() == "import_module" => {
-                Some(DynamicImportKind::ImportModule)
+                // Only receivers known to be the importlib module support static
+                // discovery of literal targets. An UNKNOWN receiver (e.g. a
+                // `loader` parameter the consumer binds to the real importlib)
+                // still performs dynamic imports at runtime, but discovery never
+                // resolves its calls, so the target would be missing from the
+                // bundle.
+                if matches!(&*attribute.value, Expr::Name(name) if self.importlib_module_aliases.contains(name.id.as_str()))
+                {
+                    Some(DynamicImportKind::ImportModule)
+                } else {
+                    Some(DynamicImportKind::Undiscoverable)
+                }
             }
             Expr::Name(name) if name.id.as_str() == "__import__" => {
                 Some(DynamicImportKind::Undiscoverable)
@@ -2817,6 +2828,7 @@ impl ModuleResolver {
     fn python_source_blocks_bundling(source: &str) -> bool {
         // Cheap pre-filter: skip parsing sources that cannot reference the APIs
         if !source.contains("importlib")
+            && !source.contains("import_module")
             && !source.contains("pkg_resources")
             && !source.contains("pkgutil")
             && !source.contains("runpy")
@@ -3671,7 +3683,66 @@ impl ModuleResolver {
         #[derive(Default)]
         struct BundledDistribution {
             requires_dist: Vec<String>,
-            extras: Vec<pep508_rs::ExtraName>,
+            /// Active extras with their activation conditions: a requested extra
+            /// is unconditional (`TRUE`), while an extra propagated through a
+            /// marker-gated edge (`B[speed]; sys_platform == "win32"`) carries
+            /// that edge's environment marker so the extra's dependencies stay
+            /// scoped to the platforms that originally requested them
+            extras: Vec<(pep508_rs::ExtraName, pep508_rs::MarkerTree)>,
+        }
+
+        impl BundledDistribution {
+            fn extra_names(&self) -> Vec<pep508_rs::ExtraName> {
+                self.extras.iter().map(|(name, _)| name.clone()).collect()
+            }
+
+            /// Record an extra's activation condition, widening (OR) when the
+            /// extra is activated through several edges.
+            fn activate_extra(
+                &mut self,
+                extra: pep508_rs::ExtraName,
+                activation: pep508_rs::MarkerTree,
+            ) -> bool {
+                if let Some((_, existing)) = self.extras.iter_mut().find(|(name, _)| *name == extra)
+                {
+                    let previous = existing.clone();
+                    existing.or(activation);
+                    *existing != previous
+                } else {
+                    self.extras.push((extra, activation));
+                    true
+                }
+            }
+
+            /// The marker under which a requirement gated on this record's extras
+            /// applies: the OR of the activation conditions of the extras that
+            /// individually satisfy the requirement's marker. Ungated
+            /// requirements apply unconditionally.
+            fn extras_activation_marker(
+                &self,
+                marker: &pep508_rs::MarkerTree,
+            ) -> pep508_rs::MarkerTree {
+                if marker.evaluate_extras(&[]) {
+                    // The marker can hold without any extras: not extra-gated
+                    return pep508_rs::MarkerTree::TRUE;
+                }
+                let mut activation = pep508_rs::MarkerTree::FALSE;
+                for (extra, condition) in &self.extras {
+                    if marker.evaluate_extras(std::slice::from_ref(extra)) {
+                        activation.or(condition.clone());
+                    }
+                }
+                if activation.is_false() {
+                    // Only a combination of extras satisfies the marker (e.g.
+                    // `extra == "a" and extra == "b"`); the full set was verified
+                    // by the caller, so apply every activation condition
+                    activation = pep508_rs::MarkerTree::TRUE;
+                    for (_, condition) in &self.extras {
+                        activation.and(condition.clone());
+                    }
+                }
+                activation
+            }
         }
 
         // Distributions can be installed into the environment's site-packages or
@@ -3708,9 +3779,8 @@ impl ModuleResolver {
                         let record = bundled.entry(normalized_name).or_default();
                         record.requires_dist = requires_dist;
                         for extra in requested_extras {
-                            if !record.extras.contains(extra) {
-                                record.extras.push(extra.clone());
-                            }
+                            // Explicitly requested extras apply unconditionally
+                            record.activate_extra(extra.clone(), pep508_rs::MarkerTree::TRUE);
                         }
                     }
                     break;
@@ -3720,33 +3790,43 @@ impl ModuleResolver {
 
         // Propagate extras between bundled distributions to a fixpoint: when bundled A
         // declares `B[speed]` and B is bundled too, B's `extra == "speed"` dependencies
-        // must be activated as if A had been installed normally
+        // must be activated as if A had been installed normally. The activating edge's
+        // environment marker (and the activation conditions of any extras gating the
+        // edge itself) are carried along, so `B[speed]; sys_platform == "win32"`
+        // scopes B's speed-dependencies to Windows instead of activating them
+        // everywhere.
         for _ in 0..bundled.len().max(1) {
-            let mut propagated: Vec<(String, Vec<pep508_rs::ExtraName>)> = Vec::new();
+            let mut propagated: Vec<(String, Vec<pep508_rs::ExtraName>, pep508_rs::MarkerTree)> =
+                Vec::new();
             for record in bundled.values() {
+                let extra_names = record.extra_names();
                 for entry in &record.requires_dist {
                     let Ok(parsed) =
                         pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(entry)
                     else {
                         continue;
                     };
-                    if parsed.extras.is_empty() || !parsed.marker.evaluate_extras(&record.extras) {
+                    if parsed.extras.is_empty() || !parsed.marker.evaluate_extras(&extra_names) {
                         continue;
                     }
                     let target = parsed.name.to_string();
                     if bundled.contains_key(&target) {
-                        propagated.push((target, parsed.extras));
+                        // The propagated extras hold under the edge's residual
+                        // environment marker AND the conditions of the extras that
+                        // gate the edge itself
+                        let mut activation = record.extras_activation_marker(&parsed.marker);
+                        activation.and(parsed.marker.simplify_extras(&extra_names));
+                        propagated.push((target, parsed.extras, activation));
                     }
                 }
             }
             let mut changed = false;
-            for (target, extras) in propagated {
+            for (target, extras, activation) in propagated {
                 let record = bundled
                     .get_mut(&target)
                     .expect("propagation targets are bundled distributions");
                 for extra in extras {
-                    if !record.extras.contains(&extra) {
-                        record.extras.push(extra);
+                    if record.activate_extra(extra, activation.clone()) {
                         changed = true;
                     }
                 }
@@ -3764,6 +3844,7 @@ impl ModuleResolver {
         let mut merged: IndexMap<String, Vec<pep508_rs::Requirement<pep508_rs::VerbatimUrl>>> =
             IndexMap::new();
         for record in bundled.values() {
+            let extra_names = record.extra_names();
             for entry in &record.requires_dist {
                 let Ok(mut parsed) =
                     pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(entry)
@@ -3778,12 +3859,18 @@ impl ModuleResolver {
                 // pure `extra == ...` condition holds only when that extra was asked
                 // for, while markers like `python_version < "3.12" or extra == "fast"`
                 // always can
-                if !parsed.marker.evaluate_extras(&record.extras) {
+                if !parsed.marker.evaluate_extras(&extra_names) {
                     continue;
                 }
-                // Requested extras are satisfied by construction; remove them from the
+                // Extras-gated declarations apply under the activation conditions of
+                // the extras that gate them: an extra propagated through a
+                // marker-scoped edge keeps that scope instead of activating its
+                // dependencies everywhere
+                let activation = record.extras_activation_marker(&parsed.marker);
+                // Active extras are satisfied by construction; remove them from the
                 // marker, because `extra` is unset when pip evaluates requirements files
-                parsed.marker = parsed.marker.clone().simplify_extras(&record.extras);
+                parsed.marker = parsed.marker.clone().simplify_extras(&extra_names);
+                parsed.marker.and(activation);
                 let name = parsed.name.to_string();
                 // Requirements satisfied by other bundled distributions are not needed
                 if bundled_names.contains(&name) {
@@ -7424,6 +7511,49 @@ def read(package):
         Ok(())
     }
 
+    /// A marker-gated extras edge between bundled distributions scopes the
+    /// activated dependencies to that marker: `A -> B[speed]; sys_platform ==
+    /// "win32"` must NOT install B's speed-dependencies on other platforms.
+    #[test]
+    fn test_bundled_distribution_requirements_keep_extras_edge_markers() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!("dist_a/{}", crate::python::constants::INIT_FILE)),
+            "import dist_b\n",
+        )?;
+        create_test_file(
+            &site_packages.join("dist_a-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: dist-a\nVersion: 1.0\nImport-Name: \
+             dist_a\nRequires-Dist: dist-b[speed]>=1; sys_platform == \"win32\"\n",
+        )?;
+        create_test_file(
+            &site_packages.join(format!("dist_b/{}", crate::python::constants::INIT_FILE)),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("dist_b-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: dist-b\nVersion: 1.0\nImport-Name: \
+             dist_b\nRequires-Dist: accelerator>=3; extra == \"speed\"\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let mut bundled_imports: FxIndexMap<String, Vec<pep508_rs::ExtraName>> =
+            FxIndexMap::default();
+        bundled_imports.insert("dist_a".to_owned(), Vec::new());
+        bundled_imports.insert("dist_b".to_owned(), Vec::new());
+
+        let requirements = resolver.bundled_distribution_requirements(&bundled_imports);
+        assert_eq!(
+            requirements,
+            vec!["accelerator>=3 ; sys_platform == 'win32'".to_owned()],
+            "the activating edge's environment marker must scope the propagated extras"
+        );
+
+        Ok(())
+    }
+
     /// `Requires-Dist` metadata of bundled distributions supplied through PYTHONPATH
     /// (dist-info beside the sources) is propagated like virtualenv installs.
     #[test]
@@ -7628,6 +7758,9 @@ def read(package):
     fn test_dynamic_import_detection() {
         for source in [
             "import importlib\nimportlib.import_module(f'.{name}', __package__)\n",
+            // An arbitrary receiver may be the real importlib passed in by the
+            // consumer: discovery never resolves such calls, even literal ones
+            "def load(loader):\n    return loader.import_module('provider.backend')\n",
             "import importlib\nimportlib.import_module(module_variable)\n",
             "from importlib import import_module\nimport_module(module_variable)\n",
             "from importlib import import_module as load\nload(f'.{name}', __package__)\n",

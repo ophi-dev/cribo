@@ -127,6 +127,11 @@ pub(crate) struct ImportDiscoveryVisitor<'a> {
     /// parameters, assignments, loop/with targets); parallel to
     /// `imported_names_stack` so shadowing can be resolved per scope
     shadowed_names_stack: Vec<FxIndexSet<String>>,
+    /// Names rebound only inside conditional control flow (if/try/for/while
+    /// branches) of each scope: the import binding REMAINS POSSIBLE at runtime,
+    /// so calls through such names are recorded as preserved runtime imports
+    /// instead of being ignored; parallel to `shadowed_names_stack`
+    conditionally_shadowed_names_stack: Vec<FxIndexSet<String>>,
     /// Track usage of each imported name
     name_usage: FxIndexMap<String, Vec<ImportUsage>>,
     /// Optional reference to semantic bundler for enhanced analysis
@@ -156,6 +161,7 @@ impl<'a> ImportDiscoveryVisitor<'a> {
             scope_stack: Vec::new(),
             imported_names_stack: vec![FxIndexMap::default()],
             shadowed_names_stack: vec![FxIndexSet::default()],
+            conditionally_shadowed_names_stack: vec![FxIndexSet::default()],
             name_usage: FxIndexMap::default(),
             _semantic_bundler: None,
             _module_id: None,
@@ -175,6 +181,7 @@ impl<'a> ImportDiscoveryVisitor<'a> {
             scope_stack: Vec::new(),
             imported_names_stack: vec![FxIndexMap::default()],
             shadowed_names_stack: vec![FxIndexSet::default()],
+            conditionally_shadowed_names_stack: vec![FxIndexSet::default()],
             name_usage: FxIndexMap::default(),
             _semantic_bundler: Some(conflict_resolver),
             _module_id: Some(module_id),
@@ -191,6 +198,9 @@ impl<'a> ImportDiscoveryVisitor<'a> {
         // order), while usage before it still sees the shadow (UnboundLocalError
         // semantics for function scopes)
         if let Some(top) = self.shadowed_names_stack.last_mut() {
+            top.shift_remove(&name);
+        }
+        if let Some(top) = self.conditionally_shadowed_names_stack.last_mut() {
             top.shift_remove(&name);
         }
         if let Some(top) = self.imported_names_stack.last_mut() {
@@ -210,9 +220,57 @@ impl<'a> ImportDiscoveryVisitor<'a> {
 
     #[inline]
     fn insert_shadowed_name(&mut self, name: String) {
+        // A rebinding inside conditional control flow (if/try/for/while branch)
+        // may not execute: the import binding remains POSSIBLE, so the name is
+        // recorded as conditionally shadowed instead of dead
+        if self.in_conditional_context() {
+            if let Some(top) = self.conditionally_shadowed_names_stack.last_mut() {
+                top.insert(name);
+            }
+            return;
+        }
         if let Some(top) = self.shadowed_names_stack.last_mut() {
             top.insert(name);
         }
+    }
+
+    /// Return whether the traversal is inside conditional control flow of the
+    /// CURRENT binding scope: any if/try/for/while element after the innermost
+    /// function or class scope. `with` bodies always execute and are not
+    /// conditional.
+    fn in_conditional_context(&self) -> bool {
+        self.scope_stack
+            .iter()
+            .rev()
+            .take_while(|element| {
+                !matches!(element, ScopeElement::Function(_) | ScopeElement::Class(_))
+            })
+            .any(|element| {
+                matches!(
+                    element,
+                    ScopeElement::If | ScopeElement::While | ScopeElement::For | ScopeElement::Try
+                )
+            })
+    }
+
+    /// Return whether a name's import binding is rebound ONLY inside conditional
+    /// control flow: the binding remains possible at runtime, so calls through
+    /// the name must be preserved verbatim with their targets kept importable.
+    fn is_name_conditionally_shadowed(&self, name: &str) -> bool {
+        for (conditionally_shadowed, imported) in self
+            .conditionally_shadowed_names_stack
+            .iter()
+            .rev()
+            .zip(self.imported_names_stack.iter().rev())
+        {
+            if conditionally_shadowed.contains(name) {
+                return true;
+            }
+            if imported.contains_key(name) {
+                return false;
+            }
+        }
+        false
     }
 
     /// Return whether a non-import binding (function parameter, assignment, loop or
@@ -488,6 +546,53 @@ impl<'a> ImportDiscoveryVisitor<'a> {
         false
     }
 
+    /// Return whether a call WOULD be a static `importlib.import_module` call
+    /// except that its base name is rebound inside conditional control flow.
+    ///
+    /// The import binding remains possible at runtime (`import importlib; if
+    /// use_custom: importlib = custom; importlib.import_module("helper")` with
+    /// the branch not taken), so the call must stay verbatim while its literal
+    /// target is recorded as a preserved runtime dependency.
+    fn is_conditionally_shadowed_importlib_call(&self, call: &ExprCall) -> bool {
+        let base_name = match &*call.func {
+            Expr::Attribute(ExprAttribute { attr, value, .. })
+                if attr.as_str() == "import_module" =>
+            {
+                let Expr::Name(ExprName { id, .. }) = &**value else {
+                    return false;
+                };
+                id.as_str()
+            }
+            Expr::Name(ExprName { id, .. }) => id.as_str(),
+            _ => return false,
+        };
+        // A hard (unconditional) rebinding kills the alias outright
+        if self.is_name_shadowed(base_name) || !self.is_name_conditionally_shadowed(base_name) {
+            return false;
+        }
+        match &*call.func {
+            Expr::Attribute(_) => {
+                base_name == "importlib"
+                    || self
+                        .lookup_imported_name(base_name)
+                        .is_some_and(|module| module == "importlib")
+            }
+            Expr::Name(_) => {
+                (base_name == "import_module" && self.has_importlib)
+                    || self.imports.iter().any(|imp| {
+                        imp.import_type == ImportType::From
+                            && imp.module_name.as_deref() == Some("importlib")
+                            && imp.names.iter().any(|(orig, alias)| {
+                                orig == "import_module"
+                                    && (alias.as_deref() == Some(base_name)
+                                        || (alias.is_none() && base_name == "import_module"))
+                            })
+                    })
+            }
+            _ => false,
+        }
+    }
+
     /// Extract literal module name from `importlib.import_module` call.
     ///
     /// Only string literals are recognized, supplied either as the first positional
@@ -671,12 +776,16 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
                         .collect_from_stmts(&func.body);
                 }
                 self.shadowed_names_stack.push(parameter_names);
+                self.conditionally_shadowed_names_stack
+                    .push(FxIndexSet::default());
             }
             AnyNodeRef::StmtClassDef(class) => {
                 self.scope_stack
                     .push(ScopeElement::Class(class.name.to_string()));
                 self.imported_names_stack.push(FxIndexMap::default());
                 self.shadowed_names_stack.push(FxIndexSet::default());
+                self.conditionally_shadowed_names_stack
+                    .push(FxIndexSet::default());
             }
             // Non-import bindings (assignments) are recorded in leave_node, after
             // the value expression is visited: Python evaluates the right-hand side
@@ -719,12 +828,14 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
                 self.scope_stack.pop();
                 self.imported_names_stack.pop();
                 self.shadowed_names_stack.pop();
+                self.conditionally_shadowed_names_stack.pop();
                 self.insert_shadowed_name(func.name.to_string());
             }
             AnyNodeRef::StmtClassDef(class) => {
                 self.scope_stack.pop();
                 self.imported_names_stack.pop();
                 self.shadowed_names_stack.pop();
+                self.conditionally_shadowed_names_stack.pop();
                 self.insert_shadowed_name(class.name.to_string());
             }
             // Non-import bindings rebind names in the current scope. Recorded on
@@ -943,6 +1054,36 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
                         };
                         self.imports.push(import);
                     }
+                } else if self.is_conditionally_shadowed_importlib_call(call)
+                    && !crate::python::importlib_call::statically_raises_type_error(call)
+                    && let Some(module_name) = self
+                        .extract_literal_module_name(call)
+                        .or_else(|| self.resolve_imported_dunder_name_argument(call))
+                    && !module_name.starts_with('.')
+                {
+                    // The importlib binding is rebound only inside conditional
+                    // control flow, so it remains possible at runtime: keep the
+                    // call verbatim but record its literal target as a preserved
+                    // runtime dependency (bundled targets are registered with
+                    // the meta-path finder, external ones reach requirements)
+                    log::debug!(
+                        "Found preserved importlib call for module: {module_name} (importlib \
+                         binding conditionally rebound)"
+                    );
+                    let import = DiscoveredImport {
+                        module_name: Some(module_name),
+                        names: vec![],
+                        location: self.current_location(),
+                        range: call.range,
+                        level: 0,
+                        import_type: ImportType::ImportlibPreserved,
+                        execution_contexts: FxIndexSet::default(),
+                        is_used_in_init: false,
+                        is_movable: false,
+                        is_type_checking_only: self.in_type_checking(),
+                        package_context: None,
+                    };
+                    self.imports.push(import);
                 }
             }
             Expr::Name(ExprName { id, range, .. }) => {
@@ -1020,9 +1161,12 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
                 }
                 self.imported_names_stack.push(FxIndexMap::default());
                 self.shadowed_names_stack.push(parameter_names);
+                self.conditionally_shadowed_names_stack
+                    .push(FxIndexSet::default());
                 self.visit_expr(&lambda.body);
                 self.imported_names_stack.pop();
                 self.shadowed_names_stack.pop();
+                self.conditionally_shadowed_names_stack.pop();
                 return;
             }
             // Comprehension targets bind their own function scope; shadow them
@@ -1044,9 +1188,12 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
                 }
                 self.imported_names_stack.push(FxIndexMap::default());
                 self.shadowed_names_stack.push(target_names);
+                self.conditionally_shadowed_names_stack
+                    .push(FxIndexSet::default());
                 walk_expr(self, expr);
                 self.imported_names_stack.pop();
                 self.shadowed_names_stack.pop();
+                self.conditionally_shadowed_names_stack.pop();
                 return;
             }
             _ => {}

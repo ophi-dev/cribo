@@ -575,6 +575,45 @@ pub(crate) fn imported_module_dunder_read_targets(
                 _ => false,
             }
         }
+
+        /// Return whether an expression statically denotes `types.ModuleType`:
+        /// an attribute through the imported `types` module (or an alias) or a
+        /// from-imported `ModuleType` binding.
+        fn is_module_type_expr(&self, expr: &Expr) -> bool {
+            match expr {
+                Expr::Attribute(attribute) => {
+                    attribute.attr.as_str() == "ModuleType"
+                        && matches!(&*attribute.value, Expr::Name(base)
+                            if self.bindings.get(base.id.as_str()).is_some_and(|module| module == "types"))
+                }
+                Expr::Name(name) => self
+                    .bindings
+                    .get(name.id.as_str())
+                    .is_some_and(|module| module == "types.ModuleType"),
+                _ => false,
+            }
+        }
+
+        /// Return whether a call is `isinstance(x, types.ModuleType)` (with the
+        /// class argument possibly inside a tuple): the type test distinguishes
+        /// real module objects from generated namespaces, so its import-bound
+        /// subject must stay a real installed module.
+        fn is_module_type_check(&self, call: &ruff_python_ast::ExprCall) -> bool {
+            let Expr::Name(callee) = &*call.func else {
+                return false;
+            };
+            if callee.id.as_str() != "isinstance" {
+                return false;
+            }
+            match call.arguments.args.get(1) {
+                Some(Expr::Tuple(tuple)) => tuple
+                    .elts
+                    .iter()
+                    .any(|element| self.is_module_type_expr(element)),
+                Some(class_expr) => self.is_module_type_expr(class_expr),
+                None => false,
+            }
+        }
     }
 
     impl<'ast> Visitor<'ast> for DunderReadCollector {
@@ -596,6 +635,16 @@ pub(crate) fn imported_module_dunder_read_targets(
                 && let Some(Expr::Name(argument)) = call.arguments.args.first()
                 && let Some(module_name) = self.bindings.get(argument.id.as_str())
                 && module_name != "inspect"
+            {
+                self.observed.insert(module_name.clone());
+            }
+            // isinstance(provider, types.ModuleType) distinguishes real module
+            // objects from generated namespaces; record import-bound subjects
+            if let Expr::Call(call) = expr
+                && self.is_module_type_check(call)
+                && let Some(Expr::Name(subject)) = call.arguments.args.first()
+                && let Some(module_name) = self.bindings.get(subject.id.as_str())
+                && module_name != "types"
             {
                 self.observed.insert(module_name.clone());
             }
