@@ -3072,6 +3072,20 @@ impl ModuleResolver {
     /// an environment wins and stops the upward search, so unrelated
     /// environments higher up the tree are never picked over the project's own.
     fn detect_fallback_virtualenv_paths(&self) -> Vec<PathBuf> {
+        let current_dir = std::env::current_dir().ok();
+        let entry_dir = self
+            .entry_dir
+            .as_ref()
+            .map(|entry_dir| self.canonicalize_path(entry_dir.clone()));
+        Self::fallback_virtualenv_paths(current_dir.as_deref(), entry_dir.as_deref())
+    }
+
+    /// Environment-independent core of fallback discovery (see
+    /// [`Self::detect_fallback_virtualenv_paths`]).
+    fn fallback_virtualenv_paths(
+        current_dir: Option<&Path>,
+        entry_dir: Option<&Path>,
+    ) -> Vec<PathBuf> {
         let venvs_in_root = |root: &Path| -> Vec<PathBuf> {
             let mut found = Vec::new();
             for venv_name in AUTO_DETECTED_VIRTUALENV_NAMES {
@@ -3091,15 +3105,14 @@ impl ModuleResolver {
         };
 
         let mut venv_paths: Vec<PathBuf> = Vec::new();
-        if let Ok(current_dir) = std::env::current_dir() {
-            venv_paths.extend(venvs_in_root(&current_dir));
+        if let Some(current_dir) = current_dir {
+            venv_paths.extend(venvs_in_root(current_dir));
         }
         // A project's virtualenv commonly lives next to its entry point or above
         // it; search the entry ancestors so invoking Cribo from outside the
         // project (e.g. a monorepo root) still works
-        if let Some(entry_dir) = &self.entry_dir {
-            let canonical_entry = self.canonicalize_path(entry_dir.clone());
-            for ancestor in canonical_entry.ancestors() {
+        if let Some(entry_dir) = entry_dir {
+            for ancestor in entry_dir.ancestors() {
                 let found = venvs_in_root(ancestor);
                 if !found.is_empty() {
                     for venv_path in found {
@@ -5742,55 +5755,36 @@ Import-Name: folded_module
 
     /// Fallback environment discovery searches the entry file's ancestors: a
     /// nested source layout (`/project/src/main.py` with `/project/.venv`)
-    /// finds the project environment even when Cribo runs from elsewhere.
+    /// finds the project environment even when Cribo runs from elsewhere. The
+    /// nearest ancestor containing an environment stops the upward search.
     #[test]
     fn test_bundle_third_party_finds_virtualenv_in_entry_ancestors() -> Result<()> {
         let temp_dir = TempDir::new()?;
         let project = temp_dir.path().join("project");
 
-        // Conventional project environment above the entry directory
-        let site_packages = project.join(".venv/lib/python3.12/site-packages");
+        // Conventional project environment above the entry directory, plus an
+        // unrelated one even higher that must NOT win over the nearest
         create_test_file(
-            &site_packages.join(format!(
-                "ancestor_pkg/{}",
-                crate::python::constants::INIT_FILE
-            )),
+            &project.join(".venv/lib/python3.12/site-packages/ancestor_pkg/__init__.py"),
             "VALUE = 1\n",
         )?;
         create_test_file(
-            &site_packages.join("ancestor_pkg-1.0.dist-info/METADATA"),
-            "Metadata-Version: 2.5\nName: ancestor-pkg\nVersion: 1.0\nImport-Name: ancestor_pkg\n",
+            &temp_dir
+                .path()
+                .join(".venv/lib/python3.12/site-packages/outer_pkg/__init__.py"),
+            "VALUE = 1\n",
         )?;
 
         // Nested source layout: the entry lives below the project root
-        let entry_file = project.join("src/main.py");
-        create_test_file(&entry_file, "import ancestor_pkg\n")?;
+        let entry_dir = project.join("src");
+        create_test_file(&entry_dir.join("main.py"), "import ancestor_pkg\n")?;
 
-        // No virtualenv override: only fallback discovery can find the environment
-        let config = Config {
-            bundle_third_party: Some(true),
-            ..Default::default()
-        };
-        let mut resolver = ModuleResolver::new_with_overrides(config, Some(""), None)?;
-        resolver.set_entry_file(&entry_file, &entry_file);
-
-        let classification = resolver.classify_import("ancestor_pkg");
-        assert_eq!(classification.origin, ImportOrigin::ThirdParty);
+        let discovered = ModuleResolver::fallback_virtualenv_paths(None, Some(entry_dir.as_path()));
         assert_eq!(
-            classification.bundle,
-            BundleDisposition::Include,
-            "the project environment above the entry directory must be discovered"
-        );
-        assert_eq!(
-            resolver.resolve_module_path("ancestor_pkg")?,
-            Some(
-                site_packages
-                    .join(format!(
-                        "ancestor_pkg/{}",
-                        crate::python::constants::INIT_FILE
-                    ))
-                    .canonicalize()?
-            )
+            discovered,
+            vec![project.join(".venv")],
+            "the nearest ancestor environment must be discovered, and the upward search must \
+             stop there"
         );
 
         Ok(())
