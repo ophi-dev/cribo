@@ -888,6 +888,16 @@ impl<'a> GraphBuilder<'a> {
                 self.process_raise_stmt(raise_stmt);
                 Ok(())
             }
+            // `del name` kills the binding: later uses raise NameError, so the
+            // name must no longer be treated as an import alias
+            Stmt::Delete(delete_stmt) => {
+                for target in &delete_stmt.targets {
+                    if let Expr::Name(name) = target {
+                        self.shadowed_bindings.insert(name.id.to_string());
+                    }
+                }
+                Ok(())
+            }
             _ => Ok(()), // Other statements
         }
     }

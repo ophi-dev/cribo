@@ -727,8 +727,10 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
         // generated bundle and the adjacent assets are not shipped. `__spec__` is the
         // same class of import-global: its `origin`/`submodule_search_locations`
         // describe the installed layout, and the bundle cannot reproduce them.
+        // `__path__` likewise enumerates the installed package directory (plugin
+        // scans), while generated package namespaces receive an empty `__path__`.
         if let Expr::Name(name) = expr
-            && matches!(name.id.as_str(), "__file__" | "__spec__")
+            && matches!(name.id.as_str(), "__file__" | "__spec__" | "__path__")
         {
             self.found = true;
             return;
@@ -821,6 +823,10 @@ struct DistributionInfo {
     requires_dist: Vec<String>,
     /// Whether the distribution installs native artifacts (`.so`/`.pyd`) per `RECORD`
     ships_native_artifacts: bool,
+    /// Whether the distribution installs a top-level `.pth` file: site initialization
+    /// executes those at startup (path extensions or executable import lines), which
+    /// a bundle neither ships nor reproduces
+    installs_startup_hooks: bool,
     /// Whether the distribution declares runtime-discovered entry points (any
     /// `entry_points.txt` group other than script shims); such providers are located
     /// through installed metadata and cannot be inlined
@@ -895,6 +901,31 @@ const METADATA_CLASSES: [&str; 3] = [
 /// Modules whose wildcard import binds the metadata query API.
 const METADATA_API_MODULES: [&str; 3] =
     ["importlib.metadata", "importlib_metadata", "pkg_resources"];
+/// Canonical dotted paths of the package-resource readers that take a package
+/// (import name or module object) as their anchor. Reading a package's resources
+/// requires its installed layout and import spec, so literal targets must stay
+/// external and installed even when the target itself contains no blocking code.
+const RESOURCE_QUERY_FUNCTIONS: [&str; 17] = [
+    "importlib.resources.files",
+    "importlib.resources.read_text",
+    "importlib.resources.read_binary",
+    "importlib.resources.open_text",
+    "importlib.resources.open_binary",
+    "importlib.resources.contents",
+    "importlib.resources.path",
+    "importlib.resources.is_resource",
+    "importlib_resources.files",
+    "importlib_resources.read_text",
+    "importlib_resources.read_binary",
+    "importlib_resources.open_text",
+    "importlib_resources.open_binary",
+    "importlib_resources.contents",
+    "importlib_resources.path",
+    "importlib_resources.is_resource",
+    "pkgutil.get_data",
+];
+/// Modules whose wildcard import binds the resource reader API.
+const RESOURCE_API_MODULES: [&str; 3] = ["importlib.resources", "importlib_resources", "pkgutil"];
 
 /// Collect every import binding a name EVER holds anywhere in a module —
 /// module level, function bodies, class bodies, and all conditional branches —
@@ -975,13 +1006,17 @@ fn collect_import_binding_candidates(
     }
     // `from <metadata module> import *` binds every query and enumeration function
     // plus the metadata classes (dotted members like `Distribution.from_name` are
-    // reached through their class binding)
+    // reached through their class binding); `from <resource module> import *`
+    // binds the resource readers likewise
     for module_name in collector.wildcard_modules {
-        if METADATA_API_MODULES.contains(&module_name.as_str()) {
+        if METADATA_API_MODULES.contains(&module_name.as_str())
+            || RESOURCE_API_MODULES.contains(&module_name.as_str())
+        {
             for function in QUERY_FUNCTIONS
                 .iter()
                 .chain(&ENUMERATION_FUNCTIONS)
                 .chain(&METADATA_CLASSES)
+                .chain(&RESOURCE_QUERY_FUNCTIONS)
             {
                 if let Some(member) = function.strip_prefix(&format!("{module_name}."))
                     && !member.contains('.')
@@ -1101,6 +1136,11 @@ fn collect_string_constant_candidates(
 pub(crate) struct DistributionMetadataUsage {
     /// Verbatim requirement literals of name-taking query calls
     pub(crate) requirements: Vec<String>,
+    /// Import names whose package resources are read at runtime
+    /// (`importlib.resources.files("provider")`, `pkgutil.get_data("provider", ...)`):
+    /// the target needs its installed layout and import spec, so it must stay
+    /// external and installed
+    pub(crate) resource_import_targets: Vec<String>,
     /// Whether a global enumeration API (`importlib.metadata.distributions()`,
     /// `packages_distributions()`, `pkg_resources.working_set`) is observed, or a
     /// recognized query's target cannot be determined: every installed
@@ -1128,6 +1168,7 @@ pub(crate) fn queried_distribution_requirements(
 ) -> DistributionMetadataUsage {
     struct QueryCollector {
         requirements: Vec<String>,
+        resource_import_targets: Vec<String>,
         enumerates_distributions: bool,
         bindings: IndexMap<String, Vec<String>>,
         constants: IndexMap<String, String>,
@@ -1203,12 +1244,14 @@ pub(crate) fn queried_distribution_requirements(
             // Safety net for indirect access: any reference to a metadata module
             // member OUTSIDE a recognized query callee (e.g. `query = md.version`,
             // a metadata function passed to a helper, `Distribution.at(...)` or an
-            // aliased metadata class) may perform arbitrary lookups later
+            // aliased metadata class, `reader = resources.files`) may perform
+            // arbitrary lookups later
             if self.recognized_callee_depth == 0
                 && paths.iter().any(|path| {
                     QUERY_FUNCTIONS.contains(&path.as_str())
                         || ENUMERATION_FUNCTIONS.contains(&path.as_str())
                         || METADATA_CLASSES.contains(&path.as_str())
+                        || RESOURCE_QUERY_FUNCTIONS.contains(&path.as_str())
                 })
             {
                 self.enumerates_distributions = true;
@@ -1261,6 +1304,48 @@ pub(crate) fn queried_distribution_requirements(
                     }
                     return;
                 }
+                let is_resource_query = callee_paths
+                    .iter()
+                    .any(|path| RESOURCE_QUERY_FUNCTIONS.contains(&path.as_str()));
+                if is_resource_query {
+                    // The first positional argument (or `package=`/`anchor=`
+                    // keyword) names the target package, as a string or a module
+                    // object; a call without one anchors at the calling module
+                    let target_argument = call.arguments.args.first().or_else(|| {
+                        call.arguments
+                            .keywords
+                            .iter()
+                            .find(|keyword| {
+                                keyword.arg.as_ref().is_some_and(|argument| {
+                                    matches!(argument.as_str(), "package" | "anchor")
+                                })
+                            })
+                            .map(|keyword| &keyword.value)
+                    });
+                    if let Some(argument) = target_argument {
+                        let (values, string_resolved) = self.string_argument_candidates(argument);
+                        // Module-object anchors resolve through import bindings
+                        // (`import provider; files(provider)`)
+                        let module_candidates = self.canonical_paths(argument);
+                        let resolved = string_resolved || !module_candidates.is_empty();
+                        self.resource_import_targets.extend(values);
+                        self.resource_import_targets.extend(module_candidates);
+                        if !resolved {
+                            // The read may target ANY installed package
+                            self.enumerates_distributions = true;
+                        }
+                    }
+                    self.recognized_callee_depth += 1;
+                    ruff_python_ast::visitor::walk_expr(self, &call.func);
+                    self.recognized_callee_depth -= 1;
+                    for argument in &call.arguments.args {
+                        self.visit_expr(argument);
+                    }
+                    for keyword in &call.arguments.keywords {
+                        self.visit_expr(&keyword.value);
+                    }
+                    return;
+                }
             }
             ruff_python_ast::visitor::walk_expr(self, expr);
         }
@@ -1269,6 +1354,7 @@ pub(crate) fn queried_distribution_requirements(
     use ruff_python_ast::visitor::Visitor as _;
     let mut collector = QueryCollector {
         requirements: Vec::new(),
+        resource_import_targets: Vec::new(),
         enumerates_distributions: false,
         bindings: collect_import_binding_candidates(module),
         constants: collect_string_constant_candidates(module),
@@ -1279,6 +1365,7 @@ pub(crate) fn queried_distribution_requirements(
     }
     DistributionMetadataUsage {
         requirements: collector.requirements,
+        resource_import_targets: collector.resource_import_targets,
         enumerates_distributions: collector.enumerates_distributions,
     }
 }
@@ -1328,6 +1415,14 @@ impl DistributionOwnershipIndex {
             .iter()
             .any(|distribution| distribution.ships_native_artifacts)
     }
+
+    /// Return whether any distribution claiming an import installs a top-level
+    /// `.pth` startup hook among its files.
+    fn startup_hook_distribution_owns_import(&self, import_name: &str) -> bool {
+        self.owning_distributions(import_name)
+            .iter()
+            .any(|distribution| distribution.installs_startup_hooks)
+    }
 }
 
 #[derive(Debug)]
@@ -1350,6 +1445,10 @@ pub struct ModuleResolver {
     /// `provider[speed]>=2` from `pkg_resources.require`), preserved so requirements
     /// generation keeps their extras and version constraints
     queried_requirement_literals: RefCell<IndexSet<String>>,
+    /// Import names whose package resources bundled code reads at runtime
+    /// (`importlib.resources.files("provider")`, `pkgutil.get_data`): the targets
+    /// need their installed layout and import spec, so they stay external
+    resource_read_import_targets: RefCell<IndexSet<String>>,
     /// Whether bundled code enumerates installed distributions globally
     /// (`importlib.metadata.distributions()`, `packages_distributions()`): every
     /// distribution is then observable and bundled ones would vanish from results
@@ -1410,6 +1509,7 @@ impl ModuleResolver {
             external_packages_cache: RefCell::new(IndexMap::new()),
             queried_distributions: RefCell::new(IndexSet::new()),
             queried_requirement_literals: RefCell::new(IndexSet::new()),
+            resource_read_import_targets: RefCell::new(IndexSet::new()),
             global_distribution_enumeration: std::cell::Cell::new(false),
             preserved_importlib_module_targets: RefCell::new(IndexSet::new()),
             site_packages_dirs_cache: RefCell::new(None),
@@ -2274,6 +2374,17 @@ impl ModuleResolver {
             return true;
         }
 
+        // Top-level .pth files execute at interpreter startup (path extensions or
+        // executable import lines); the bundle neither ships nor reproduces that
+        // initialization, so their distributions must stay installed
+        if self.startup_hook_distribution_owns_import(search_root, module_name) {
+            debug!(
+                "Import '{module_name}' is owned by a distribution installing .pth startup \
+                 hooks; keeping it external"
+            );
+            return true;
+        }
+
         // A distribution targeting a newer Python than the bundle's target version may
         // use unsupported syntax or APIs; leave it external so installers can reject it
         if self.distribution_requires_incompatible_python(search_root, module_name) {
@@ -2300,6 +2411,17 @@ impl ModuleResolver {
             debug!(
                 "Import '{module_name}' is owned by a distribution whose metadata is queried by \
                  bundled code; keeping it external"
+            );
+            return true;
+        }
+
+        // Packages whose resources bundled code reads at runtime
+        // (`importlib.resources.files("provider")`, `pkgutil.get_data`) need their
+        // installed layout and import spec
+        if self.resource_read_targets_import(module_name) {
+            debug!(
+                "Import '{module_name}' is the target of a runtime package-resource read; \
+                 keeping it external"
             );
             return true;
         }
@@ -2413,6 +2535,18 @@ impl ModuleResolver {
             || lowercase_name.contains(".so.")
     }
 
+    /// Return whether an installed-files path denotes a top-level `.pth` startup
+    /// hook: site initialization executes those files when Python starts (path
+    /// extensions or executable `import` lines), which a bundle neither ships nor
+    /// reproduces. Only top-level entries count: `site` ignores `.pth` files in
+    /// subdirectories.
+    fn is_top_level_pth_path(record_path: &str) -> bool {
+        use cow_utils::CowUtils;
+        !record_path.contains('/')
+            && !record_path.contains('\\')
+            && record_path.cow_to_ascii_lowercase().ends_with(".pth")
+    }
+
     /// Return whether a single file forces its package to stay external: a native
     /// artifact, a sourceless bytecode module (`.pyc` without adjacent `.py`), or a
     /// Python source containing a bundling-blocking pattern.
@@ -2460,6 +2594,7 @@ impl ModuleResolver {
             && !source.contains("__import__")
             && !source.contains("__file__")
             && !source.contains("__spec__")
+            && !source.contains("__path__")
         {
             return false;
         }
@@ -2754,6 +2889,18 @@ impl ModuleResolver {
         })
     }
 
+    /// Return whether the distribution claiming an import installs a top-level
+    /// `.pth` startup hook among its files (per `RECORD`/`installed-files.txt`).
+    fn startup_hook_distribution_owns_import(
+        &self,
+        site_packages_dir: &Path,
+        import_name: &str,
+    ) -> bool {
+        self.with_distribution_ownership_index(site_packages_dir, |index| {
+            index.startup_hook_distribution_owns_import(import_name)
+        })
+    }
+
     /// Return whether a root's distribution metadata could not be fully enumerated,
     /// in which case ownership answers may miss distributions entirely.
     fn distribution_metadata_index_incomplete(&self, site_packages_dir: &Path) -> bool {
@@ -2857,6 +3004,46 @@ impl ModuleResolver {
             .collect()
     }
 
+    /// Record import names whose package resources bundled code reads at runtime
+    /// (`importlib.resources.files("provider")`, `pkgutil.get_data("provider", ..)`):
+    /// the target needs its installed layout and import spec, so it and its package
+    /// tree stay external.
+    ///
+    /// Newly recorded targets invalidate classification-derived caches so modules
+    /// whose bundling decision predates the read are re-evaluated.
+    pub(crate) fn record_resource_read_imports(
+        &self,
+        import_targets: impl IntoIterator<Item = String>,
+    ) {
+        let mut targets = self.resource_read_import_targets.borrow_mut();
+        let mut changed = false;
+        for target in import_targets {
+            if targets.insert(target) {
+                changed = true;
+            }
+        }
+        drop(targets);
+        if changed {
+            self.classification_cache.borrow_mut().clear();
+            self.external_packages_cache.borrow_mut().clear();
+            self.module_cache.borrow_mut().clear();
+        }
+    }
+
+    /// Return whether an import shares a top-level package with a recorded
+    /// resource-read target: resource readers import their anchor at runtime, so
+    /// the whole package tree must keep its installed layout.
+    fn resource_read_targets_import(&self, import_name: &str) -> bool {
+        let targets = self.resource_read_import_targets.borrow();
+        if targets.is_empty() {
+            return false;
+        }
+        let root = import_name.split('.').next().unwrap_or(import_name);
+        targets
+            .iter()
+            .any(|target| target.split('.').next().unwrap_or(target) == root)
+    }
+
     /// Record requirement literals whose distribution metadata bundled code queries
     /// at runtime. The distribution name drives classification policy (owners stay
     /// external), while the verbatim literal is preserved for requirements
@@ -2901,10 +3088,15 @@ impl ModuleResolver {
     pub(crate) fn queried_installed_distribution_requirements(&self) -> Vec<String> {
         use std::str::FromStr;
         let literals = self.queried_requirement_literals.borrow();
-        if literals.is_empty() {
+        let resource_targets = self.resource_read_import_targets.borrow();
+        if literals.is_empty() && resource_targets.is_empty() {
             return Vec::new();
         }
         let mut installed: IndexSet<String> = IndexSet::new();
+        // Distributions owning resource-read targets must stay installed even when
+        // no module of theirs is ever imported: the reader imports its anchor and
+        // resolves data files through the installed layout
+        let mut resource_owner_requirements: IndexSet<String> = IndexSet::new();
         for metadata_dir in self.get_distribution_metadata_search_directories() {
             self.with_distribution_ownership_index(&metadata_dir, |index| {
                 for distribution in &index.distributions {
@@ -2912,9 +3104,16 @@ impl ModuleResolver {
                         installed.insert(Self::normalize_distribution_name(&distribution.name));
                     }
                 }
+                for target in resource_targets.iter() {
+                    for distribution in index.owning_distributions(target) {
+                        if !distribution.name.is_empty() {
+                            resource_owner_requirements.insert(distribution.name.clone());
+                        }
+                    }
+                }
             });
         }
-        literals
+        let mut requirements: Vec<String> = literals
             .iter()
             .filter(|literal| {
                 let name = pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(literal)
@@ -2922,7 +3121,9 @@ impl ModuleResolver {
                 installed.contains(&Self::normalize_distribution_name(&name))
             })
             .cloned()
-            .collect()
+            .collect();
+        requirements.extend(resource_owner_requirements);
+        requirements
     }
 
     /// Return whether the configured target Python version satisfies a PEP 440
@@ -3332,6 +3533,9 @@ impl ModuleResolver {
                 {
                     distribution.ships_native_artifacts = true;
                 }
+                if Self::is_top_level_pth_path(&path_part) {
+                    distribution.installs_startup_hooks = true;
+                }
             }
         }
 
@@ -3384,6 +3588,9 @@ impl ModuleResolver {
                     .is_some_and(Self::is_native_artifact_file_name)
                 {
                     distribution.ships_native_artifacts = true;
+                }
+                if Self::is_top_level_pth_path(normalized) {
+                    distribution.installs_startup_hooks = true;
                 }
             }
         }
@@ -5149,6 +5356,9 @@ Import-Name: folded_module
             "from pathlib import Path\nDATA = Path(__file__).with_name('data.json').read_text()\n",
             "import os\nHERE = os.path.dirname(__file__)\n",
             "def load():\n    return open(__file__)\n",
+            // Package-path enumeration (plugin scans): generated namespaces receive
+            // an empty __path__
+            "for entry in __path__:\n    print(entry)\n",
         ] {
             assert!(
                 ModuleResolver::python_source_blocks_bundling(source),
@@ -5973,6 +6183,101 @@ print(loader.from_name('hidden-name'))
 ";
         let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
         assert!(queried_distribution_requirements(parsed.syntax()).enumerates_distributions);
+    }
+
+    /// Package-resource readers (`importlib.resources.files`, `pkgutil.get_data`)
+    /// record their literal or module-object anchors as resource-read targets;
+    /// unresolvable anchors conservatively flag global observation.
+    #[test]
+    fn test_resource_read_target_collection() {
+        // Literal string anchor, module-qualified callee
+        let source = "\
+import importlib.resources
+
+DATA = importlib.resources.files('provider').joinpath('data.json').read_text()
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert_eq!(usage.resource_import_targets, vec!["provider"]);
+        assert!(!usage.enumerates_distributions);
+
+        // Module-object anchor through an imported name
+        let source = "\
+import provider
+from importlib.resources import files
+
+print(files(provider))
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert_eq!(usage.resource_import_targets, vec!["provider"]);
+        assert!(!usage.enumerates_distributions);
+
+        // pkgutil.get_data names a dotted package anchor
+        let source = "\
+import pkgutil
+
+DATA = pkgutil.get_data('provider.assets', 'blob.bin')
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert_eq!(usage.resource_import_targets, vec!["provider.assets"]);
+
+        // Unresolvable anchor: the read may target ANY installed package
+        let source = "\
+from importlib.resources import files
+
+
+def read(package):
+    return files(package)
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        assert!(queried_distribution_requirements(parsed.syntax()).enumerates_distributions);
+    }
+
+    /// Resource-read targets stay external and their owning distributions reach
+    /// requirements even when never imported.
+    #[test]
+    fn test_bundle_third_party_keeps_resource_read_target_external() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!(
+                "res_provider/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("res_provider-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: res-provider\nVersion: 1.0\nImport-Name: res_provider\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+        assert_eq!(
+            resolver.classify_import("res_provider").bundle,
+            BundleDisposition::Include,
+            "a pure provider is bundleable until a resource read targets it"
+        );
+
+        resolver.record_resource_read_imports(["res_provider".to_owned()]);
+        assert_eq!(
+            resolver.classify_import("res_provider").bundle,
+            BundleDisposition::External,
+            "resource-read targets need their installed layout and import spec"
+        );
+        assert_eq!(
+            resolver.classify_import("res_provider.assets").bundle,
+            BundleDisposition::External,
+            "the whole package tree of a resource-read target stays external"
+        );
+        assert_eq!(
+            resolver.queried_installed_distribution_requirements(),
+            vec!["res-provider".to_owned()],
+            "owning distributions of resource-read targets must reach requirements"
+        );
+
+        Ok(())
     }
 
     /// Shared libraries loaded through ctypes/CFFI (`.dll`/`.dylib`) and versioned
@@ -7033,6 +7338,48 @@ print(loader.from_name('hidden-name'))
             BundleDisposition::Include,
             "a native sibling claimed by another distribution's listing must not taint pure \
              listing-less distributions"
+        );
+
+        Ok(())
+    }
+
+    /// A distribution whose installed files include a top-level `.pth` startup hook
+    /// stays external: site initialization executes those files at startup (path
+    /// extensions or executable import lines), which a bundle neither ships nor
+    /// reproduces. `.pth` files in subdirectories are NOT startup hooks.
+    #[test]
+    fn test_bundle_third_party_keeps_pth_installing_distribution_external() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        for (package, record_extra) in [
+            ("hooked_pkg", "hooked_pkg_startup.pth,,\n"),
+            ("nested_pth_pkg", "nested_pth_pkg/data/inner.pth,,\n"),
+        ] {
+            create_test_file(
+                &site_packages.join(format!("{package}/{}", crate::python::constants::INIT_FILE)),
+                "VALUE = 1\n",
+            )?;
+            create_test_file(
+                &site_packages.join(format!("{package}-1.0.dist-info/METADATA")),
+                &format!("Metadata-Version: 2.5\nName: {package}\nVersion: 1.0\n"),
+            )?;
+            create_test_file(
+                &site_packages.join(format!("{package}-1.0.dist-info/RECORD")),
+                &format!("{package}/__init__.py,,\n{record_extra}"),
+            )?;
+        }
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        assert_eq!(
+            resolver.classify_import("hooked_pkg").bundle,
+            BundleDisposition::External,
+            "distributions installing top-level .pth startup hooks must stay external"
+        );
+        assert_eq!(
+            resolver.classify_import("nested_pth_pkg").bundle,
+            BundleDisposition::Include,
+            ".pth files in subdirectories are not startup hooks and must not block bundling"
         );
 
         Ok(())

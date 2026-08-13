@@ -714,6 +714,15 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
                     });
                 }
             }
+            // `del name` kills the binding: later uses raise NameError, so the
+            // name must no longer be treated as an import alias
+            AnyNodeRef::StmtDelete(delete_stmt) => {
+                for target in &delete_stmt.targets {
+                    Self::collect_binding_names(target, &mut |name| {
+                        self.insert_shadowed_name(name);
+                    });
+                }
+            }
             // If handling moved to visit_stmt
             AnyNodeRef::StmtWhile(_)
             | AnyNodeRef::StmtFor(_)

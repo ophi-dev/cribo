@@ -142,6 +142,14 @@ impl<'a> SourceOrderVisitor<'a> for LocalVarCollector<'a> {
             Stmt::AugAssign(aug_assign) => {
                 self.collect_from_target(&aug_assign.target);
             }
+            Stmt::Delete(delete_stmt) => {
+                // `del x` unbinds the name: in a function it makes x local for the
+                // whole body (UnboundLocalError before it), and at any scope the
+                // binding is dead afterwards
+                for target in &delete_stmt.targets {
+                    self.collect_from_target(target);
+                }
+            }
             Stmt::For(for_stmt) => {
                 self.collect_from_target(&for_stmt.target);
             }

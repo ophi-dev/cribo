@@ -805,16 +805,21 @@ impl BundleOrchestrator {
             let processed = self.process_module(&module_path, &module_name)?;
 
             // Record literal distribution-metadata queries (importlib.metadata.version
-            // et al.) before classifying this module's imports, so queried providers
-            // are kept external and installed
+            // et al.) and package-resource reads (importlib.resources.files,
+            // pkgutil.get_data) before classifying this module's imports, so queried
+            // providers and resource targets are kept external and installed
             if self.config.bundle_third_party()
                 && (processed.source.contains("importlib")
-                    || processed.source.contains("pkg_resources"))
+                    || processed.source.contains("pkg_resources")
+                    || processed.source.contains("pkgutil"))
             {
                 let usage = crate::resolver::queried_distribution_requirements(&processed.ast);
                 params
                     .resolver
                     .record_queried_distributions(usage.requirements);
+                params
+                    .resolver
+                    .record_resource_read_imports(usage.resource_import_targets);
                 if usage.enumerates_distributions {
                     params.resolver.record_global_distribution_enumeration();
                 }

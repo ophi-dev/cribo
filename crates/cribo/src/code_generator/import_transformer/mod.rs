@@ -601,6 +601,15 @@ impl<'a> RecursiveImportTransformer<'a> {
                     Stmt::Assert(assert_stmt) => {
                         StatementsHandler::handle_assert(self, assert_stmt);
                     }
+                    // `del name` kills the binding: later uses raise NameError, so
+                    // the name must no longer be rewritten as an import alias
+                    Stmt::Delete(delete_stmt) => {
+                        for target in &delete_stmt.targets {
+                            if let Expr::Name(name) = target {
+                                self.state.shadowed_bindings.insert(name.id.to_string());
+                            }
+                        }
+                    }
                     _ => {}
                 }
                 i += 1;
