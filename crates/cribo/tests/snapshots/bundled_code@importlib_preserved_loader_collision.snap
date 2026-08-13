@@ -91,6 +91,7 @@ def _cribo_init___cribo_a449c2_collision_helper(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     print("collision_helper imported")
     VALUE = "collision-proof"
     self.VALUE = VALUE

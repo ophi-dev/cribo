@@ -105,6 +105,7 @@ def _cribo_init___cribo_f70f3a_pkg(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'pkg'
+    self.__doc__ = 'Package that triggers forward reference.'
     global pkg_core
     """Package that triggers forward reference."""
     compat = pkg_compat
@@ -127,6 +128,7 @@ def _cribo_init___cribo_1a829c_pkg_core(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'pkg'
+    self.__doc__ = 'Core module that uses compat at top level.'
     """Core module that uses compat at top level."""
     CONSTANT = pkg_compat.CONSTANT
     pkg_core.CONSTANT = CONSTANT

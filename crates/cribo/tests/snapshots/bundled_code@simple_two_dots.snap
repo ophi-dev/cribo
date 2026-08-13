@@ -101,6 +101,7 @@ def _cribo_init___cribo_35e8d2_foo(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'foo'
+    self.__doc__ = None
     global foo_boo___main__
     foo_boo___main__ = _cribo_init___cribo_9fa9ed_foo_boo___main__(foo_boo___main__)
     tada = foo_boo___main__.tada
@@ -119,6 +120,7 @@ def _cribo_init___cribo_9fa9ed_foo_boo___main__(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'foo.boo'
+    self.__doc__ = None
     ANIMAL = foo_zoo.ANIMAL
     foo_boo___main__.ANIMAL = ANIMAL
 

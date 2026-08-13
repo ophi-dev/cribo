@@ -105,6 +105,7 @@ def _cribo_init___cribo_5101f4_module_globals_dict(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = 'Module demonstrating globals() dictionary access.'
     """Module demonstrating globals() dictionary access."""
     bar = "module2_bar"
     self.bar = bar
@@ -162,6 +163,7 @@ def _cribo_init___cribo_c75306_module_mixed_patterns(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = 'Module demonstrating mixed global access patterns.'
     global _cribo_module_mixed_patterns_counter, _cribo_module_mixed_patterns_foo
     """Module demonstrating mixed global access patterns."""
     foo = "module3_foo"

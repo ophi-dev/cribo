@@ -111,6 +111,7 @@ def _cribo_init___cribo_cca96f_package(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'package'
+    self.__doc__ = 'Package using wildcard imports and setattr pattern like httpx.'
     """Package using wildcard imports and setattr pattern like httpx."""
     __cribo_init_result = _cribo_init___cribo_66c36f_package__subpackage(package__subpackage)
     for attr in dir(__cribo_init_result):
@@ -138,6 +139,7 @@ def _cribo_init___cribo_66c36f_package__subpackage(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'package._subpackage'
+    self.__doc__ = 'Subpackage that re-exports from modules using wildcards.'
     self.MyClass = package__subpackage_module_a.MyClass
     self.my_function = package__subpackage_module_b.my_function
     """Subpackage that re-exports from modules using wildcards."""

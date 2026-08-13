@@ -91,8 +91,9 @@ def _cribo_init___cribo_6c53c4_self_pkg(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'self_pkg'
-    self.__spec__ = None
+    self.__doc__ = 'Package capturing its own module object from sys.modules.'
     try:
+        self.__spec__ = None
         _sys.modules[self.__name__] = self
         """Package capturing its own module object from sys.modules."""
         sys = _cribo.sys

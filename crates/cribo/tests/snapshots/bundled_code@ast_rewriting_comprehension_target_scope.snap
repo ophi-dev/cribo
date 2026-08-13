@@ -98,6 +98,7 @@ def _cribo_init___cribo_aa5717_pkg_data(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'pkg'
+    self.__doc__ = None
     global pkg_helper
     items = [x for x in range(5)]
     self.items = items
@@ -120,6 +121,7 @@ def _cribo_init___cribo_e61774_pkg_helper(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'pkg'
+    self.__doc__ = None
     global pkg_data
     pkg_data = _cribo_init___cribo_aa5717_pkg_data(pkg_data)
     items = pkg.data.items

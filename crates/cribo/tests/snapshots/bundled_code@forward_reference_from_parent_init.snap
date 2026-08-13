@@ -144,6 +144,7 @@ def _cribo_init___cribo_710264_parent(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'parent'
+    self.__doc__ = 'Parent module that re-exports child module symbols.'
     """Parent module that re-exports child module symbols."""
     BaseClass = parent_base.BaseClass
     parent.BaseClass = BaseClass
@@ -176,6 +177,7 @@ def _cribo_init___cribo_0ac738_parent_subpkg(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'parent.subpkg'
+    self.__doc__ = 'Subpackage with wildcard export.'
     """Subpackage with wildcard export."""
     SubpkgClass = parent_subpkg_submodule.SubpkgClass
     parent_subpkg.SubpkgClass = SubpkgClass

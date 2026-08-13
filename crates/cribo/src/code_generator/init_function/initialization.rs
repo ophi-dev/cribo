@@ -102,6 +102,21 @@ impl InitializationPhase {
             ast_builder::expressions::string_literal(&package_value),
         ));
 
+        // Stamp __doc__ with the module docstring (or None): the docstring
+        // executes as an ordinary expression inside the init otherwise, and
+        // SimpleNamespace would fall back to its type's documentation for
+        // `provider.__doc__` reads.
+        let docstring_value =
+            crate::code_generator::docstring_extractor::extract_module_docstring(ast)
+                .map_or_else(ast_builder::expressions::none_literal, |docstring| {
+                    ast_builder::expressions::string_literal(&docstring)
+                });
+        state.body.push(ast_builder::statements::assign_attribute(
+            SELF_PARAM,
+            "__doc__",
+            docstring_value,
+        ));
+
         // Register the module in sys.modules before executing its body, exactly like
         // Python's import machinery, but ONLY for modules that inspect sys.modules
         // (self-references such as `sys.modules[__name__]`, membership checks) or

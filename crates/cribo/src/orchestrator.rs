@@ -826,7 +826,8 @@ impl BundleOrchestrator {
             }
 
             // Record imported providers whose filesystem/import-spec globals this
-            // module reads (provider.__file__, provider.__spec__.origin, ...):
+            // module reads (provider.__file__, provider.__spec__.origin, ...) or
+            // that are passed to source-inspection APIs (inspect.getsource):
             // generated namespaces carry no faithful values, so observed targets
             // keep their installed module identity (same policy as resource reads)
             if self.config.bundle_third_party()
@@ -834,7 +835,8 @@ impl BundleOrchestrator {
                     || processed.source.contains("__spec__")
                     || processed.source.contains("__loader__")
                     || processed.source.contains("__cached__")
-                    || processed.source.contains("__path__"))
+                    || processed.source.contains("__path__")
+                    || processed.source.contains("inspect"))
             {
                 params.resolver.record_resource_read_imports(
                     crate::visitors::utils::imported_module_dunder_read_targets(

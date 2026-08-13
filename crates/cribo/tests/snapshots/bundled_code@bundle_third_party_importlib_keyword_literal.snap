@@ -94,6 +94,7 @@ def _cribo_init___cribo_b428f2_kw_pkg(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'kw_pkg'
+    self.__doc__ = 'Package loading its backend through a literal keyword import_module call.'
     """Package loading its backend through a literal keyword import_module call."""
     importlib = _cribo.importlib
     self.importlib = importlib

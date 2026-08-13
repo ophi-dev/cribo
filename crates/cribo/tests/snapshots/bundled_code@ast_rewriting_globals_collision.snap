@@ -154,6 +154,7 @@ def _cribo_init___cribo_0ac752_core(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'core'
+    self.__doc__ = None
     __cribo_init_result = _cribo_init___cribo_e52b1d_core_utils(core_utils)
     for attr in dir(__cribo_init_result):
         if not attr.startswith('_'):
@@ -181,6 +182,7 @@ def _cribo_init___cribo_b7b3e3_core_database(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'core.database'
+    self.__doc__ = None
     global core_database_connection
     core_database_connection = _cribo_init___cribo_df9c8d_core_database_connection(core_database_connection)
     Connection = core_database_connection.Connection
@@ -202,6 +204,7 @@ def _cribo_init___cribo_e52b1d_core_utils(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'core.utils'
+    self.__doc__ = None
     process = process_7
     core_utils.process = process
     validate = validate_6
@@ -222,6 +225,7 @@ def _cribo_init___cribo_df9c8d_core_database_connection(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'core.database'
+    self.__doc__ = 'Database connection module - imports only from core.utils to avoid circular dependencies'
     """Database connection module - imports only from core.utils to avoid circular dependencies"""
     process = None
     self.process = process
@@ -310,6 +314,7 @@ def _cribo_init___cribo_0a162a_models_base(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'models'
+    self.__doc__ = 'Base models module - imports only from core to avoid circular dependencies'
     global _cribo_models_base_Connection
     """Base models module - imports only from core to avoid circular dependencies"""
     util_validate = validate_6
@@ -377,6 +382,7 @@ def _cribo_init___cribo_293a98_models(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'models'
+    self.__doc__ = None
     global models_base, models_user
     models_user = _cribo_init___cribo_1f9e6c_models_user(models_user)
     User = models_user.User
@@ -404,6 +410,7 @@ def _cribo_init___cribo_1f9e6c_models_user(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'models'
+    self.__doc__ = 'User models module - imports from core and base, no circular dependencies'
     global models_base
     """User models module - imports from core and base, no circular dependencies"""
     util_process = process_7
@@ -499,6 +506,7 @@ def _cribo_init___cribo_0ecebd_services_auth_manager(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'services.auth'
+    self.__doc__ = 'Authentication manager - imports from core and models only, no circular dependencies'
     global core_database_connection, models_base
     """Authentication manager - imports from core and models only, no circular dependencies"""
     __cribo_init_result = _cribo_init___cribo_0ac752_core(core)
@@ -608,6 +616,7 @@ def _cribo_init___cribo_b2dda7_services(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'services'
+    self.__doc__ = None
     __cribo_init_result = _cribo_init___cribo_84bf42_services_auth(services_auth)
     for attr in dir(__cribo_init_result):
         if not attr.startswith('_'):
@@ -630,6 +639,7 @@ def _cribo_init___cribo_84bf42_services_auth(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'services.auth'
+    self.__doc__ = None
     global services_auth_manager
     services_auth_manager = _cribo_init___cribo_0ecebd_services_auth_manager(services_auth_manager)
     User = services_auth_manager.User

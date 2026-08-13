@@ -94,6 +94,7 @@ def _cribo_init___cribo_fb64cc_loop_observer(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     global loop_source
     loop_source = _cribo_init___cribo_f42fc2_loop_source(loop_source)
     self.loop_source = loop_source
@@ -120,6 +121,7 @@ def _cribo_init___cribo_f42fc2_loop_source(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     global loop_observer
     for LOOP_VALUE in ("loop",):
         loop_source.LOOP_VALUE = LOOP_VALUE

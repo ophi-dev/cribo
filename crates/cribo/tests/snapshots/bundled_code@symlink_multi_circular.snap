@@ -94,6 +94,7 @@ def _cribo_init___cribo_5676b5_real_a(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
 
     def start_chain():
         from_b = _cribo_init___cribo_85e139_real_b(globals()['real_b']).from_b
@@ -147,6 +148,7 @@ def _cribo_init___cribo_85e139_real_b(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
 
     def from_b():
         from_c = _cribo_init___cribo_5676b5_real_a(globals()['real_a']).from_c

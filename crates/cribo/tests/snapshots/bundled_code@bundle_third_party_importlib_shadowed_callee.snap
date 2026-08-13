@@ -94,6 +94,7 @@ def _cribo_init___cribo_ffe0bc_shadow_pkg(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'shadow_pkg'
+    self.__doc__ = 'Package whose loader accepts a custom importer shadowing importlib.'
     """Package whose loader accepts a custom importer shadowing importlib."""
     importlib = _cribo.importlib
     self.importlib = importlib

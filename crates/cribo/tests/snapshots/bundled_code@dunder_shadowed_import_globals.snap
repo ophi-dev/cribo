@@ -92,6 +92,7 @@ def _cribo_init___cribo_24fe86_provider_worker(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'provider'
+    self.__doc__ = None
     print("worker loaded from", self.__package__)
 
     def with_param(__package__):
@@ -125,6 +126,7 @@ def _cribo_init___cribo_75d811_provider(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'provider'
+    self.__doc__ = None
     print("provider ready")
     self.__initialized__ = True
     self.__initializing__ = False

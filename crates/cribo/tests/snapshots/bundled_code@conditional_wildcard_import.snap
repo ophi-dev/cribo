@@ -99,6 +99,7 @@ def _cribo_init___cribo_33ed77_config(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = 'Config module with side effects (triggers wrapper) and conditional wildcard import.'
     """Config module with side effects (triggers wrapper) and conditional wildcard import."""
     print("config module loaded")
     try:

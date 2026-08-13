@@ -91,6 +91,7 @@ def _cribo_init___cribo_0a355e_named_source(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     nullcontext = _cribo.contextlib.nullcontext
     self.nullcontext = nullcontext
 
@@ -111,8 +112,11 @@ def _cribo_init___cribo_0a355e_named_source(self):
     @((DECORATOR_VALUE := decorator), _cribo.builtins.setattr(named_source, 'DECORATOR_VALUE', DECORATOR_VALUE))[0]
     def decorated():
         return "decorated"
-    decorated.__module__ = 'named_source'
-    decorated.__qualname__ = 'decorated'
+    try:
+        decorated.__module__ = 'named_source'
+        decorated.__qualname__ = 'decorated'
+    except (AttributeError, TypeError):
+        pass
     self.decorated = decorated
     with ((CONTEXT_MANAGER := nullcontext("context")), _cribo.builtins.setattr(named_source, 'CONTEXT_MANAGER', CONTEXT_MANAGER))[0] as CONTEXT_VALUE:
         named_source.CONTEXT_VALUE = CONTEXT_VALUE

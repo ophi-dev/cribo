@@ -91,6 +91,7 @@ def _cribo_init___cribo_3c4fd1_tasks(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     print("tasks loaded")
 
     def task(name):

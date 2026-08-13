@@ -28,7 +28,43 @@ struct ImportGlobalRewriter<'a> {
     names: Vec<&'static str>,
 }
 
+/// Module-level import globals that resolve to the MODULE's values inside init
+/// functions: rewritten scope-aware to attributes of the namespace object,
+/// which the init prologue stamps with the real values.
+const IMPORT_GLOBALS: &[&str] = &["__name__", "__package__", "__doc__"];
+
+/// Rewrite import globals in one expression to attributes of the init
+/// function's `self` parameter, scope-aware (nested scopes that rebind one of
+/// the names keep their own resolution).
+fn rewrite_import_globals_in_expr(expr: &mut Expr) {
+    use ruff_python_ast::visitor::transformer::Transformer as _;
+    let rewriter = ImportGlobalRewriter {
+        module_var_name: SELF_PARAM,
+        names: IMPORT_GLOBALS.to_vec(),
+    };
+    rewriter.visit_expr(expr);
+}
+
 impl ImportGlobalRewriter<'_> {
+    /// Collect the plain names bound by an assignment-like target expression.
+    fn collect_target_names(target: &Expr, names: &mut Vec<String>) {
+        match target {
+            Expr::Name(name) => names.push(name.id.as_str().to_owned()),
+            Expr::Tuple(tuple) => {
+                for element in &tuple.elts {
+                    Self::collect_target_names(element, names);
+                }
+            }
+            Expr::List(list) => {
+                for element in &list.elts {
+                    Self::collect_target_names(element, names);
+                }
+            }
+            Expr::Starred(starred) => Self::collect_target_names(&starred.value, names),
+            _ => {}
+        }
+    }
+
     /// Return the import globals of `names` that a statement body does NOT bind
     /// locally (any binding — parameter, assignment, import, delete — makes the
     /// name scope-local for the whole body).
@@ -117,7 +153,15 @@ impl ImportGlobalRewriter<'_> {
                 self.visit_expr(&mut keyword.value);
             }
         }
-        let inner_names = self.unshadowed_names(None, &class_def.body);
+        let mut inner_names = self.unshadowed_names(None, &class_def.body);
+        // A class docstring implicitly binds __doc__ in the class namespace:
+        // body references then observe the class docstring, not the module's
+        if matches!(
+            class_def.body.first(),
+            Some(Stmt::Expr(expr)) if expr.value.is_string_literal_expr()
+        ) {
+            inner_names.retain(|name| *name != "__doc__");
+        }
         if !inner_names.is_empty() {
             let inner = ImportGlobalRewriter {
                 module_var_name: self.module_var_name,
@@ -141,18 +185,86 @@ impl ruff_python_ast::visitor::transformer::Transformer for ImportGlobalRewriter
     }
 
     fn visit_expr(&self, expr: &mut Expr) {
-        if let Expr::Name(name) = expr
-            && self.names.contains(&name.id.as_str())
-            && name.ctx == ExprContext::Load
-        {
-            *expr = ast_builder::expressions::attribute(
-                ast_builder::expressions::name(self.module_var_name, ExprContext::Load),
-                name.id.as_str(),
-                ExprContext::Load,
-            );
-            return;
+        use ruff_python_ast::visitor::transformer::walk_expr;
+        match expr {
+            Expr::Name(name)
+                if self.names.contains(&name.id.as_str()) && name.ctx == ExprContext::Load =>
+            {
+                *expr = ast_builder::expressions::attribute(
+                    ast_builder::expressions::name(self.module_var_name, ExprContext::Load),
+                    name.id.as_str(),
+                    ExprContext::Load,
+                );
+            }
+            // Lambda parameters bind their own scope: defaults evaluate in the
+            // enclosing scope, and a parameter named like an import global keeps
+            // its own resolution in the body
+            Expr::Lambda(lambda) => {
+                let mut bound: Vec<String> = Vec::new();
+                if let Some(parameters) = &mut lambda.parameters {
+                    for param in parameters
+                        .posonlyargs
+                        .iter_mut()
+                        .chain(&mut parameters.args)
+                        .chain(&mut parameters.kwonlyargs)
+                    {
+                        if let Some(default) = &mut param.default {
+                            self.visit_expr(default);
+                        }
+                        bound.push(param.parameter.name.as_str().to_owned());
+                    }
+                    if let Some(vararg) = &parameters.vararg {
+                        bound.push(vararg.name.as_str().to_owned());
+                    }
+                    if let Some(kwarg) = &parameters.kwarg {
+                        bound.push(kwarg.name.as_str().to_owned());
+                    }
+                }
+                let inner_names: Vec<&'static str> = self
+                    .names
+                    .iter()
+                    .copied()
+                    .filter(|name| !bound.iter().any(|parameter| parameter == name))
+                    .collect();
+                if !inner_names.is_empty() {
+                    let inner = ImportGlobalRewriter {
+                        module_var_name: self.module_var_name,
+                        names: inner_names,
+                    };
+                    inner.visit_expr(&mut lambda.body);
+                }
+            }
+            // Comprehension targets bind their own scope for the whole expression
+            Expr::ListComp(_) | Expr::SetComp(_) | Expr::DictComp(_) | Expr::Generator(_) => {
+                let generators = match &*expr {
+                    Expr::ListComp(comp) => &comp.generators,
+                    Expr::SetComp(comp) => &comp.generators,
+                    Expr::DictComp(comp) => &comp.generators,
+                    Expr::Generator(comp) => &comp.generators,
+                    _ => unreachable!("matched comprehension variants only"),
+                };
+                let mut bound: Vec<String> = Vec::new();
+                for comprehension in generators {
+                    Self::collect_target_names(&comprehension.target, &mut bound);
+                }
+                let inner_names: Vec<&'static str> = self
+                    .names
+                    .iter()
+                    .copied()
+                    .filter(|name| !bound.iter().any(|target| target == name))
+                    .collect();
+                if inner_names.len() == self.names.len() {
+                    walk_expr(self, expr);
+                } else if !inner_names.is_empty() {
+                    let inner = ImportGlobalRewriter {
+                        module_var_name: self.module_var_name,
+                        names: inner_names,
+                    };
+                    walk_expr(&inner, expr);
+                }
+            }
+            _ => walk_expr(self, expr),
         }
-        ruff_python_ast::visitor::transformer::walk_expr(self, expr);
     }
 }
 
@@ -165,6 +277,58 @@ use crate::{
     types::{FxIndexMap, FxIndexSet},
     visitors::patterns,
 };
+
+/// Emit identity stamps (`__module__`, `__qualname__`) for a top-level symbol.
+///
+/// Undecorated definitions are plain functions/classes and take direct
+/// assignments; DECORATED definitions may have been replaced by objects that
+/// reject attribute assignment (`@deco` returning an int), so their stamps are
+/// wrapped in `try/except (AttributeError, TypeError)` — identity is preserved
+/// when possible without breaking valid replacement decorators.
+fn emit_identity_stamps(
+    body: &mut Vec<Stmt>,
+    symbol_name: &str,
+    module_name: &str,
+    original_name: &str,
+    is_decorated: bool,
+) {
+    let stamps = vec![
+        ast_builder::statements::assign_attribute(
+            symbol_name,
+            "__module__",
+            ast_builder::expressions::string_literal(module_name),
+        ),
+        ast_builder::statements::assign_attribute(
+            symbol_name,
+            "__qualname__",
+            ast_builder::expressions::string_literal(original_name),
+        ),
+    ];
+    if !is_decorated {
+        body.extend(stamps);
+        return;
+    }
+    use ruff_python_ast::{
+        AtomicNodeIndex, ExceptHandler, ExceptHandlerExceptHandler, ExprContext,
+    };
+    use ruff_text_size::TextRange;
+    let handler = ExceptHandler::ExceptHandler(ExceptHandlerExceptHandler {
+        node_index: AtomicNodeIndex::NONE,
+        range: TextRange::default(),
+        type_: Some(Box::new(ast_builder::expressions::tuple(vec![
+            ast_builder::expressions::name("AttributeError", ExprContext::Load),
+            ast_builder::expressions::name("TypeError", ExprContext::Load),
+        ]))),
+        name: None,
+        body: vec![ast_builder::statements::pass()].into(),
+    });
+    body.push(ast_builder::statements::try_stmt(
+        stamps,
+        vec![handler],
+        vec![],
+        vec![],
+    ));
+}
 
 /// Process each statement from the transformed module body
 /// and add appropriate module attributes for exported symbols
@@ -360,7 +524,7 @@ pub(crate) fn process_statements_for_init_function(
                 {
                     let rewriter = ImportGlobalRewriter {
                         module_var_name: SELF_PARAM,
-                        names: vec!["__name__", "__package__"],
+                        names: IMPORT_GLOBALS.to_vec(),
                     };
                     rewriter.rewrite_class(&mut class_def_clone);
                 }
@@ -374,16 +538,13 @@ pub(crate) fn process_statements_for_init_function(
                 // __qualname__ is restored to the original module-level name so external
                 // consumers resolving classes by identity (pickle, multiprocessing) find
                 // them through __import__(cls.__module__) + getattr(module, __qualname__).
-                body.push(ast_builder::statements::assign_attribute(
+                emit_identity_stamps(
+                    body,
                     &symbol_name,
-                    "__module__",
-                    ast_builder::expressions::string_literal(ctx.module_name),
-                ));
-                body.push(ast_builder::statements::assign_attribute(
-                    &symbol_name,
-                    "__qualname__",
-                    ast_builder::expressions::string_literal(class_def.name.as_str()),
-                ));
+                    ctx.module_name,
+                    class_def.name.as_str(),
+                    !class_def.decorator_list.is_empty(),
+                );
 
                 // Set as module attribute via centralized helper
                 emit_module_attr_if_exportable(
@@ -407,7 +568,7 @@ pub(crate) fn process_statements_for_init_function(
                 {
                     let rewriter = ImportGlobalRewriter {
                         module_var_name: SELF_PARAM,
-                        names: vec!["__name__", "__package__"],
+                        names: IMPORT_GLOBALS.to_vec(),
                     };
                     rewriter.rewrite_function(&mut func_def_clone);
                 }
@@ -433,16 +594,13 @@ pub(crate) fn process_statements_for_init_function(
                 // __import__(func.__module__) + getattr by __qualname__, and a
                 // function defined inside the init would otherwise carry a
                 // '<locals>' qualified name and the bundle entry's module
-                body.push(ast_builder::statements::assign_attribute(
+                emit_identity_stamps(
+                    body,
                     &symbol_name,
-                    "__module__",
-                    ast_builder::expressions::string_literal(ctx.module_name),
-                ));
-                body.push(ast_builder::statements::assign_attribute(
-                    &symbol_name,
-                    "__qualname__",
-                    ast_builder::expressions::string_literal(func_def.name.as_str()),
-                ));
+                    ctx.module_name,
+                    func_def.name.as_str(),
+                    !func_def.decorator_list.is_empty(),
+                );
 
                 // Set as module attribute via centralized helper
                 emit_module_attr_if_exportable(
@@ -490,6 +648,16 @@ pub(crate) fn process_statements_for_init_function(
                     // We need to transform any reference to a built-in that will be assigned
                     // as a local variable later in this function
                     transform_expr_for_builtin_shadowing(&mut assign_clone.value, builtin_locals);
+
+                    // Import globals (__name__, __package__, __doc__) resolve
+                    // to the MODULE's values: rewrite them to namespace
+                    // attributes, scope-aware so lambda parameters and
+                    // comprehension targets that rebind one of the names keep
+                    // their own resolution
+                    rewrite_import_globals_in_expr(&mut assign_clone.value);
+                    for target in &mut assign_clone.targets {
+                        rewrite_import_globals_in_expr(target);
+                    }
 
                     // Also transform module-level variable references
                     // Inside the init function, use "self" to refer to the module
@@ -629,6 +797,11 @@ pub(crate) fn process_statements_for_init_function(
                     if let Some(ref mut value) = ann_assign_clone.value {
                         transform_expr_for_builtin_shadowing(value, builtin_locals);
 
+                        // Import globals resolve to the MODULE's values,
+                        // rewritten scope-aware (lambda parameters and
+                        // comprehension targets keep their own resolution)
+                        rewrite_import_globals_in_expr(value);
+
                         // Also transform module-level variable references
                         // Inside the init function, use "self" to refer to the module
                         transform_expr_for_module_vars(
@@ -645,6 +818,7 @@ pub(crate) fn process_statements_for_init_function(
                         &mut ann_assign_clone.annotation,
                         builtin_locals,
                     );
+                    rewrite_import_globals_in_expr(&mut ann_assign_clone.annotation);
                     transform_expr_for_module_vars(
                         &mut ann_assign_clone.annotation,
                         &module_level_vars,
@@ -847,18 +1021,12 @@ pub(crate) fn transform_expr_for_module_vars(
 ) {
     match expr {
         Expr::Name(name) if name.ctx == ExprContext::Load => {
-            // Special case: transform import globals to module attributes
-            // (__package__ is stamped on the namespace by the init prologue)
-            if matches!(name.id.as_str(), "__name__" | "__package__") {
-                *expr = ast_builder::expressions::attribute(
-                    ast_builder::expressions::name(module_var_name, ExprContext::Load),
-                    name.id.as_str(),
-                    ExprContext::Load,
-                );
-            }
+            // Import globals (__name__, __package__) are rewritten scope-aware by
+            // ImportGlobalRewriter before this transform runs, so only
+            // module-level variables are handled here.
             // Check if this is a reference to a module-level variable
             // BUT exclude Python builtins from transformation
-            else if module_level_vars.contains(name.id.as_str())
+            if module_level_vars.contains(name.id.as_str())
                 && !ruff_python_stdlib::builtins::is_python_builtin(
                     name.id.as_str(),
                     python_version,
@@ -1014,13 +1182,53 @@ pub(crate) fn transform_expr_for_module_vars(
             }
         }
         Expr::Lambda(lambda) => {
-            // Note: Lambda parameters create a new scope, so we don't transform them
-            transform_expr_for_module_vars(
-                &mut lambda.body,
-                module_level_vars,
-                module_var_name,
-                python_version,
-            );
+            // Lambda parameters bind their own scope: defaults evaluate in the
+            // enclosing scope, and parameters shadow module-level names in the body
+            let mut bound: Vec<String> = Vec::new();
+            if let Some(parameters) = &mut lambda.parameters {
+                for param in parameters
+                    .posonlyargs
+                    .iter_mut()
+                    .chain(&mut parameters.args)
+                    .chain(&mut parameters.kwonlyargs)
+                {
+                    if let Some(default) = &mut param.default {
+                        transform_expr_for_module_vars(
+                            default,
+                            module_level_vars,
+                            module_var_name,
+                            python_version,
+                        );
+                    }
+                    bound.push(param.parameter.name.as_str().to_owned());
+                }
+                if let Some(vararg) = &parameters.vararg {
+                    bound.push(vararg.name.as_str().to_owned());
+                }
+                if let Some(kwarg) = &parameters.kwarg {
+                    bound.push(kwarg.name.as_str().to_owned());
+                }
+            }
+            if bound.iter().any(|name| module_level_vars.contains(name)) {
+                let inner_vars: FxIndexSet<String> = module_level_vars
+                    .iter()
+                    .filter(|name| !bound.iter().any(|param| param == *name))
+                    .cloned()
+                    .collect();
+                transform_expr_for_module_vars(
+                    &mut lambda.body,
+                    &inner_vars,
+                    module_var_name,
+                    python_version,
+                );
+            } else {
+                transform_expr_for_module_vars(
+                    &mut lambda.body,
+                    module_level_vars,
+                    module_var_name,
+                    python_version,
+                );
+            }
         }
         Expr::Compare(cmp) => {
             transform_expr_for_module_vars(
@@ -1688,6 +1896,18 @@ fn transform_stmt_for_module_vars_with_bundler(
 
     transform_conditional_functions_for_module_vars_with_bundler(stmt, ctx);
 
+    // Import globals (__name__, __package__) resolve to the MODULE's values:
+    // rewrite them to namespace attributes scope-aware (nested scopes that
+    // rebind one of the names keep their own resolution)
+    {
+        use ruff_python_ast::visitor::transformer::Transformer as _;
+        let rewriter = ImportGlobalRewriter {
+            module_var_name: ctx.module_var_name,
+            names: IMPORT_GLOBALS.to_vec(),
+        };
+        rewriter.visit_stmt(stmt);
+    }
+
     // Non-function statements: reuse the existing traversal
     transform_stmt_for_module_vars(
         stmt,
@@ -2092,9 +2312,12 @@ fn transform_expr_for_module_vars_with_locals(
             let name_str = name_expr.id.as_str();
 
             // Special case: transform import globals to module attributes
-            // (__package__ is stamped on the namespace by the init prologue)
-            if matches!(name_str, "__name__" | "__package__")
+            // (__package__ is stamped on the namespace by the init prologue).
+            // Locally bound names (parameters, local assignments) keep their
+            // own resolution.
+            if matches!(name_str, "__name__" | "__package__" | "__doc__")
                 && matches!(name_expr.ctx, ExprContext::Load)
+                && !local_vars.contains(name_str)
             {
                 *expr = ast_builder::expressions::attribute(
                     ast_builder::expressions::name(module_var_name, ExprContext::Load),

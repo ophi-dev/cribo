@@ -122,6 +122,7 @@ def _cribo_init___cribo_b0d212_mypkg(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'mypkg'
+    self.__doc__ = 'Package that demonstrates early module reference issue.'
     global mypkg_api
     """Package that demonstrates early module reference issue."""
     mypkg_api = _cribo_init___cribo_d2a83c_mypkg_api(mypkg_api)
@@ -140,6 +141,7 @@ def _cribo_init___cribo_d2a83c_mypkg_api(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'mypkg'
+    self.__doc__ = "API module that references sessions module early.\n\nThis reproduces the issue where a module-level variable references\nanother module before it's fully initialized.\n"
     """API module that references sessions module early.\n\nThis reproduces the issue where a module-level variable references\nanother module before it's fully initialized.\n"""
     sessions = mypkg_sessions
     self.sessions = sessions

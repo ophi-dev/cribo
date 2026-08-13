@@ -102,6 +102,7 @@ def _cribo_init___cribo_4c9561_mypkg(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'mypkg'
+    self.__doc__ = None
     MyClass = mypkg__internal.MyClass
     mypkg.MyClass = MyClass
     my_func = mypkg__internal.my_func

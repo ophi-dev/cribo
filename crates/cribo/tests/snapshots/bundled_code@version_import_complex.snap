@@ -101,6 +101,7 @@ def _cribo_init___cribo_623f97_mypackage(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'mypackage'
+    self.__doc__ = 'Main package that exposes version and imports submodules.'
     global mypackage_utils
     """Main package that exposes version and imports submodules."""
     __version__ = mypackage___version__.__version__
@@ -122,6 +123,7 @@ def _cribo_init___cribo_254d99_mypackage_utils(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'mypackage'
+    self.__doc__ = 'Utility module that imports __version__ from a sibling module.'
     """Utility module that imports __version__ from a sibling module."""
     __version__ = mypackage___version__.__version__
     mypackage_utils.__version__ = __version__

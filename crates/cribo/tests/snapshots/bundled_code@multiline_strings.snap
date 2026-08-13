@@ -106,6 +106,7 @@ def _cribo_init___cribo_2f952c_side_effect_module(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = 'Module with side effects and diverse multiline literals.'
     """Module with side effects and diverse multiline literals."""
     START_BANNER = """Loading side effect module:\n    - timestamps\n    - values\n"""
     self.START_BANNER = START_BANNER

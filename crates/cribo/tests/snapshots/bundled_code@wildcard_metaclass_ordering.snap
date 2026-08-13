@@ -160,6 +160,7 @@ def _cribo_init___cribo_952a76_yaml_module(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'yaml_module'
+    self.__doc__ = None
     BaseLoader = yaml_module_loader.BaseLoader
     Loader = yaml_module_loader.Loader
     FullLoader = yaml_module_loader.FullLoader

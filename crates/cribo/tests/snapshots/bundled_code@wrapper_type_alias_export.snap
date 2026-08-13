@@ -91,6 +91,7 @@ def _cribo_init___cribo_4c61dd_wrapped_alias(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     _cribo_previous_module_name_0 = _cribo.builtins.globals()['__name__']
     _cribo.builtins.globals()['__name__'] = 'wrapped_alias'
     try:

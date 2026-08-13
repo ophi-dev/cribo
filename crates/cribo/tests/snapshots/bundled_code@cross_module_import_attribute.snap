@@ -94,6 +94,7 @@ def _cribo_init___cribo_699da1_my_package___version__(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'my_package'
+    self.__doc__ = 'Version information for my_package'
     """Version information for my_package"""
     __version__ = "1.2.3"
     self.__version__ = __version__
@@ -112,6 +113,7 @@ def _cribo_init___cribo_1f0580_my_package_utils(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'my_package'
+    self.__doc__ = 'Utility module that imports version from another module'
     global my_package___version__
     """Utility module that imports version from another module"""
     my_package___version__ = _cribo_init___cribo_699da1_my_package___version__(my_package___version__)

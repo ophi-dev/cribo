@@ -93,6 +93,7 @@ def _cribo_init___cribo_39eca0_first(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     nullcontext = _cribo.contextlib.nullcontext
     self.nullcontext = nullcontext
     if self.__name__ != "__main__":
@@ -159,6 +160,7 @@ def _cribo_init___cribo_f05a42_private_consumer(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     global first
     first = _cribo_init___cribo_39eca0_first(first)
     _PRIVATE_CONDITIONAL_VALUE = first._PRIVATE_CONDITIONAL_VALUE
@@ -178,6 +180,7 @@ def _cribo_init___cribo_4717e4_second(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     if self.__name__ != "__main__":
         CONDITIONAL_VALUE = "second"
         second.CONDITIONAL_VALUE = CONDITIONAL_VALUE

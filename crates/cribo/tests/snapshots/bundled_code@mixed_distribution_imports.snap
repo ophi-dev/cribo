@@ -92,6 +92,7 @@ def _cribo_init___cribo_a01816_mixed_package_core(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'mixed_package'
+    self.__doc__ = None
     try:
         from mixed_package import _native
         mixed_package_core._native = _native

@@ -100,6 +100,7 @@ def _cribo_init___cribo_1444c2_module_a(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
 
     def start_process():
         """Start the processing chain A -> B -> C -> D -> A"""
@@ -127,6 +128,7 @@ def _cribo_init___cribo_277dcc_module_b(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
 
     def process_in_b():
         """Process in B, depends on C"""
@@ -153,6 +155,7 @@ def _cribo_init___cribo_21fc08_module_c(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
 
     def process_in_c():
         """Process in C, depends on D"""
@@ -179,6 +182,7 @@ def _cribo_init___cribo_f1543a_module_d(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
 
     def process_in_d():
         """Process in D, depends back on A - completes the 4-module cycle"""

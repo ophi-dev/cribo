@@ -92,6 +92,7 @@ def _cribo_init___cribo_5e52f3_lazy_helper(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     print("lazy_helper imported")
     VALUE = "lazy value"
     self.VALUE = VALUE
@@ -108,6 +109,7 @@ def _cribo_init___cribo_5af165_untouched_helper(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     print("untouched_helper imported")
     VALUE = "never seen"
     self.VALUE = VALUE

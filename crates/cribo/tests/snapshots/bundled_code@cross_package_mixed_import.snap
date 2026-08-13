@@ -131,6 +131,7 @@ def _cribo_init___cribo_f00e4b_core(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'core'
+    self.__doc__ = 'Core package with initialization logic and cross-package imports.'
     global _cribo_core__config, _cribo_core__initialized
     """Core package with initialization logic and cross-package imports."""
     _initialized = False
@@ -209,6 +210,7 @@ def _cribo_init___cribo_563ea2_models(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'models'
+    self.__doc__ = 'Models package with conditional imports and circular dependency handling.'
     global _cribo_models__base_model
     """Models package with conditional imports and circular dependency handling."""
     sys = _cribo.sys
@@ -279,6 +281,7 @@ def _cribo_init___cribo_1f0c3d_core_database_connection(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'core.database'
+    self.__doc__ = "Database connection module demonstrating mixed import patterns.\n\nThis module combines:\n1. Absolute import from a different package (models.user)\n2. Relative import from within the same package (..utils.helpers)\n3. Import from parent package's version module (not __init__.py)\n4. No imports from parent package's __init__.py to avoid circular dependencies\n"
     """Database connection module demonstrating mixed import patterns.\n\nThis module combines:\n1. Absolute import from a different package (models.user)\n2. Relative import from within the same package (..utils.helpers)\n3. Import from parent package's version module (not __init__.py)\n4. No imports from parent package's __init__.py to avoid circular dependencies\n"""
     process_user = models_user.process_user
     core_database_connection.process_user = process_user
@@ -354,6 +357,7 @@ def _cribo_init___cribo_782908_core_database(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'core.database'
+    self.__doc__ = 'Database subpackage with import-time initialization and re-exports.'
     global core_database_connection
     """Database subpackage with import-time initialization and re-exports."""
     validate = core_utils_helpers.validate

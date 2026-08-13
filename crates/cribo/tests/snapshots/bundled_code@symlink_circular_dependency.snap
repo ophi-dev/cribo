@@ -94,6 +94,7 @@ def _cribo_init___cribo_895222_moduleA(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
 
     def funcA():
         funcB = _cribo_init___cribo_19d6d4_moduleB(globals()['moduleB']).funcB
@@ -124,6 +125,7 @@ def _cribo_init___cribo_19d6d4_moduleB(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     global moduleA
     moduleA = _cribo_init___cribo_895222_moduleA(moduleA)
     funcC = moduleA.funcC

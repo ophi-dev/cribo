@@ -94,6 +94,7 @@ def _cribo_init___cribo_851b00_module_a(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = 'Module A with circular dependency on B.'
     global module_b
     """Module A with circular dependency on B."""
     Optional = _cribo.typing.Optional
@@ -129,6 +130,7 @@ def _cribo_init___cribo_924318_module_b(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = 'Module B with circular dependency on A.'
     global module_a
     """Module B with circular dependency on A."""
     TYPE_CHECKING = _cribo.typing.TYPE_CHECKING

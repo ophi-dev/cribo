@@ -98,6 +98,7 @@ def _cribo_init___cribo_a9fdaa_mypackage(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'mypackage'
+    self.__doc__ = None
     global mypackage_utils
     mypackage_utils = _cribo_init___cribo_dbce9e_mypackage_utils(mypackage_utils)
     get_version = mypackage_utils.get_version
@@ -115,6 +116,7 @@ def _cribo_init___cribo_dbce9e_mypackage_utils(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'mypackage'
+    self.__doc__ = None
     VERSION = mypackage_constants.VERSION
     mypackage_utils.VERSION = VERSION
 

@@ -91,6 +91,7 @@ def _cribo_init___cribo_d07f3b_helper(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     print("helper imported")
     VALUE = "helper value"
     self.VALUE = VALUE

@@ -110,6 +110,7 @@ def _cribo_init___cribo_9a2a8c_mypkg(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'mypkg'
+    self.__doc__ = "Package with modules including one named 'abc' (same as stdlib)."
     global mypkg_console
     """Package with modules including one named 'abc' (same as stdlib)."""
     mypkg_console = _cribo_init___cribo_6558da_mypkg_console(mypkg_console)
@@ -126,6 +127,7 @@ def _cribo_init___cribo_6558da_mypkg_console(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'mypkg'
+    self.__doc__ = 'Console module that imports various stdlib modules.'
     """Console module that imports various stdlib modules."""
     abc = _cribo.abc
     self.abc = abc

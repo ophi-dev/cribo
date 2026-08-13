@@ -111,6 +111,7 @@ def _cribo_init___cribo_814350_pkg_module_with_sideeffects(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'pkg'
+    self.__doc__ = 'Module with side effects that imports and re-exports from sibling module.'
     """Module with side effects that imports and re-exports from sibling module."""
     sys = _cribo.sys
     self.sys = sys

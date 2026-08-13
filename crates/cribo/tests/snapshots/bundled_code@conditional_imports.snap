@@ -92,6 +92,7 @@ def _cribo_init___cribo_e43fad_conditional_module(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = 'Module with conditional imports inside if/else blocks.'
     """Module with conditional imports inside if/else blocks."""
     has_simplejson = False
     self.has_simplejson = has_simplejson
@@ -155,6 +156,7 @@ def _cribo_init___cribo_17f1ec_try_except_module(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = 'Module with imports inside try/except blocks.'
     """Module with imports inside try/except blocks."""
     etree = None
     self.etree = etree

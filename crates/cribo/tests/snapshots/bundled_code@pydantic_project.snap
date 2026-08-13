@@ -92,6 +92,7 @@ def _cribo_init___cribo_e6d2b7_schemas_user(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'schemas'
+    self.__doc__ = 'User schema definitions using Pydantic.'
     """User schema definitions using Pydantic."""
     from pydantic import BaseModel, ConfigDict, EmailStr, Field
     Optional = _cribo.typing.Optional

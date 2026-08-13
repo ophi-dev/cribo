@@ -196,6 +196,7 @@ def _cribo_init___cribo_52189b_wrapped_matcher(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     global _cribo_wrapped_matcher_EVENT_PATTERN, _cribo_wrapped_matcher_STATUS_PATTERN, _cribo_wrapped_matcher_global_capture
     json = _cribo.json
     self.json = json

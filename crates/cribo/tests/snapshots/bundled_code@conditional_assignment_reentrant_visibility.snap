@@ -94,6 +94,7 @@ def _cribo_init___cribo_d338f1_conditional_observer(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     global conditional_source
     conditional_source = _cribo_init___cribo_c4de75_conditional_source(conditional_source)
     self.conditional_source = conditional_source
@@ -114,6 +115,7 @@ def _cribo_init___cribo_c4de75_conditional_source(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     global conditional_observer
     if self.__name__ != "__main__":
         VALUE = "early"

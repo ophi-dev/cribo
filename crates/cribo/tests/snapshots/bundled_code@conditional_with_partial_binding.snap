@@ -91,6 +91,7 @@ def _cribo_init___cribo_e1cf19_with_source(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
 
     class SuccessfulContext:
 

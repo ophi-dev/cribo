@@ -106,6 +106,7 @@ def _cribo_init___cribo_60bb0a_logger(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = 'Logger module - has side effects (print), uses different aliased stdlib imports.'
     """Logger module - has side effects (print), uses different aliased stdlib imports."""
     python_sys = _cribo.sys
     self.python_sys = python_sys

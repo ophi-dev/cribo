@@ -94,6 +94,7 @@ def _cribo_init___cribo_592ce1_guard_observer(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     global guarded
     guarded = _cribo_init___cribo_962e76_guarded(guarded)
     self.guarded = guarded
@@ -121,6 +122,7 @@ def _cribo_init___cribo_962e76_guarded(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     global guard_observer
     guard_observer = _cribo_init___cribo_592ce1_guard_observer(guard_observer)
     self.guard_observer = guard_observer

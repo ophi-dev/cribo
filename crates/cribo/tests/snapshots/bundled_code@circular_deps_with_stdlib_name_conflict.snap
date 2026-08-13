@@ -111,6 +111,7 @@ def _cribo_init___cribo_6b1af6_pkg(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'pkg'
+    self.__doc__ = 'Package with circular dependencies and stdlib-conflicting module names.'
     global pkg_abc, pkg_console, pkg_pretty
     """Package with circular dependencies and stdlib-conflicting module names."""
     pkg_console = _cribo_init___cribo_f0224b_pkg_console(pkg_console)
@@ -136,6 +137,7 @@ def _cribo_init___cribo_5f60be_pkg_abc(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'pkg'
+    self.__doc__ = 'Module with stdlib-conflicting name that imports from stdlib abc.'
     global pkg_console
     """Module with stdlib-conflicting name that imports from stdlib abc."""
     ABC = _cribo.abc.ABC
@@ -187,6 +189,7 @@ def _cribo_init___cribo_02808e_pkg_color(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'pkg'
+    self.__doc__ = 'Color module that participates in circular dependencies.'
     """Color module that participates in circular dependencies."""
     typing = _cribo.typing
     self.typing = typing
@@ -249,6 +252,7 @@ def _cribo_init___cribo_f0224b_pkg_console(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'pkg'
+    self.__doc__ = 'Console module that has circular dependencies with abc and pretty.'
     global pkg_abc, pkg_color, pkg_pretty, pkg_style
     """Console module that has circular dependencies with abc and pretty."""
     sys = _cribo.sys
@@ -325,6 +329,7 @@ def _cribo_init___cribo_2353ad_pkg_pretty(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'pkg'
+    self.__doc__ = 'Pretty printing module with circular dependency on console.'
     global pkg_abc, pkg_console
     """Pretty printing module with circular dependency on console."""
     Any = _cribo.typing.Any
@@ -377,6 +382,7 @@ def _cribo_init___cribo_4c91ba_pkg_style(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'pkg'
+    self.__doc__ = 'Style module that participates in circular dependencies.'
     global pkg_color
     """Style module that participates in circular dependencies."""
     Optional = _cribo.typing.Optional

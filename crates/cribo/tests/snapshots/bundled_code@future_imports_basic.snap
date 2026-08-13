@@ -95,6 +95,7 @@ def _cribo_init___cribo_41d36f_mypackage_core(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'mypackage'
+    self.__doc__ = None
     Dict = _cribo.typing.Dict
     self.Dict = Dict
     List = _cribo.typing.List
@@ -137,6 +138,7 @@ def _cribo_init___cribo_c3d681_mypackage_submodule_utils(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'mypackage.submodule'
+    self.__doc__ = None
     Dict = _cribo.typing.Dict
     self.Dict = Dict
     Any = _cribo.typing.Any

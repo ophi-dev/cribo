@@ -93,6 +93,7 @@ def _cribo_init___cribo_4089db_mypkg_compat(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'mypkg'
+    self.__doc__ = None
     try:
         from fakejson import JSONDecodeError
         mypkg_compat.JSONDecodeError = JSONDecodeError
@@ -117,6 +118,7 @@ def _cribo_init___cribo_30661c_mypkg(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'mypkg'
+    self.__doc__ = None
     global mypkg_exceptions
     mypkg_exceptions = _cribo_init___cribo_72b028_mypkg_exceptions(mypkg_exceptions)
     CustomJSONError = mypkg_exceptions.CustomJSONError
@@ -133,6 +135,7 @@ def _cribo_init___cribo_72b028_mypkg_exceptions(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'mypkg'
+    self.__doc__ = None
     global mypkg_compat
     mypkg_compat = _cribo_init___cribo_4089db_mypkg_compat(mypkg_compat)
     CompatJSONDecodeError = mypkg.compat.JSONDecodeError

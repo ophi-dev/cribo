@@ -93,6 +93,7 @@ def _cribo_init___cribo_bca834_loops(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     global _cribo_loops_last_result, _cribo_loops_loop_count
     print("loading loops")
     last_result = "none"

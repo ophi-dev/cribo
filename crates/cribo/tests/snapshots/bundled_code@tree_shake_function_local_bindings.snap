@@ -94,6 +94,7 @@ def _cribo_init___cribo_b0c5db_class_side_effects(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     events = registry.events
     class_side_effects.events = events
 

@@ -103,6 +103,7 @@ def _cribo_init___cribo_f23a44_external_plugin(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = 'External plugin that registers itself when imported.'
     """External plugin that registers itself when imported."""
     add_plugin = state.add_plugin
     external_plugin.add_plugin = add_plugin

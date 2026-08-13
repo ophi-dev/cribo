@@ -109,6 +109,7 @@ def _cribo_init___cribo_937418_complex_pkg(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'complex_pkg'
+    self.__doc__ = None
     global complex_pkg_console
     Base = complex_pkg_abc.Base
     complex_pkg.Base = Base
@@ -135,6 +136,7 @@ def _cribo_init___cribo_beaba5_complex_pkg_console(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'complex_pkg'
+    self.__doc__ = None
     Any = _cribo.typing.Any
     self.Any = Any
     Optional = _cribo.typing.Optional

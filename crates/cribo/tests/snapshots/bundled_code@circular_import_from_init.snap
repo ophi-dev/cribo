@@ -96,6 +96,7 @@ def _cribo_init___cribo_d50b51_rich(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'rich'
+    self.__doc__ = None
     global rich_jupyter
 
     def get_console():
@@ -118,6 +119,7 @@ def _cribo_init___cribo_951ad9_rich_jupyter(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'rich'
+    self.__doc__ = None
     console = rich_console
     self.console = console
     self.__initialized__ = True

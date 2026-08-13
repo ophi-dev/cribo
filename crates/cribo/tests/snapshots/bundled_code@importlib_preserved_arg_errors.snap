@@ -91,6 +91,7 @@ def _cribo_init___cribo_cfd41b_effectful_helper(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     print("effectful_helper imported")
     VALUE = "effectful value"
     self.VALUE = VALUE

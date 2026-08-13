@@ -109,6 +109,7 @@ def _cribo_init___cribo_9a9871_with_side_effects(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = 'Module with side-effects and no explicit __all__.'
     """Module with side-effects and no explicit __all__."""
     print("Loading with_side_effects module")
     _module_state = []
@@ -154,8 +155,11 @@ def _cribo_init___cribo_9a9871_with_side_effects(self):
     def registered_function():
         """Function registered as a side-effect."""
         return "registered_result"
-    registered_function.__module__ = 'with_side_effects'
-    registered_function.__qualname__ = 'registered_function'
+    try:
+        registered_function.__module__ = 'with_side_effects'
+        registered_function.__qualname__ = 'registered_function'
+    except (AttributeError, TypeError):
+        pass
     self.registered_function = registered_function
     if len(_module_state) > 0:
         print(f"Module state initialized with {len(_module_state)} items")

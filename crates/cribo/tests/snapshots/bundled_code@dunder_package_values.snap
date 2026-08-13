@@ -93,6 +93,7 @@ def _cribo_init___cribo_dd9e25_toplevel_helper(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     print("toplevel_helper __package__:", repr(self.__package__))
     self.__initialized__ = True
     self.__initializing__ = False
@@ -107,6 +108,7 @@ def _cribo_init___cribo_d98eaa_provider(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'provider'
+    self.__doc__ = None
     print("provider package __package__:", self.__package__)
     PACKAGE_OF_INIT = self.__package__
     self.PACKAGE_OF_INIT = PACKAGE_OF_INIT
@@ -123,6 +125,7 @@ def _cribo_init___cribo_6b5e0d_provider_worker(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'provider'
+    self.__doc__ = None
     print("worker __package__:", self.__package__)
 
     def package_at_call_time():

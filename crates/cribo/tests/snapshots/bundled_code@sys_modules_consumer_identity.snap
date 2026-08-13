@@ -91,8 +91,9 @@ def _cribo_init___cribo_d7a691_dep(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
-    self.__spec__ = None
+    self.__doc__ = None
     try:
+        self.__spec__ = None
         _sys.modules[self.__name__] = self
         print("dep loaded")
         VALUE = "observable"

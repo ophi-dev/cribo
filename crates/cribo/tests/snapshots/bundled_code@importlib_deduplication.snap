@@ -93,6 +93,7 @@ def _cribo_init___cribo_26ef78_mymodule(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     print("mymodule.py is being executed!")
     counter = 1
     self.counter = counter
@@ -111,6 +112,7 @@ def _cribo_init___cribo_20ca72_package(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'package'
+    self.__doc__ = None
     print("package/__init__.py is being executed!")
     self.__initialized__ = True
     self.__initializing__ = False
@@ -125,6 +127,7 @@ def _cribo_init___cribo_75ebb7_package_submodule(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'package'
+    self.__doc__ = None
     print("package/submodule.py is being executed!")
     sub_counter = 10
     self.sub_counter = sub_counter

@@ -96,6 +96,7 @@ def _cribo_init___cribo_d8297b_data_processor(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = "Module with hyphen in name - can't be imported with regular import statement."
     """Module with hyphen in name - can't be imported with regular import statement."""
 
     class DataProcessor:
@@ -129,6 +130,7 @@ def _cribo_init___cribo_64c186_api_client(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = 'Another module with hyphen - demonstrating API client functionality.'
     """Another module with hyphen - demonstrating API client functionality."""
 
     class APIClient:
@@ -165,6 +167,7 @@ def _cribo_init___cribo_004e55_class_(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = "Module named 'class' - a Python keyword that can't be used in import statements."
     """Module named 'class' - a Python keyword that can't be used in import statements."""
 
     class MetaClass:
@@ -201,6 +204,7 @@ def _cribo_init___cribo_944eb6_def_(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = "Module named 'def' - another Python keyword."
     """Module named 'def' - another Python keyword."""
 
     class FunctionDefinition:
@@ -238,6 +242,7 @@ def _cribo_init___cribo_ec6681_for_(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = "Module named 'for' - a Python keyword for loops."
     """Module named 'for' - a Python keyword for loops."""
 
     class ForLoop:
@@ -277,6 +282,7 @@ def _cribo_init___cribo_5687a6__2024_config(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = "Module starting with a number - can't be imported with regular import."
     """Module starting with a number - can't be imported with regular import."""
 
     class Config2024:

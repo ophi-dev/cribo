@@ -98,6 +98,7 @@ def _cribo_init___cribo_9d48f2_services_auth(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'services'
+    self.__doc__ = None
     global services_database
     services_database = _cribo_init___cribo_62de34_services_database(services_database)
     get_connection = services.database.get_connection
@@ -129,6 +130,7 @@ def _cribo_init___cribo_62de34_services_database(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'services'
+    self.__doc__ = None
     global services_auth
     services_auth = _cribo_init___cribo_9d48f2_services_auth(services_auth)
     get_user_context = services.auth.get_user_context

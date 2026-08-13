@@ -95,6 +95,7 @@ def _cribo_init___cribo_6c62dc_routing(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
 
     class Kinds:
         READY = "ready"

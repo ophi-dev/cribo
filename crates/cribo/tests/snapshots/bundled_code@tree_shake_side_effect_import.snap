@@ -102,6 +102,7 @@ def _cribo_init___cribo_ddd935_mypackage(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'mypackage'
+    self.__doc__ = None
     global mypackage_utils
     mypackage_utils = _cribo_init___cribo_09b9b3_mypackage_utils(mypackage_utils)
     utils = mypackage.utils
@@ -119,6 +120,7 @@ def _cribo_init___cribo_09b9b3_mypackage_utils(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'mypackage'
+    self.__doc__ = None
     CustomError = mypackage_exceptions.CustomError
     mypackage_utils.CustomError = CustomError
     os = _cribo.os

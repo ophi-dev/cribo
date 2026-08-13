@@ -156,6 +156,7 @@ def _cribo_init___cribo_62c387_core(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'core'
+    self.__doc__ = None
     CoreLogger = Logger_4
     core.CoreLogger = CoreLogger
     core_process = process_6
@@ -176,6 +177,7 @@ def _cribo_init___cribo_c57a32_core_utils(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'core.utils'
+    self.__doc__ = None
     Logger = Logger_4
     core_utils.Logger = Logger
     process = process_6
@@ -297,6 +299,7 @@ def _cribo_init___cribo_98ecc1_models(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'models'
+    self.__doc__ = None
     global models_base
     User = User_2
     models.User = User
@@ -327,6 +330,7 @@ def _cribo_init___cribo_bca2f6_models_base(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'models'
+    self.__doc__ = '\nBase model functionality with relative import conflicts\n'
     global _cribo_models_base_result
     """\nBase model functionality with relative import conflicts\n"""
     Any = _cribo.typing.Any
@@ -508,6 +512,7 @@ def _cribo_init___cribo_ee1d45_services_auth_manager(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'services.auth'
+    self.__doc__ = '\nAuthentication manager with complex naming conflicts\n'
     global _cribo_services_auth_manager_result
     global models_base
     """\nAuthentication manager with complex naming conflicts\n"""
@@ -675,6 +680,7 @@ def _cribo_init___cribo_93a195_services(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'services'
+    self.__doc__ = None
     global services_auth_manager
     __cribo_init_result = _cribo_init___cribo_b16105_services_auth(services_auth)
     for attr in dir(__cribo_init_result):
@@ -702,6 +708,7 @@ def _cribo_init___cribo_b16105_services_auth(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'services.auth'
+    self.__doc__ = None
     global services_auth_manager
     services_auth_manager = _cribo_init___cribo_ee1d45_services_auth_manager(services_auth_manager)
     User = services_auth_manager.User

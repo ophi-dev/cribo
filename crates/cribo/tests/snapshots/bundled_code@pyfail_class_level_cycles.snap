@@ -94,6 +94,7 @@ def _cribo_init___cribo_7f7c68_admin_class(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = 'Admin class module with circular dependency.'
     global user_class
     """Admin class module with circular dependency."""
     user_class = _cribo_init___cribo_f4b9e6_user_class(user_class)
@@ -125,6 +126,7 @@ def _cribo_init___cribo_f4b9e6_user_class(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = 'User class module with circular dependency.'
     global admin_class
     """User class module with circular dependency."""
     admin_class = _cribo_init___cribo_7f7c68_admin_class(admin_class)

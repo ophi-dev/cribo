@@ -1723,12 +1723,24 @@ impl Bundler<'_> {
                         );
                     }
                 }
-                // Recurse into class body (class scope executes at definition time)
+                // Recurse into class body (class scope executes at definition time).
+                // A class docstring implicitly binds __doc__ in the class
+                // namespace, shadowing the module's value.
+                let class_locals = if matches!(
+                    class_def.body.first(),
+                    Some(Stmt::Expr(expr)) if expr.value.is_string_literal_expr()
+                ) {
+                    let mut extended = local_vars.clone();
+                    extended.insert("__doc__".to_owned());
+                    Some(extended)
+                } else {
+                    None
+                };
                 for stmt in &mut class_def.body {
                     self.transform_stmt_for_module_vars_with_locals(
                         stmt,
                         module_level_vars,
-                        local_vars,
+                        class_locals.as_ref().unwrap_or(local_vars),
                         module_var_name,
                     );
                 }
@@ -1856,9 +1868,12 @@ impl Bundler<'_> {
                 let name_str = name_expr.id.as_str();
 
                 // Special case: transform import globals to module attributes
-                // (__package__ is stamped on the namespace by the init prologue)
-                if matches!(name_str, "__name__" | "__package__")
+                // (__package__ is stamped on the namespace by the init prologue).
+                // Locally bound names (function/lambda parameters, comprehension
+                // targets, local assignments) keep their own resolution.
+                if matches!(name_str, "__name__" | "__package__" | "__doc__")
                     && matches!(name_expr.ctx, ExprContext::Load)
+                    && !local_vars.contains(name_str)
                 {
                     *expr = expressions::attribute(
                         expressions::name(module_var_name, ExprContext::Load),

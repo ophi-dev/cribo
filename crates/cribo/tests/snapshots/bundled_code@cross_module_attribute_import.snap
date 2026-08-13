@@ -103,6 +103,7 @@ def _cribo_init___cribo_370515_mypackage(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'mypackage'
+    self.__doc__ = 'Package init that creates circular dependency.'
     global mypackage_core, mypackage_utils
     """Package init that creates circular dependency."""
     mypackage_utils = _cribo_init___cribo_35f1d1_mypackage_utils(mypackage_utils)
@@ -132,6 +133,7 @@ def _cribo_init___cribo_e49d78_mypackage_core(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'mypackage'
+    self.__doc__ = 'Core module that creates circular dependency.'
     """Core module that creates circular dependency."""
     __cribo_init_result = _cribo_init___cribo_370515_mypackage(mypackage)
     for attr in dir(__cribo_init_result):
@@ -157,6 +159,7 @@ def _cribo_init___cribo_35f1d1_mypackage_utils(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'mypackage'
+    self.__doc__ = 'Utils module that imports from __version__ module and uses it at module level.'
     """Utils module that imports from __version__ module and uses it at module level."""
     __version__ = mypackage___version__.__version__
     mypackage_utils.__version__ = __version__

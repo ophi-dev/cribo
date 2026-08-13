@@ -94,6 +94,7 @@ def _cribo_init___cribo_d38e22_late_shadow_pkg(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'late_shadow_pkg'
+    self.__doc__ = 'Package rebinding importlib later in the same function.'
     """Package rebinding importlib later in the same function."""
     importlib = _cribo.importlib
     self.importlib = importlib

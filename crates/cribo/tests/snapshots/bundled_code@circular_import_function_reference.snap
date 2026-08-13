@@ -107,6 +107,7 @@ def _cribo_init___cribo_6d9930_pkg(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'pkg'
+    self.__doc__ = None
     global pkg_adapters, pkg_auth
     pkg_adapters = _cribo_init___cribo_12d613_pkg_adapters(pkg_adapters)
     adapters = pkg.adapters
@@ -125,6 +126,7 @@ def _cribo_init___cribo_12d613_pkg_adapters(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'pkg'
+    self.__doc__ = 'Adapters module that imports a function from auth.'
     global pkg_auth, pkg_models
     """Adapters module that imports a function from auth."""
     pkg_auth = _cribo_init___cribo_e94ab8_pkg_auth(pkg_auth)
@@ -161,6 +163,7 @@ def _cribo_init___cribo_e94ab8_pkg_auth(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'pkg'
+    self.__doc__ = 'Auth module that defines a utility function.'
     global pkg_utils
     """Auth module that defines a utility function."""
     pkg_utils = _cribo_init___cribo_bdb497_pkg_utils(pkg_utils)
@@ -198,6 +201,7 @@ def _cribo_init___cribo_01ad7c_pkg_models(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'pkg'
+    self.__doc__ = 'Models module that creates part of the circular chain.'
     global pkg_adapters
     """Models module that creates part of the circular chain."""
     pkg_adapters = _cribo_init___cribo_12d613_pkg_adapters(pkg_adapters)
@@ -227,6 +231,7 @@ def _cribo_init___cribo_bdb497_pkg_utils(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'pkg'
+    self.__doc__ = 'Utils module that completes the circular chain.'
     global pkg_models
     """Utils module that completes the circular chain."""
     pkg_models = _cribo_init___cribo_01ad7c_pkg_models(pkg_models)

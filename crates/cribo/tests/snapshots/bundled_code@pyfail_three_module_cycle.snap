@@ -97,6 +97,7 @@ def _cribo_init___cribo_ae45fc_module_a(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
 
     def process_a():
         """Process A that depends on B"""
@@ -123,6 +124,7 @@ def _cribo_init___cribo_afa23a_module_b(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
 
     def process_b():
         """Process B that depends on C"""
@@ -149,6 +151,7 @@ def _cribo_init___cribo_b6d812_module_c(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
 
     def process_c():
         """Process C that depends back on A - creates the cycle"""

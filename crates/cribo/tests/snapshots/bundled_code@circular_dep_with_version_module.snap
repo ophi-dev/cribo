@@ -101,6 +101,7 @@ def _cribo_init___cribo_a4c23d_package(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'package'
+    self.__doc__ = 'Package with circular dependency and __version__ import'
     global package_module_a
     """Package with circular dependency and __version__ import"""
     __version__ = package___version__.__version__
@@ -131,6 +132,7 @@ def _cribo_init___cribo_cc4906_package_module_a(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'package'
+    self.__doc__ = 'Module A that creates circular dependency'
     """Module A that creates circular dependency"""
 
     def func_a():

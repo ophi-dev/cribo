@@ -95,6 +95,7 @@ def _cribo_init___cribo_5ad29b_myrequests_compat(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'myrequests'
+    self.__doc__ = 'Compat module that provides base classes and utilities used by other modules.'
     """Compat module that provides base classes and utilities used by other modules."""
     try:
         import simplejson as json
@@ -152,6 +153,7 @@ def _cribo_init___cribo_a5ac5e_myrequests(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'myrequests'
+    self.__doc__ = 'Main package that imports from multiple submodules.'
     global myrequests_compat, myrequests_cookies, myrequests_exceptions, myrequests_utils
     """Main package that imports from multiple submodules."""
     myrequests_compat = _cribo_init___cribo_5ad29b_myrequests_compat(myrequests_compat)
@@ -189,6 +191,7 @@ def _cribo_init___cribo_135ee1_myrequests_cookies(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'myrequests'
+    self.__doc__ = "Cookies module that uses compat's MutableMapping in class inheritance."
     global myrequests_compat
     """Cookies module that uses compat's MutableMapping in class inheritance."""
     myrequests_compat = _cribo_init___cribo_5ad29b_myrequests_compat(myrequests_compat)
@@ -243,6 +246,7 @@ def _cribo_init___cribo_530a30_myrequests_exceptions(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'myrequests'
+    self.__doc__ = 'Exceptions module that uses compat types in class inheritance.'
     global myrequests_compat
     """Exceptions module that uses compat types in class inheritance."""
     myrequests_compat = _cribo_init___cribo_5ad29b_myrequests_compat(myrequests_compat)
@@ -281,6 +285,7 @@ def _cribo_init___cribo_ce8acb_myrequests_utils(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'myrequests'
+    self.__doc__ = 'Utils module that also uses compat.'
     global myrequests_compat
     """Utils module that also uses compat."""
     myrequests_compat = _cribo_init___cribo_5ad29b_myrequests_compat(myrequests_compat)

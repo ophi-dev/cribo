@@ -92,6 +92,7 @@ def _cribo_init___cribo_7c69fc_mypackage_utils(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'mypackage'
+    self.__doc__ = "Utils module with contextlib decorator.\n\nThis module must have side effects to become a wrapper module,\nand uses contextlib as a decorator which should be preserved in\nthe init function but currently isn't.\n"
     """Utils module with contextlib decorator.\n\nThis module must have side effects to become a wrapper module,\nand uses contextlib as a decorator which should be preserved in\nthe init function but currently isn't.\n"""
     contextlib = _cribo.contextlib
     self.contextlib = contextlib
@@ -116,8 +117,11 @@ def _cribo_init___cribo_7c69fc_mypackage_utils(self):
         except BaseException:
             _cribo.os.remove(tmp_name)
             raise
-    atomic_open.__module__ = 'mypackage.utils'
-    atomic_open.__qualname__ = 'atomic_open'
+    try:
+        atomic_open.__module__ = 'mypackage.utils'
+        atomic_open.__qualname__ = 'atomic_open'
+    except (AttributeError, TypeError):
+        pass
     self.atomic_open = atomic_open
     self.__initialized__ = True
     self.__initializing__ = False
@@ -132,6 +136,7 @@ def _cribo_init___cribo_41b947_mypackage(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'mypackage'
+    self.__doc__ = 'Package init file.'
     global mypackage_utils
     """Package init file."""
     mypackage_utils = _cribo_init___cribo_7c69fc_mypackage_utils(mypackage_utils)

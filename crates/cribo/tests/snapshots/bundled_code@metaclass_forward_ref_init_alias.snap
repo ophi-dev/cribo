@@ -106,6 +106,7 @@ def _cribo_init___cribo_d9a389_yaml_pkg(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'yaml_pkg'
+    self.__doc__ = None
     global yaml_pkg_base
     yaml_pkg_base = _cribo_init___cribo_6d74f2_yaml_pkg_base(yaml_pkg_base)
     YO = yaml_pkg_base.YAMLObject
@@ -125,6 +126,7 @@ def _cribo_init___cribo_6d74f2_yaml_pkg_base(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'yaml_pkg'
+    self.__doc__ = None
     YAMLObjectMetaclass = yaml_pkg_meta.YAMLObjectMetaclass
     yaml_pkg_base.YAMLObjectMetaclass = YAMLObjectMetaclass
 

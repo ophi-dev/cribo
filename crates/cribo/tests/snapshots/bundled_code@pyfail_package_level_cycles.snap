@@ -94,6 +94,7 @@ def _cribo_init___cribo_176078_pkg1(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'pkg1'
+    self.__doc__ = None
 
     def main_function():
         """Main function that uses helper from pkg2"""
@@ -121,6 +122,7 @@ def _cribo_init___cribo_a6e036_pkg2(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'pkg2'
+    self.__doc__ = None
 
     def helper_function():
         """Helper function that depends on pkg1"""

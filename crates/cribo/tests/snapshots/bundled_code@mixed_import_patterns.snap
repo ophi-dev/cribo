@@ -106,6 +106,7 @@ def _cribo_init___cribo_f96d2c_config(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = '\nConfiguration module that logs its initialization process.\nThis creates a circular dependency: config -> logger -> config\n'
     global _cribo_config__config
     global logger
     """\nConfiguration module that logs its initialization process.\nThis creates a circular dependency: config -> logger -> config\n"""
@@ -172,6 +173,7 @@ def _cribo_init___cribo_0639af_logger(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = '\nLogger module that needs configuration to determine log level.\nThis creates a circular dependency: logger -> config -> logger\n'
     global _cribo_logger__logger
     """\nLogger module that needs configuration to determine log level.\nThis creates a circular dependency: logger -> config -> logger\n"""
     format_message = utils.format_message

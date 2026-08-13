@@ -91,6 +91,7 @@ def _cribo_init___cribo_e6f4c0_test_module(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = 'Module with function defined in try-except-else block.'
     """Module with function defined in try-except-else block."""
     try:
         import nonexistent_module

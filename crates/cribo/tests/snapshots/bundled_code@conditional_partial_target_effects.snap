@@ -94,6 +94,7 @@ def _cribo_init___cribo_a3a28c_partial_observer(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     global partial_source
     partial_source = _cribo_init___cribo_e09ba2_partial_source(partial_source)
     self.partial_source = partial_source
@@ -133,6 +134,7 @@ def _cribo_init___cribo_e09ba2_partial_source(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     global partial_observer
     if self.__name__ != "__main__":
         partial_observer = _cribo_init___cribo_a3a28c_partial_observer(partial_observer)

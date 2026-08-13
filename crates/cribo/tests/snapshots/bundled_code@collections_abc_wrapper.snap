@@ -92,6 +92,7 @@ def _cribo_init___cribo_f0aa89_compat(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = 'compat.py - Compatibility module with side effects.'
     """compat.py - Compatibility module with side effects."""
     print("Loading compat module...")
     MutableMapping = _cribo.collections.abc.MutableMapping

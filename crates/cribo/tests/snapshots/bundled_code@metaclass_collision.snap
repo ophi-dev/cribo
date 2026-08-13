@@ -97,6 +97,7 @@ def _cribo_init___cribo_9c0ae3_pkg(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'pkg'
+    self.__doc__ = None
     create_object = pkg_submodule.create_object
     pkg.create_object = create_object
 

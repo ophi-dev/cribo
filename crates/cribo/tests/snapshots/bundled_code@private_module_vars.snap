@@ -92,6 +92,7 @@ def _cribo_init___cribo_73cafd_pkg__internal(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'pkg'
+    self.__doc__ = 'Internal module with private variables.'
     """Internal module with private variables."""
     re = _cribo.re
     self.re = re

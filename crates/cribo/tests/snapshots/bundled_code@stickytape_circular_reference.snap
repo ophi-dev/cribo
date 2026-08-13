@@ -94,6 +94,7 @@ def _cribo_init___cribo_996948_first(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     self.__initialized__ = True
     self.__initializing__ = False
     return self
@@ -105,6 +106,7 @@ def _cribo_init___cribo_08a7dc_second(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     self.__initialized__ = True
     self.__initializing__ = False
     return self

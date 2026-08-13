@@ -91,8 +91,9 @@ def _cribo_init___cribo_9fc6e2_helper(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
-    self.__spec__ = None
+    self.__doc__ = 'Module deliberately replacing itself in sys.modules.'
     try:
+        self.__spec__ = None
         _sys.modules[self.__name__] = self
         """Module deliberately replacing itself in sys.modules."""
         sys = _cribo.sys

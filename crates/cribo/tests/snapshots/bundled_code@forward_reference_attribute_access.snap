@@ -98,6 +98,7 @@ def _cribo_init___cribo_d7bb86_mymodule(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'mymodule'
+    self.__doc__ = None
     global mymodule_exceptions
     mymodule_exceptions = _cribo_init___cribo_e5cbf4_mymodule_exceptions(mymodule_exceptions)
     MyError = mymodule_exceptions.MyError
@@ -115,6 +116,7 @@ def _cribo_init___cribo_e5cbf4_mymodule_exceptions(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'mymodule'
+    self.__doc__ = None
     CompatJSONDecodeError = JSONDecodeError
     mymodule_exceptions.CompatJSONDecodeError = CompatJSONDecodeError
 

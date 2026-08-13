@@ -91,6 +91,7 @@ def _cribo_init___cribo_640e92_helper(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     VALUE = "first-party helper"
     self.VALUE = VALUE
     self.__initialized__ = True

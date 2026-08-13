@@ -91,6 +91,7 @@ def _cribo_init___cribo_e25798_foo(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'foo'
+    self.__doc__ = None
     source = "foo/__init__.py (package)"
     self.source = source
     value = "CORRECT - package"

@@ -91,6 +91,7 @@ def _cribo_init___cribo_332fbf_my_module(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     value = 42
     self.value = value
 

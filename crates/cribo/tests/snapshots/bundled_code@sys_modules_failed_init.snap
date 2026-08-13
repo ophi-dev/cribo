@@ -91,8 +91,9 @@ def _cribo_init___cribo_1e8e84_helper(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
-    self.__spec__ = None
+    self.__doc__ = 'Self-registering module whose initialization fails.'
     try:
+        self.__spec__ = None
         _sys.modules[self.__name__] = self
         """Self-registering module whose initialization fails."""
         sys = _cribo.sys

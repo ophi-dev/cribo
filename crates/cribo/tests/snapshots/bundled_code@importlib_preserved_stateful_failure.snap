@@ -91,6 +91,7 @@ def _cribo_init___cribo_fd06b8_stateful_flaky(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     attempts = self.__dict__.get("attempts", 0) + 1
     self.attempts = attempts
     print("attempt", attempts)

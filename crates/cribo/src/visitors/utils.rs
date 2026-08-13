@@ -514,6 +514,36 @@ pub(crate) fn imported_module_dunder_read_targets(
         bindings: FxIndexMap<String, String>,
     }
 
+    /// Source-inspection APIs that need a REAL module with a source file.
+    const SOURCE_INSPECTION_APIS: [&str; 6] = [
+        "getsource",
+        "getsourcefile",
+        "getsourcelines",
+        "getfile",
+        "getabsfile",
+        "findsource",
+    ];
+
+    impl DunderReadCollector {
+        /// Return whether a call invokes a source-inspection API, through the
+        /// inspect module (or an alias) or a from-imported function.
+        fn is_source_inspection_call(&self, call: &ruff_python_ast::ExprCall) -> bool {
+            match &*call.func {
+                Expr::Attribute(attribute) => {
+                    SOURCE_INSPECTION_APIS.contains(&attribute.attr.as_str())
+                        && matches!(&*attribute.value, Expr::Name(base)
+                            if self.bindings.get(base.id.as_str()).is_some_and(|module| module == "inspect"))
+                }
+                Expr::Name(name) => self.bindings.get(name.id.as_str()).is_some_and(|module| {
+                    module
+                        .strip_prefix("inspect.")
+                        .is_some_and(|function| SOURCE_INSPECTION_APIS.contains(&function))
+                }),
+                _ => false,
+            }
+        }
+    }
+
     impl<'ast> Visitor<'ast> for DunderReadCollector {
         fn visit_expr(&mut self, expr: &'ast Expr) {
             if let Expr::Attribute(attribute) = expr
@@ -523,6 +553,16 @@ pub(crate) fn imported_module_dunder_read_targets(
                 )
                 && let Expr::Name(base) = &*attribute.value
                 && let Some(module_name) = self.bindings.get(base.id.as_str())
+            {
+                self.observed.insert(module_name.clone());
+            }
+            // inspect.getsource(provider) and friends need a real module with a
+            // source file; record import-bound arguments
+            if let Expr::Call(call) = expr
+                && self.is_source_inspection_call(call)
+                && let Some(Expr::Name(argument)) = call.arguments.args.first()
+                && let Some(module_name) = self.bindings.get(argument.id.as_str())
+                && module_name != "inspect"
             {
                 self.observed.insert(module_name.clone());
             }

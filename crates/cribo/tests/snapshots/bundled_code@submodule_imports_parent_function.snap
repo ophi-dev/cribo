@@ -92,6 +92,7 @@ def _cribo_init___cribo_dca395_pkg_submodule(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'pkg'
+    self.__doc__ = 'Submodule that becomes a wrapper module due to module-level import from parent.'
     """Submodule that becomes a wrapper module due to module-level import from parent."""
     get_base = pkg.get_base
     pkg_submodule.get_base = get_base

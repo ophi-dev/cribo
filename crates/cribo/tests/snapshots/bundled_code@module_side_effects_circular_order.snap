@@ -106,6 +106,7 @@ def _cribo_init___cribo_c04dc3_my_package(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'my_package'
+    self.__doc__ = None
     global my_package_mod_a
     my_package_mod_a = _cribo_init___cribo_e90488_my_package_mod_a(my_package_mod_a)
     mod_a = my_package.mod_a
@@ -125,6 +126,7 @@ def _cribo_init___cribo_e90488_my_package_mod_a(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'my_package'
+    self.__doc__ = None
     global my_package_mod_b
     my_package_mod_b = _cribo_init___cribo_d862bd_my_package_mod_b(my_package_mod_b)
     mod_b = my_package.mod_b
@@ -142,6 +144,7 @@ def _cribo_init___cribo_d862bd_my_package_mod_b(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'my_package'
+    self.__doc__ = None
     global my_package_mod_c
     my_package_mod_c = _cribo_init___cribo_748052_my_package_mod_c(my_package_mod_c)
     mod_c = my_package.mod_c
@@ -167,6 +170,7 @@ def _cribo_init___cribo_748052_my_package_mod_c(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'my_package'
+    self.__doc__ = None
     global my_package_mod_a
     my_package_mod_a = _cribo_init___cribo_e90488_my_package_mod_a(my_package_mod_a)
     mod_a = my_package.mod_a

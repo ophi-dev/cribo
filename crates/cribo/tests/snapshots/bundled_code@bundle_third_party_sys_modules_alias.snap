@@ -92,8 +92,9 @@ def _cribo_init___cribo_da5146_alias_pkg(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'alias_pkg'
-    self.__spec__ = None
+    self.__doc__ = 'Package capturing its own module object through aliased sys.modules access.'
     try:
+        self.__spec__ = None
         _sys.modules[self.__name__] = self
         """Package capturing its own module object through aliased sys.modules access."""
         loaded = _cribo.sys.modules
@@ -121,8 +122,9 @@ def _cribo_init___cribo_447ffd_alias_pkg_system(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'alias_pkg'
-    self.__spec__ = None
+    self.__doc__ = None
     try:
+        self.__spec__ = None
         _sys.modules[self.__name__] = self
         system = _cribo.sys
         self.system = system

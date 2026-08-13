@@ -91,6 +91,7 @@ def _cribo_init___cribo_866439_provider(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = None
     VALUE = "provider-value"
     self.VALUE = VALUE
     self.__initialized__ = True

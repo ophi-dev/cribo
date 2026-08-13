@@ -106,6 +106,7 @@ def _cribo_init___cribo_99f82c_wildcard_pkg(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'wildcard_pkg'
+    self.__doc__ = None
     global wildcard_pkg_base
     wildcard_pkg_base = _cribo_init___cribo_5d409b_wildcard_pkg_base(wildcard_pkg_base)
     WildcardObject = wildcard_pkg.base.WildcardObject
@@ -124,6 +125,7 @@ def _cribo_init___cribo_5d409b_wildcard_pkg_base(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'wildcard_pkg'
+    self.__doc__ = None
     WildcardMetaclass = wildcard_pkg_meta.WildcardMetaclass
     wildcard_pkg_base.WildcardMetaclass = WildcardMetaclass
 

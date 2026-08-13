@@ -135,6 +135,7 @@ def _cribo_init___cribo_1fb248_pkg(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'pkg'
+    self.__doc__ = 'Package that sets __module__ on all exported items, like httpx does.'
     self.AsyncStream = pkg__types.AsyncStream
     self.SyncStream = pkg__types.SyncStream
     global pkg__client, pkg__main
@@ -173,6 +174,7 @@ def _cribo_init___cribo_7e63ae_pkg__client(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'pkg'
+    self.__doc__ = 'Client module with circular import and other dependencies.'
     """Client module with circular import and other dependencies."""
     AsyncStream = pkg.AsyncStream
     self.AsyncStream = AsyncStream
@@ -209,6 +211,7 @@ def _cribo_init___cribo_fc6bcd_pkg__main(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'pkg'
+    self.__doc__ = 'Main module that imports client which imports back to parent.'
     global pkg__client
     """Main module that imports client which imports back to parent."""
     pkg__client = _cribo_init___cribo_7e63ae_pkg__client(pkg__client)

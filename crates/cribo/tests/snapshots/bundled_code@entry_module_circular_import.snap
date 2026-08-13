@@ -95,6 +95,7 @@ def _cribo_init___cribo_651687_child_with_init(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = 'Child module with initialization code that imports from parent (circular dependency).'
     global _cribo_child_with_init__initialized
     global main
     """Child module with initialization code that imports from parent (circular dependency)."""
@@ -142,6 +143,7 @@ def _cribo_init___cribo_24f0c8_main(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = 'Entry module with a child that imports back from it (circular dependency).'
     global child_with_init
     """Entry module with a child that imports back from it (circular dependency)."""
     child_with_init = _cribo_init___cribo_651687_child_with_init(child_with_init)

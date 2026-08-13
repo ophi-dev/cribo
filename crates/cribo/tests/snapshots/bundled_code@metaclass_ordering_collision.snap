@@ -92,6 +92,7 @@ def _cribo_init___cribo_12d4a8_module_a(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = 'First module with metaclass and class - will have original names.'
     """First module with metaclass and class - will have original names."""
 
     class YAMLObjectMetaclass(type):
@@ -127,6 +128,7 @@ def _cribo_init___cribo_276673_module_b(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = 'Second module with same-named metaclass and class - will get renamed.'
     """Second module with same-named metaclass and class - will get renamed."""
 
     class YAMLObjectMetaclass(type):

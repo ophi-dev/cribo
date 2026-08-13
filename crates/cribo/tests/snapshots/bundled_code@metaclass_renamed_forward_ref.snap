@@ -92,6 +92,7 @@ def _cribo_init___cribo_a6386c_base(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = 'Base module with metaclass definitions.'
     """Base module with metaclass definitions."""
 
     class MyMetaclass(type):
@@ -125,6 +126,7 @@ def _cribo_init___cribo_c0fc3d_other(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = 'Another module with similar class names to trigger renaming.'
     """Another module with similar class names to trigger renaming."""
 
     class MyMetaclass(type):

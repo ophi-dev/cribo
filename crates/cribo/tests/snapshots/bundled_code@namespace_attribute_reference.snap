@@ -93,6 +93,7 @@ def _cribo_init___cribo_19d82f_mypkg_compat(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'mypkg'
+    self.__doc__ = None
     try:
         JSONDecodeError = _cribo.json.JSONDecodeError
         mypkg_compat.JSONDecodeError = JSONDecodeError
@@ -128,6 +129,7 @@ def _cribo_init___cribo_d4de1c_mypkg(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'mypkg'
+    self.__doc__ = None
     global mypkg_compat, mypkg_exceptions
     mypkg_compat = _cribo_init___cribo_19d82f_mypkg_compat(mypkg_compat)
     compat = mypkg.compat
@@ -146,6 +148,7 @@ def _cribo_init___cribo_4c6596_mypkg_exceptions(self):
         return self
     self.__initializing__ = True
     self.__package__ = 'mypkg'
+    self.__doc__ = None
     __cribo_init_result = _cribo_init___cribo_d4de1c_mypkg(mypkg)
     for attr in dir(__cribo_init_result):
         if not attr.startswith('_'):

@@ -92,6 +92,7 @@ def _cribo_init___cribo_244765_compat_module(self):
         return self
     self.__initializing__ = True
     self.__package__ = ''
+    self.__doc__ = '\nModule that mimics requests.compat structure.\nNo __all__ defined, so all non-underscore symbols should be exported.\n'
     """\nModule that mimics requests.compat structure.\nNo __all__ defined, so all non-underscore symbols should be exported.\n"""
     sys = _cribo.sys
     self.sys = sys
