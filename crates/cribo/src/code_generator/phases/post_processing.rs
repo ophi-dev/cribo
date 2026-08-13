@@ -156,7 +156,7 @@ impl PostProcessingPhase {
                 names.insert(ancestor);
             }
         }
-        if names.is_empty() && inlined_exports.is_empty() {
+        if names.is_empty() && inlined_exports.is_empty() && bundler.created_namespaces.is_empty() {
             return Vec::new();
         }
 

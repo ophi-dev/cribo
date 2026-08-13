@@ -30,13 +30,15 @@ class _Cribo():
 _cribo = _Cribo()
 class _CriboPreservedLoader:
 
-    def __init__(self, entry):
+    def __init__(self, entry, namespace=None):
         self._entry = entry
+        self._namespace = namespace
 
     def create_module(self, spec):
-        namespace = self._entry[1]
-        if namespace is not None:
-            return globals()[namespace]
+        if self._namespace is not None:
+            return self._namespace
+        if self._entry[1] is not None:
+            return globals()[self._entry[1]]
         module = _cribo.types.SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             setattr(module, export, globals()[binding])
@@ -46,8 +48,12 @@ class _CriboPreservedLoader:
         init = self._entry[0]
         if init is None:
             return
+        if getattr(module, '_cribo_machinery_loaded', False):
+            module.__initialized__ = False
+            module.__initializing__ = False
         try:
             globals()[init](module)
+            module._cribo_machinery_loaded = True
         except BaseException:
             module.__initializing__ = False
             raise
@@ -55,17 +61,21 @@ class _CriboPreservedFinder:
 
     def __init__(self):
         self._targets = {}
+        self._namespaces = {}
         self._loader = _CriboPreservedLoader
 
     def register(self, name, init, namespace, is_package, exports=None):
         self._targets[name] = init, namespace, is_package, exports or {}
+
+    def bind(self, name, namespace):
+        self._namespaces[name] = namespace
 
     def find_spec(self, name, path=None, target=None):
         entry = self._targets.get(name)
         if entry is None:
             return None
         from importlib.machinery import ModuleSpec
-        return ModuleSpec(name, self._loader(entry), is_package=entry[2])
+        return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('models.base', '_cribo_init___cribo_0a162a_models_base', 'models_base', False)
@@ -129,8 +139,10 @@ core_utils_helpers.sanitize = sanitize
 core_utils_helpers.validate = validate_6
 core_utils_helpers.validate_cache = validate_cache
 core_database = _cribo.types.SimpleNamespace(__name__='core.database', __initializing__=False, __initialized__=False, __path__=[])
+_cribo_finder.bind('core.database', core_database)
 core.database = core_database
 core_database_connection = _cribo.types.SimpleNamespace(__name__='core.database.connection', __initializing__=False, __initialized__=False)
+_cribo_finder.bind('core.database.connection', core_database_connection)
 core_database.connection = core_database_connection
 def _cribo_init___cribo_0ac752_core(self):
     if getattr(self, '__initialized__', False):
@@ -281,6 +293,7 @@ def _cribo_init___cribo_df9c8d_core_database_connection(self):
 core_database_connection.__init__ = _cribo_init___cribo_df9c8d_core_database_connection
 models_base = _cribo.types.SimpleNamespace(__name__='models.base', __initializing__=False, __initialized__=False)
 _cribo_models_base_Connection = None
+_cribo_finder.bind('models.base', models_base)
 def _cribo_init___cribo_0a162a_models_base(self):
     if getattr(self, '__initialized__', False):
         return self
@@ -340,6 +353,7 @@ models_base.__init__ = _cribo_init___cribo_0a162a_models_base
 models = _cribo.types.SimpleNamespace(__name__='models', __initializing__=False, __initialized__=False, __path__=[])
 models.base = models_base
 models_user = _cribo.types.SimpleNamespace(__name__='models.user', __initializing__=False, __initialized__=False)
+_cribo_finder.bind('models.user', models_user)
 models.user = models_user
 def _cribo_init___cribo_293a98_models(self):
     if getattr(self, '__initialized__', False):
@@ -456,6 +470,7 @@ def _cribo_init___cribo_1f9e6c_models_user(self):
     return self
 models_user.__init__ = _cribo_init___cribo_1f9e6c_models_user
 services_auth_manager = _cribo.types.SimpleNamespace(__name__='services.auth.manager', __initializing__=False, __initialized__=False)
+_cribo_finder.bind('services.auth.manager', services_auth_manager)
 def _cribo_init___cribo_0ecebd_services_auth_manager(self):
     if getattr(self, '__initialized__', False):
         return self

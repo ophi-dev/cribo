@@ -30,13 +30,15 @@ class _Cribo():
 _cribo = _Cribo()
 class _CriboPreservedLoader:
 
-    def __init__(self, entry):
+    def __init__(self, entry, namespace=None):
         self._entry = entry
+        self._namespace = namespace
 
     def create_module(self, spec):
-        namespace = self._entry[1]
-        if namespace is not None:
-            return globals()[namespace]
+        if self._namespace is not None:
+            return self._namespace
+        if self._entry[1] is not None:
+            return globals()[self._entry[1]]
         module = _cribo.types.SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             setattr(module, export, globals()[binding])
@@ -46,8 +48,12 @@ class _CriboPreservedLoader:
         init = self._entry[0]
         if init is None:
             return
+        if getattr(module, '_cribo_machinery_loaded', False):
+            module.__initialized__ = False
+            module.__initializing__ = False
         try:
             globals()[init](module)
+            module._cribo_machinery_loaded = True
         except BaseException:
             module.__initializing__ = False
             raise
@@ -55,17 +61,21 @@ class _CriboPreservedFinder:
 
     def __init__(self):
         self._targets = {}
+        self._namespaces = {}
         self._loader = _CriboPreservedLoader
 
     def register(self, name, init, namespace, is_package, exports=None):
         self._targets[name] = init, namespace, is_package, exports or {}
+
+    def bind(self, name, namespace):
+        self._namespaces[name] = namespace
 
     def find_spec(self, name, path=None, target=None):
         entry = self._targets.get(name)
         if entry is None:
             return None
         from importlib.machinery import ModuleSpec
-        return ModuleSpec(name, self._loader(entry), is_package=entry[2])
+        return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('pkg', '_cribo_init___cribo_6d9930_pkg', 'pkg', True)
@@ -74,13 +84,18 @@ _cribo_finder.register('pkg.utils', '_cribo_init___cribo_bdb497_pkg_utils', 'pkg
 _cribo_finder.register('pkg.models', '_cribo_init___cribo_01ad7c_pkg_models', 'pkg_models', False)
 _cribo_finder.register('pkg.adapters', '_cribo_init___cribo_12d613_pkg_adapters', 'pkg_adapters', False)
 pkg = _cribo.types.SimpleNamespace(__name__='pkg', __initializing__=False, __initialized__=False, __path__=[])
+_cribo_finder.bind('pkg', pkg)
 pkg_adapters = _cribo.types.SimpleNamespace(__name__='pkg.adapters', __initializing__=False, __initialized__=False)
+_cribo_finder.bind('pkg.adapters', pkg_adapters)
 pkg.adapters = pkg_adapters
 pkg_auth = _cribo.types.SimpleNamespace(__name__='pkg.auth', __initializing__=False, __initialized__=False)
+_cribo_finder.bind('pkg.auth', pkg_auth)
 pkg.auth = pkg_auth
 pkg_models = _cribo.types.SimpleNamespace(__name__='pkg.models', __initializing__=False, __initialized__=False)
+_cribo_finder.bind('pkg.models', pkg_models)
 pkg.models = pkg_models
 pkg_utils = _cribo.types.SimpleNamespace(__name__='pkg.utils', __initializing__=False, __initialized__=False)
+_cribo_finder.bind('pkg.utils', pkg_utils)
 pkg.utils = pkg_utils
 def _cribo_init___cribo_6d9930_pkg(self):
     if getattr(self, '__initialized__', False):

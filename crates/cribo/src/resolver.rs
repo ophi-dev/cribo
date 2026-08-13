@@ -754,13 +754,17 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
         }
         // A module referencing its own `__file__` locates filesystem resources
         // relative to its installed source; after inlining, `__file__` points at the
-        // generated bundle and the adjacent assets are not shipped. `__spec__` is the
-        // same class of import-global: its `origin`/`submodule_search_locations`
-        // describe the installed layout, and the bundle cannot reproduce them.
-        // `__path__` likewise enumerates the installed package directory (plugin
-        // scans), while generated package namespaces receive an empty `__path__`.
+        // generated bundle and the adjacent assets are not shipped. `__spec__`,
+        // `__loader__`, and `__cached__` are the same class of import-global: they
+        // describe the installed layout, loader capabilities, and bytecode cache
+        // paths, which the bundle cannot reproduce. `__path__` likewise enumerates
+        // the installed package directory (plugin scans), while generated package
+        // namespaces receive an empty `__path__`.
         if let Expr::Name(name) = expr
-            && matches!(name.id.as_str(), "__file__" | "__spec__" | "__path__")
+            && matches!(
+                name.id.as_str(),
+                "__file__" | "__spec__" | "__path__" | "__loader__" | "__cached__"
+            )
         {
             self.found = true;
             return;
@@ -847,6 +851,8 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
 struct DistributionInfo {
     /// Distribution name from `METADATA` (e.g. "pure-helper")
     name: String,
+    /// Distribution version from `METADATA`, when declared
+    version: Option<String>,
     /// Raw `Requires-Python` specifier, when declared
     requires_python: Option<String>,
     /// Raw `Requires-Dist` entries, when declared
@@ -2587,6 +2593,18 @@ impl ModuleResolver {
             return true;
         }
 
+        // A `requirements.module-map` entry may pin the import to a version or a
+        // direct URL; bundling may only proceed when the installed distribution
+        // provably satisfies it, otherwise the constraint must stay enforced by
+        // the installer
+        if self.module_map_constraint_blocks_bundling(search_root, module_name) {
+            debug!(
+                "Import '{module_name}' has a module-map constraint the installed \
+                 distribution does not provably satisfy; keeping it external"
+            );
+            return true;
+        }
+
         let top_level = module_name.split('.').next().unwrap_or(module_name);
         let package_dir = search_root.join(top_level);
         if !package_dir.is_dir() {
@@ -2756,6 +2774,8 @@ impl ModuleResolver {
             && !source.contains("__file__")
             && !source.contains("__spec__")
             && !source.contains("__path__")
+            && !source.contains("__loader__")
+            && !source.contains("__cached__")
         {
             return false;
         }
@@ -3272,6 +3292,68 @@ impl ModuleResolver {
         targets
             .iter()
             .any(|target| target.split('.').next().unwrap_or(target) == root)
+    }
+
+    /// Return whether a `requirements.module-map` entry pins this import to a
+    /// version or direct URL that the installed distribution does not PROVABLY
+    /// satisfy: a direct URL cannot be verified against installed sources, and a
+    /// version specifier must be satisfied by the owning distribution's declared
+    /// `Version`. Blocked imports stay external so the installer enforces the
+    /// user's constraint instead of the bundle silently shipping the
+    /// environment's copy.
+    fn module_map_constraint_blocks_bundling(
+        &self,
+        site_packages_dir: &Path,
+        import_name: &str,
+    ) -> bool {
+        use std::str::FromStr;
+        let mapping = self
+            .config
+            .requirements
+            .module_map
+            .iter()
+            .filter(|(prefix, _)| {
+                crate::requirement_resolver::RequirementResolver::matches_prefix(
+                    prefix,
+                    import_name,
+                )
+            })
+            .max_by_key(|(prefix, _)| prefix.split('.').count());
+        let Some((prefix, requirement)) = mapping else {
+            return false;
+        };
+        let Ok(parsed) = pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(requirement)
+        else {
+            // Invalid mappings are reported as hard errors during requirements
+            // generation; conservatively keep the import external here
+            warn!(
+                "Invalid PEP 508 requirement '{requirement}' configured for import prefix \
+                 '{prefix}'; keeping '{import_name}' external"
+            );
+            return true;
+        };
+        match parsed.version_or_url {
+            None => false,
+            Some(pep508_rs::VersionOrUrl::Url(_)) => {
+                // A pinned artifact cannot be verified against installed sources
+                true
+            }
+            Some(pep508_rs::VersionOrUrl::VersionSpecifier(specifiers)) => {
+                // Bundleable only when the owning distribution's declared Version
+                // provably satisfies the mapped constraint
+                !self.with_distribution_ownership_index(site_packages_dir, |index| {
+                    index
+                        .owning_distributions(import_name)
+                        .iter()
+                        .any(|distribution| {
+                            distribution.version.as_deref().is_some_and(|version| {
+                                pep508_rs::pep440_rs::Version::from_str(version)
+                                    .is_ok_and(|version| specifiers.contains(&version))
+                            })
+                        })
+                })
+            }
+        }
     }
 
     /// Record requirement literals whose distribution metadata bundled code queries
@@ -4055,6 +4137,11 @@ impl ModuleResolver {
             };
             if header.eq_ignore_ascii_case("Name") {
                 value.trim().clone_into(&mut distribution.name);
+            } else if header.eq_ignore_ascii_case("Version") {
+                let version = value.trim();
+                if !version.is_empty() {
+                    distribution.version = Some(version.to_owned());
+                }
             } else if header.eq_ignore_ascii_case("Requires-Python") {
                 let specifier = value.trim();
                 if !specifier.is_empty() {
@@ -5614,6 +5701,9 @@ Import-Name: folded_module
             // Package-path enumeration (plugin scans): generated namespaces receive
             // an empty __path__
             "for entry in __path__:\n    print(entry)\n",
+            // Loader/bytecode-cache introspection observes the installed layout
+            "CAN_LOAD = __loader__.get_data is not None\n",
+            "print(__cached__)\n",
         ] {
             assert!(
                 ModuleResolver::python_source_blocks_bundling(source),
@@ -7710,6 +7800,69 @@ def read(package):
             existing.to_string().contains("dep-1.0.tar.gz"),
             "the existing pin must stay intact"
         );
+    }
+
+    /// A `requirements.module-map` entry carrying a version specifier or direct URL
+    /// blocks bundling unless the installed distribution provably satisfies it:
+    /// satisfied constraints bundle, unsatisfied or unverifiable ones stay external
+    /// so the installer enforces the user's pin.
+    #[test]
+    fn test_bundle_third_party_module_map_constraints() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!(
+                "mapped_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("mapped_pkg-1.5.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: mapped-pkg\nVersion: 1.5\nImport-Name: mapped_pkg\n",
+        )?;
+        let build_resolver = |mapped: &str| -> Result<ModuleResolver> {
+            let config = Config {
+                bundle_third_party: Some(true),
+                requirements: crate::config::RequirementsConfig {
+                    module_map: indexmap::IndexMap::from([(
+                        "mapped_pkg".to_owned(),
+                        mapped.to_owned(),
+                    )]),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let virtualenv_path = virtualenv.to_string_lossy();
+            ModuleResolver::new_with_overrides(config, Some(""), Some(virtualenv_path.as_ref()))
+        };
+
+        // Installed 1.5 satisfies >=1: bundleable
+        let resolver = build_resolver("mapped-pkg[speed]>=1")?;
+        assert_eq!(
+            resolver.classify_import("mapped_pkg").bundle,
+            BundleDisposition::Include,
+            "a provably satisfied module-map constraint must not block bundling"
+        );
+
+        // Installed 1.5 does NOT satisfy >=2: the pin must stay enforced
+        let resolver = build_resolver("mapped-pkg>=2")?;
+        assert_eq!(
+            resolver.classify_import("mapped_pkg").bundle,
+            BundleDisposition::External,
+            "an unsatisfied module-map version pin must keep the import external"
+        );
+
+        // A direct URL cannot be verified against installed sources
+        let resolver = build_resolver("mapped-pkg @ https://example.com/mapped_pkg-2.0.tar.gz")?;
+        assert_eq!(
+            resolver.classify_import("mapped_pkg").bundle,
+            BundleDisposition::External,
+            "a module-map direct URL must keep the import external"
+        );
+
+        Ok(())
     }
 
     /// A distribution whose installed files include a top-level `.pth` startup hook

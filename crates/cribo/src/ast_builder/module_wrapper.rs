@@ -72,6 +72,22 @@ pub(crate) fn create_wrapper_module(
     );
     stmts.push(namespace_stmt);
 
+    // 1b. Capture the namespace OBJECT in the meta-path finder: runtime imports
+    // must resolve it even when user code later rebinds the bundle-global name
+    // (`globals()["helper"] = sentinel` before a preserved import)
+    stmts.push(statements::expr(expressions::call(
+        expressions::attribute(
+            expressions::name("_cribo_finder", ExprContext::Load),
+            "bind",
+            ExprContext::Load,
+        ),
+        vec![
+            expressions::string_literal(module_name),
+            expressions::name(&module_var, ExprContext::Load),
+        ],
+        vec![],
+    )));
+
     // 2. Add the init function definition and __init__ assignment if provided
     if let Some(init_body) = init_function_body {
         let init_stmts = create_init_function_statements(module_name, init_func_name, init_body);

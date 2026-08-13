@@ -16,14 +16,133 @@ use ruff_python_ast::{
 /// they resolve to the MODULE's values at call time, and nested scopes capture
 /// the init parameter lexically. The namespace carries `__name__` from creation
 /// and `__package__` from the init prologue.
+///
+/// The rewrite is SCOPE-AWARE: a nested function whose parameters or body-wide
+/// bindings (assignments, imports, deletes) rebind one of the names keeps its
+/// local resolution for that name (`def f(__package__): return __package__`
+/// returns the argument), and a class body that binds a name stops rewriting it
+/// inside that class body.
 struct ImportGlobalRewriter<'a> {
     module_var_name: &'a str,
+    /// The import globals still rewritten in the current scope
+    names: Vec<&'static str>,
+}
+
+impl ImportGlobalRewriter<'_> {
+    /// Return the import globals of `names` that a statement body does NOT bind
+    /// locally (any binding — parameter, assignment, import, delete — makes the
+    /// name scope-local for the whole body).
+    fn unshadowed_names(
+        &self,
+        parameters: Option<&ruff_python_ast::Parameters>,
+        body: &[Stmt],
+    ) -> Vec<&'static str> {
+        let mut bound = crate::types::FxIndexSet::default();
+        if let Some(parameters) = parameters {
+            for param in parameters
+                .posonlyargs
+                .iter()
+                .chain(&parameters.args)
+                .chain(&parameters.kwonlyargs)
+            {
+                bound.insert(param.parameter.name.as_str().to_owned());
+            }
+            if let Some(vararg) = &parameters.vararg {
+                bound.insert(vararg.name.as_str().to_owned());
+            }
+            if let Some(kwarg) = &parameters.kwarg {
+                bound.insert(kwarg.name.as_str().to_owned());
+            }
+        }
+        {
+            let no_globals = crate::types::FxIndexSet::default();
+            let mut collector = crate::visitors::LocalVarCollector::new(&mut bound, &no_globals);
+            collector.collect_from_stmts(body);
+        }
+        self.names
+            .iter()
+            .copied()
+            .filter(|name| !bound.contains(*name))
+            .collect()
+    }
+}
+
+impl ImportGlobalRewriter<'_> {
+    /// Apply the scope-aware rewrite to one function definition (decorators,
+    /// defaults, and annotations evaluate in the enclosing scope).
+    fn rewrite_function(&self, func_def: &mut StmtFunctionDef) {
+        use ruff_python_ast::visitor::transformer::Transformer as _;
+        for decorator in &mut func_def.decorator_list {
+            self.visit_expr(&mut decorator.expression);
+        }
+        for param in func_def
+            .parameters
+            .posonlyargs
+            .iter_mut()
+            .chain(&mut func_def.parameters.args)
+            .chain(&mut func_def.parameters.kwonlyargs)
+        {
+            if let Some(annotation) = &mut param.parameter.annotation {
+                self.visit_expr(annotation);
+            }
+            if let Some(default) = &mut param.default {
+                self.visit_expr(default);
+            }
+        }
+        if let Some(returns) = &mut func_def.returns {
+            self.visit_expr(returns);
+        }
+        let inner_names = self.unshadowed_names(Some(&func_def.parameters), &func_def.body);
+        if !inner_names.is_empty() {
+            let inner = ImportGlobalRewriter {
+                module_var_name: self.module_var_name,
+                names: inner_names,
+            };
+            inner.visit_body(&mut func_def.body);
+        }
+    }
+
+    /// Apply the scope-aware rewrite to one class definition (decorators and
+    /// base-class expressions evaluate in the enclosing scope).
+    fn rewrite_class(&self, class_def: &mut ruff_python_ast::StmtClassDef) {
+        use ruff_python_ast::visitor::transformer::Transformer as _;
+        for decorator in &mut class_def.decorator_list {
+            self.visit_expr(&mut decorator.expression);
+        }
+        if let Some(arguments) = &mut class_def.arguments {
+            for argument in &mut arguments.args {
+                self.visit_expr(argument);
+            }
+            for keyword in &mut arguments.keywords {
+                self.visit_expr(&mut keyword.value);
+            }
+        }
+        let inner_names = self.unshadowed_names(None, &class_def.body);
+        if !inner_names.is_empty() {
+            let inner = ImportGlobalRewriter {
+                module_var_name: self.module_var_name,
+                names: inner_names,
+            };
+            inner.visit_body(&mut class_def.body);
+        }
+    }
 }
 
 impl ruff_python_ast::visitor::transformer::Transformer for ImportGlobalRewriter<'_> {
+    fn visit_stmt(&self, stmt: &mut Stmt) {
+        use ruff_python_ast::visitor::transformer::walk_stmt;
+        match stmt {
+            // Nested scopes: the body rewrites only the names the scope does not
+            // bind itself
+            Stmt::FunctionDef(func_def) => self.rewrite_function(func_def),
+            Stmt::ClassDef(class_def) => self.rewrite_class(class_def),
+            _ => walk_stmt(self, stmt),
+        }
+    }
+
     fn visit_expr(&self, expr: &mut Expr) {
         if let Expr::Name(name) = expr
-            && matches!(name.id.as_str(), "__name__" | "__package__")
+            && self.names.contains(&name.id.as_str())
             && name.ctx == ExprContext::Load
         {
             *expr = ast_builder::expressions::attribute(
@@ -235,14 +354,15 @@ pub(crate) fn process_statements_for_init_function(
             }
             Stmt::ClassDef(class_def) => {
                 // Add class definition, with import globals (__name__, __package__)
-                // in the class body rewritten to namespace attributes
+                // in the class body rewritten to namespace attributes (scope-aware:
+                // class-body bindings keep their own resolution)
                 let mut class_def_clone = class_def.clone();
                 {
-                    use ruff_python_ast::visitor::transformer::Transformer as _;
                     let rewriter = ImportGlobalRewriter {
                         module_var_name: SELF_PARAM,
+                        names: vec!["__name__", "__package__"],
                     };
-                    rewriter.visit_body(&mut class_def_clone.body);
+                    rewriter.rewrite_class(&mut class_def_clone);
                 }
                 body.push(Stmt::ClassDef(class_def_clone));
 
@@ -282,13 +402,14 @@ pub(crate) fn process_statements_for_init_function(
                 // Import globals (__name__, __package__) resolve to the MODULE's
                 // values at call time: rewrite them to namespace attributes in the
                 // whole function (nested scopes capture the init parameter
-                // lexically), independent of the global_info transform below
+                // lexically), scope-aware so local rebindings keep their own
+                // resolution, independent of the global_info transform below
                 {
-                    use ruff_python_ast::visitor::transformer::Transformer as _;
                     let rewriter = ImportGlobalRewriter {
                         module_var_name: SELF_PARAM,
+                        names: vec!["__name__", "__package__"],
                     };
-                    rewriter.visit_body(&mut func_def_clone.body);
+                    rewriter.rewrite_function(&mut func_def_clone);
                 }
 
                 // Transform nested functions to use module attributes for module-level vars

@@ -38,13 +38,15 @@ use super::CRIBO_SYS_ALIAS;
 /// `{sys}` is replaced with the bundle's private `sys` alias.
 const PRESERVED_FINDER_SOURCE: &str = r#"
 class _CriboPreservedLoader:
-    def __init__(self, entry):
+    def __init__(self, entry, namespace=None):
         self._entry = entry
+        self._namespace = namespace
 
     def create_module(self, spec):
-        namespace = self._entry[1]
-        if namespace is not None:
-            return globals()[namespace]
+        if self._namespace is not None:
+            return self._namespace
+        if self._entry[1] is not None:
+            return globals()[self._entry[1]]
         module = _cribo.types.SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             setattr(module, export, globals()[binding])
@@ -54,8 +56,12 @@ class _CriboPreservedLoader:
         init = self._entry[0]
         if init is None:
             return
+        if getattr(module, '_cribo_machinery_loaded', False):
+            module.__initialized__ = False
+            module.__initializing__ = False
         try:
             globals()[init](module)
+            module._cribo_machinery_loaded = True
         except BaseException:
             module.__initializing__ = False
             raise
@@ -64,12 +70,18 @@ class _CriboPreservedLoader:
 class _CriboPreservedFinder:
     def __init__(self):
         self._targets = {}
+        self._namespaces = {}
         # Captured at definition time, in the bundle prelude: user code may
         # legally rebind or delete the module-level class name later
         self._loader = _CriboPreservedLoader
 
     def register(self, name, init, namespace, is_package, exports=None):
         self._targets[name] = (init, namespace, is_package, exports or {})
+
+    def bind(self, name, namespace):
+        # Namespace OBJECTS are captured where they are created, so later
+        # rebinding of their bundle-global names cannot break imports
+        self._namespaces[name] = namespace
 
     def find_spec(self, name, path=None, target=None):
         entry = self._targets.get(name)
@@ -78,7 +90,7 @@ class _CriboPreservedFinder:
         from importlib.machinery import ModuleSpec
         return ModuleSpec(
             name,
-            self._loader(entry),
+            self._loader(entry, self._namespaces.get(name)),
             is_package=entry[2],
         )
 

@@ -28,6 +28,56 @@ class _Cribo():
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
+class _CriboPreservedLoader:
+
+    def __init__(self, entry, namespace=None):
+        self._entry = entry
+        self._namespace = namespace
+
+    def create_module(self, spec):
+        if self._namespace is not None:
+            return self._namespace
+        if self._entry[1] is not None:
+            return globals()[self._entry[1]]
+        module = _cribo.types.SimpleNamespace(__name__=spec.name)
+        for export, binding in self._entry[3].items():
+            setattr(module, export, globals()[binding])
+        return module
+
+    def exec_module(self, module):
+        init = self._entry[0]
+        if init is None:
+            return
+        if getattr(module, '_cribo_machinery_loaded', False):
+            module.__initialized__ = False
+            module.__initializing__ = False
+        try:
+            globals()[init](module)
+            module._cribo_machinery_loaded = True
+        except BaseException:
+            module.__initializing__ = False
+            raise
+class _CriboPreservedFinder:
+
+    def __init__(self):
+        self._targets = {}
+        self._namespaces = {}
+        self._loader = _CriboPreservedLoader
+
+    def register(self, name, init, namespace, is_package, exports=None):
+        self._targets[name] = init, namespace, is_package, exports or {}
+
+    def bind(self, name, namespace):
+        self._namespaces[name] = namespace
+
+    def find_spec(self, name, path=None, target=None):
+        entry = self._targets.get(name)
+        if entry is None:
+            return None
+        from importlib.machinery import ModuleSpec
+        return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
+_cribo_finder = _CriboPreservedFinder()
+_sys.meta_path.append(_cribo_finder)
 simple_module = _cribo.types.SimpleNamespace(__name__='simple_module')
 def public_func():
     """A public function that should be exported."""

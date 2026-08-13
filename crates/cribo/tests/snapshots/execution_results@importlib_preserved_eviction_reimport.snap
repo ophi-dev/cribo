@@ -1,0 +1,9 @@
+---
+source: crates/cribo/tests/test_bundling_snapshots.rs
+input_file: crates/cribo/tests/fixtures/importlib_preserved_eviction_reimport/main.py
+---
+ExecutionResults {
+    status: Success,
+    stdout: "evicted_helper body runs\nfirst VALUE: fresh\nevicted_helper body runs\nsecond VALUE: fresh",
+    stderr: "",
+}
