@@ -278,11 +278,73 @@ pub(crate) fn sys_modules_observed_module_names(
 
     use crate::types::FxIndexSet;
 
-    /// Collect `sys`/`sys.modules` aliases plus import bindings (name -> module).
+    /// Collect `sys`/`sys.modules` aliases plus import bindings (name -> module),
+    /// including assignment-derived aliases (`loaded = sys.modules`,
+    /// `alias = provider`): rebinding an object serves the same observations as
+    /// the original name.
     struct ConsumerAliasCollector {
         sys_aliases: FxIndexSet<String>,
         modules_aliases: FxIndexSet<String>,
         import_bindings: crate::types::FxIndexMap<String, String>,
+        changed: bool,
+    }
+
+    impl ConsumerAliasCollector {
+        /// Whether an expression denotes the `sys.modules` object through the
+        /// collected aliases.
+        fn value_is_sys_modules(&self, expr: &Expr) -> bool {
+            use ruff_python_ast::Expr;
+            match expr {
+                Expr::Attribute(attribute) if attribute.attr.as_str() == "modules" => {
+                    matches!(&*attribute.value, Expr::Name(name) if self.sys_aliases.contains(name.id.as_str()))
+                }
+                Expr::Name(name) => self.modules_aliases.contains(name.id.as_str()),
+                _ => false,
+            }
+        }
+
+        fn record_assignment_alias(&mut self, targets: &[Expr], value: &Expr) {
+            use ruff_python_ast::Expr;
+            enum AliasKind {
+                SysModules,
+                Sys,
+                Module(String),
+            }
+            let kind = if self.value_is_sys_modules(value) {
+                AliasKind::SysModules
+            } else {
+                match value {
+                    Expr::Name(name) if self.sys_aliases.contains(name.id.as_str()) => {
+                        AliasKind::Sys
+                    }
+                    Expr::Name(name) => match self.import_bindings.get(name.id.as_str()) {
+                        Some(module) => AliasKind::Module(module.clone()),
+                        None => return,
+                    },
+                    _ => return,
+                }
+            };
+            for target in targets {
+                let Expr::Name(target_name) = target else {
+                    continue;
+                };
+                let inserted = match &kind {
+                    AliasKind::SysModules => self
+                        .modules_aliases
+                        .insert(target_name.id.as_str().to_owned()),
+                    AliasKind::Sys => self.sys_aliases.insert(target_name.id.as_str().to_owned()),
+                    AliasKind::Module(module) => {
+                        self.import_bindings
+                            .insert(target_name.id.as_str().to_owned(), module.clone())
+                            .as_deref()
+                            != Some(module)
+                    }
+                };
+                if inserted {
+                    self.changed = true;
+                }
+            }
+        }
     }
 
     impl<'ast> Visitor<'ast> for ConsumerAliasCollector {
@@ -331,6 +393,19 @@ pub(crate) fn sys_modules_observed_module_names(
                         }
                     }
                 }
+                // `loaded = sys.modules` / `alias = provider` rebind the same
+                // objects under new names (conservative over-approximation)
+                Stmt::Assign(assign) => {
+                    self.record_assignment_alias(&assign.targets, &assign.value);
+                }
+                Stmt::AnnAssign(ann_assign) => {
+                    if let Some(value) = &ann_assign.value {
+                        self.record_assignment_alias(
+                            std::slice::from_ref(&*ann_assign.target),
+                            value,
+                        );
+                    }
+                }
                 _ => {}
             }
             walk_stmt(self, stmt);
@@ -357,6 +432,18 @@ pub(crate) fn sys_modules_observed_module_names(
                 Expr::Name(name) => self.modules_aliases.contains(name.id.as_str()),
                 _ => false,
             }
+        }
+
+        /// A mapping view over `sys.modules` (`sys.modules.keys()`): membership
+        /// tests through it observe the same entries as the mapping itself.
+        fn is_sys_modules_view(&self, expr: &Expr) -> bool {
+            let Expr::Call(call) = expr else {
+                return false;
+            };
+            call.arguments.args.is_empty()
+                && call.arguments.keywords.is_empty()
+                && matches!(&*call.func, Expr::Attribute(method)
+                    if method.attr.as_str() == "keys" && self.is_sys_modules(&method.value))
         }
 
         /// Resolve a key expression to a module name: a string literal, or an
@@ -405,7 +492,9 @@ pub(crate) fn sys_modules_observed_module_names(
                 }
                 Expr::Compare(compare) => {
                     for (op, comparator) in compare.ops.iter().zip(compare.comparators.iter()) {
-                        if matches!(op, CmpOp::In | CmpOp::NotIn) && self.is_sys_modules(comparator)
+                        if matches!(op, CmpOp::In | CmpOp::NotIn)
+                            && (self.is_sys_modules(comparator)
+                                || self.is_sys_modules_view(comparator))
                         {
                             self.record_key(&compare.left);
                         }
@@ -430,10 +519,19 @@ pub(crate) fn sys_modules_observed_module_names(
         sys_aliases: FxIndexSet::default(),
         modules_aliases: FxIndexSet::default(),
         import_bindings: crate::types::FxIndexMap::default(),
+        changed: false,
     };
     alias_collector.sys_aliases.insert("sys".to_owned());
-    for stmt in body {
-        alias_collector.visit_stmt(stmt);
+    // Alias chains (`m = sys.modules; loaded = m`) resolve iteratively; textual
+    // order does not bound the chain depth, so run to fixpoint (bounded)
+    for _ in 0..16 {
+        alias_collector.changed = false;
+        for stmt in body {
+            alias_collector.visit_stmt(stmt);
+        }
+        if !alias_collector.changed {
+            break;
+        }
     }
 
     let mut collector = ObservedKeyCollector {

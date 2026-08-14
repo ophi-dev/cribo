@@ -29,6 +29,7 @@ class _Cribo():
         return _CriboModule(m, n)
 _cribo = _Cribo()
 class _CriboPreservedLoader:
+    _pristine = {}
 
     def __init__(self, entry, namespace=None):
         self._entry = entry
@@ -48,10 +49,18 @@ class _CriboPreservedLoader:
         init = self._entry[0]
         if init is None:
             return
+        pristine = type(self)._pristine
+        key = id(module)
         if getattr(module, '_cribo_machinery_loaded', False):
+            saved = pristine.get(key)
+            if saved is not None:
+                module.__dict__.clear()
+                module.__dict__.update(saved)
             module.__initialized__ = False
             module.__initializing__ = False
         state = dict(module.__dict__)
+        if key not in pristine:
+            pristine[key] = dict(state)
         try:
             globals()[init](module)
             module._cribo_machinery_loaded = True
@@ -81,8 +90,16 @@ class _CriboPreservedFinder:
         return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
-_cribo_finder.register('module_a', None, None, False, {'function_a': 'function_a'})
-_cribo_finder.register('module_b', None, None, False, {'TypeB': 'TypeB'})
+_cribo_finder_local = _CriboPreservedFinder()
+_cribo_finder_local._namespaces = _cribo_finder._namespaces
+for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
+    if getattr(_cribo_meta_finder, '__name__', '') == 'PathFinder':
+        _sys.meta_path.insert(_cribo_index, _cribo_finder_local)
+        break
+else:
+    _sys.meta_path.insert(0, _cribo_finder_local)
+_cribo_finder_local.register('module_a', None, None, False, {'function_a': 'function_a'})
+_cribo_finder_local.register('module_b', None, None, False, {'TypeB': 'TypeB'})
 module_a = _cribo.types.SimpleNamespace(__name__='module_a', __doc__='Module A with a simple function.')
 """Module A with a simple function."""
 def function_a(value):

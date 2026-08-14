@@ -38,8 +38,15 @@ impl ExpressionRewriter {
         }
     }
 
-    /// Collect the plain names bound by comprehension targets.
-    fn comprehension_target_names(generators: &[ruff_python_ast::Comprehension]) -> Vec<String> {
+    /// Transform comprehension generator clauses with Python's scoping: the
+    /// FIRST iterable evaluates in the enclosing scope, and each generator's
+    /// targets then shadow enclosing bindings for the following clauses.
+    /// Returns the shadow names added; the caller removes them after
+    /// transforming the element expressions.
+    fn transform_generators_scoped(
+        transformer: &mut RecursiveImportTransformer<'_>,
+        generators: &mut [ruff_python_ast::Comprehension],
+    ) -> Vec<String> {
         fn collect(target: &Expr, names: &mut Vec<String>) {
             match target {
                 Expr::Name(name) => names.push(name.id.as_str().to_owned()),
@@ -57,24 +64,19 @@ impl ExpressionRewriter {
                 _ => {}
             }
         }
-        let mut names = Vec::new();
-        for comprehension in generators {
-            collect(&comprehension.target, &mut names);
-        }
-        names
-    }
-
-    /// Transform the iterables and conditions of comprehension generators.
-    fn transform_comprehension_generators(
-        transformer: &mut RecursiveImportTransformer<'_>,
-        generators: &mut [ruff_python_ast::Comprehension],
-    ) {
+        let mut added = Vec::new();
         for generator in generators {
+            // The first iterable runs before any shadow is added (enclosing
+            // scope); later iterables see the targets bound so far
             Self::transform_expr(transformer, &mut generator.iter);
+            let mut names = Vec::new();
+            collect(&generator.target, &mut names);
+            added.extend(Self::add_scope_shadows(transformer, names));
             for if_clause in &mut generator.ifs {
                 Self::transform_expr(transformer, if_clause);
             }
         }
+        added
     }
 
     /// Transform a lambda: parameter defaults evaluate in the ENCLOSING scope,
@@ -518,49 +520,37 @@ impl ExpressionRewriter {
                 }
             }
             Expr::ListComp(listcomp_expr) => {
-                let added = Self::add_scope_shadows(
-                    transformer,
-                    Self::comprehension_target_names(&listcomp_expr.generators),
-                );
+                let added =
+                    Self::transform_generators_scoped(transformer, &mut listcomp_expr.generators);
                 Self::transform_expr(transformer, &mut listcomp_expr.elt);
-                Self::transform_comprehension_generators(
-                    transformer,
-                    &mut listcomp_expr.generators,
-                );
                 Self::remove_scope_shadows(transformer, added);
             }
             Expr::DictComp(dictcomp_expr) => {
-                let added = Self::add_scope_shadows(
-                    transformer,
-                    Self::comprehension_target_names(&dictcomp_expr.generators),
-                );
+                let added =
+                    Self::transform_generators_scoped(transformer, &mut dictcomp_expr.generators);
                 if let Some(key) = &mut dictcomp_expr.key {
                     Self::transform_expr(transformer, key);
                 }
                 Self::transform_expr(transformer, &mut dictcomp_expr.value);
-                Self::transform_comprehension_generators(
-                    transformer,
-                    &mut dictcomp_expr.generators,
-                );
                 Self::remove_scope_shadows(transformer, added);
             }
             Expr::SetComp(setcomp_expr) => {
-                let added = Self::add_scope_shadows(
-                    transformer,
-                    Self::comprehension_target_names(&setcomp_expr.generators),
-                );
+                let added =
+                    Self::transform_generators_scoped(transformer, &mut setcomp_expr.generators);
                 Self::transform_expr(transformer, &mut setcomp_expr.elt);
-                Self::transform_comprehension_generators(transformer, &mut setcomp_expr.generators);
                 Self::remove_scope_shadows(transformer, added);
             }
             Expr::Generator(genexp_expr) => {
-                let added = Self::add_scope_shadows(
-                    transformer,
-                    Self::comprehension_target_names(&genexp_expr.generators),
-                );
+                let added =
+                    Self::transform_generators_scoped(transformer, &mut genexp_expr.generators);
                 Self::transform_expr(transformer, &mut genexp_expr.elt);
-                Self::transform_comprehension_generators(transformer, &mut genexp_expr.generators);
                 Self::remove_scope_shadows(transformer, added);
+            }
+            // Walrus expressions: the VALUE may contain a static import call
+            // (`(mod := importlib.import_module("helper"))`), and the target
+            // rebinds a name in the current scope
+            Expr::Named(named_expr) => {
+                Self::transform_expr(transformer, &mut named_expr.value);
             }
             Expr::Subscript(subscript_expr) => {
                 Self::transform_expr(transformer, &mut subscript_expr.value);

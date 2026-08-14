@@ -38,6 +38,11 @@ use super::CRIBO_SYS_ALIAS;
 /// `{sys}` is replaced with the bundle's private `sys` alias.
 const PRESERVED_FINDER_SOURCE: &str = r#"
 class _CriboPreservedLoader:
+    # Pre-initialization namespace snapshots, keyed by namespace object id:
+    # after sys.modules eviction, CPython executes a FRESH module, so the
+    # re-import must not observe globals left over from the previous life
+    _pristine = {}
+
     def __init__(self, entry, namespace=None):
         self._entry = entry
         self._namespace = namespace
@@ -56,10 +61,23 @@ class _CriboPreservedLoader:
         init = self._entry[0]
         if init is None:
             return
+        # The class GLOBAL may be legally rebound or deleted by user code;
+        # reach the shared snapshot store through the instance's own type
+        pristine = type(self)._pristine
+        key = id(module)
         if getattr(module, '_cribo_machinery_loaded', False):
+            # Eviction re-import: restore the pre-initialization namespace so
+            # the body re-executes against fresh state, like CPython's fresh
+            # module object
+            saved = pristine.get(key)
+            if saved is not None:
+                module.__dict__.clear()
+                module.__dict__.update(saved)
             module.__initialized__ = False
             module.__initializing__ = False
         state = dict(module.__dict__)
+        if key not in pristine:
+            pristine[key] = dict(state)
         try:
             globals()[init](module)
             module._cribo_machinery_loaded = True
@@ -102,6 +120,21 @@ class _CriboPreservedFinder:
 
 _cribo_finder = _CriboPreservedFinder()
 {sys}.meta_path.append(_cribo_finder)
+# First-party bundled TOP-LEVEL PLAIN MODULES keep their original precedence:
+# the entry directory beat installed distributions before bundling, and a
+# top-level plain module neither has submodules nor resolves through an
+# installed parent, so its finder sits in FRONT of PathFinder (behind the
+# builtin/frozen importers). Packages, dotted submodules, and third-party
+# modules stay in the APPENDED finder, where installed distributions win
+# (native submodules resolve through installed parents).
+_cribo_finder_local = _CriboPreservedFinder()
+_cribo_finder_local._namespaces = _cribo_finder._namespaces
+for _cribo_index, _cribo_meta_finder in enumerate({sys}.meta_path):
+    if getattr(_cribo_meta_finder, '__name__', '') == 'PathFinder':
+        {sys}.meta_path.insert(_cribo_index, _cribo_finder_local)
+        break
+else:
+    {sys}.meta_path.insert(0, _cribo_finder_local)
 "#;
 
 /// Generate the finder class, loader class, instance, and `sys.meta_path`
@@ -123,11 +156,19 @@ pub(crate) fn generate_preserved_import_finder() -> Vec<Stmt> {
 /// (inlined ancestors of a registered module): their code already ran at
 /// bundle load, so the loader only needs to hand their namespace to the
 /// machinery.
+///
+/// `first_party` selects the finder: first-party TOP-LEVEL PLAIN MODULES
+/// register with the finder in front of `PathFinder` (the entry directory
+/// beat installed distributions before bundling, and such modules neither
+/// have submodules nor resolve through an installed parent); packages, dotted
+/// submodules, and third-party modules register with the appended one
+/// (installed distributions win).
 pub(crate) fn generate_preserved_target_registration(
     module_name: &str,
     init_function_name: Option<&str>,
     namespace_variable: &str,
     is_package: bool,
+    first_party: bool,
 ) -> Stmt {
     use ruff_python_ast::ExprContext;
 
@@ -135,7 +176,7 @@ pub(crate) fn generate_preserved_target_registration(
 
     statements::expr(expressions::call(
         expressions::attribute(
-            expressions::name("_cribo_finder", ExprContext::Load),
+            expressions::name(finder_variable(first_party), ExprContext::Load),
             "register",
             ExprContext::Load,
         ),
@@ -149,6 +190,15 @@ pub(crate) fn generate_preserved_target_registration(
     ))
 }
 
+/// The bundle-global name of the finder serving a registration.
+const fn finder_variable(first_party: bool) -> &'static str {
+    if first_party {
+        "_cribo_finder_local"
+    } else {
+        "_cribo_finder"
+    }
+}
+
 /// Generate `_cribo_finder.register("name", None, None, is_package,
 /// {"Export": "bundle_binding", ...})` for an INLINED module: the loader
 /// builds a namespace on demand exposing the same top-level objects (class
@@ -158,6 +208,7 @@ pub(crate) fn generate_inlined_module_registration(
     module_name: &str,
     exports: &[(String, String)],
     is_package: bool,
+    first_party: bool,
 ) -> Stmt {
     use ruff_python_ast::{AtomicNodeIndex, DictItem, Expr, ExprContext, ExprDict};
     use ruff_text_size::TextRange;
@@ -179,7 +230,7 @@ pub(crate) fn generate_inlined_module_registration(
 
     statements::expr(expressions::call(
         expressions::attribute(
-            expressions::name("_cribo_finder", ExprContext::Load),
+            expressions::name(finder_variable(first_party), ExprContext::Load),
             "register",
             ExprContext::Load,
         ),

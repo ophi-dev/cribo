@@ -884,6 +884,10 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
                 // Determine which branch (if any) is TYPE_CHECKING
                 let branch = Self::type_checking_branch(&if_stmt.test);
 
+                // The test expression evaluates unconditionally (it may contain
+                // walrus-bound import calls) — visit it OUTSIDE the branch scope
+                self.visit_expr(&if_stmt.test);
+
                 // Visit IF body
                 self.scope_stack.push(ScopeElement::If);
                 if matches!(branch, Some(true)) {
@@ -901,6 +905,12 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
                 // Visit ELIF/ELSE clauses
                 for clause in &if_stmt.elif_else_clauses {
                     self.scope_stack.push(ScopeElement::If);
+
+                    // elif tests evaluate only when earlier branches fail:
+                    // visit them inside the conditional scope
+                    if let Some(clause_test) = &clause.test {
+                        self.visit_expr(clause_test);
+                    }
 
                     // Check if this is an elif with TYPE_CHECKING condition
                     let elif_branch = clause.test.as_ref().and_then(Self::type_checking_branch);
@@ -1169,9 +1179,10 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
                 self.conditionally_shadowed_names_stack.pop();
                 return;
             }
-            // Comprehension targets bind their own function scope; shadow them
-            // for the whole expression (over-shadowing the first iterable is
-            // conservative: it preserves the original expression)
+            // Comprehension targets bind their own function scope. Python
+            // evaluates the FIRST iterable in the enclosing scope, so imports
+            // referenced there resolve to enclosing bindings; targets are then
+            // introduced sequentially, each visible to the following clauses
             Expr::ListComp(_) | Expr::SetComp(_) | Expr::DictComp(_) | Expr::Generator(_) => {
                 let generators = match expr {
                     Expr::ListComp(comp) => &comp.generators,
@@ -1180,17 +1191,43 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
                     Expr::Generator(comp) => &comp.generators,
                     _ => unreachable!("matched comprehension variants only"),
                 };
-                let mut target_names = FxIndexSet::default();
-                for comprehension in generators {
-                    Self::collect_binding_names(&comprehension.target, &mut |name| {
-                        target_names.insert(name);
-                    });
+                // First iterable: enclosing scope
+                if let Some(first) = generators.first() {
+                    self.visit_expr(&first.iter);
                 }
                 self.imported_names_stack.push(FxIndexMap::default());
-                self.shadowed_names_stack.push(target_names);
+                self.shadowed_names_stack.push(FxIndexSet::default());
                 self.conditionally_shadowed_names_stack
                     .push(FxIndexSet::default());
-                walk_expr(self, expr);
+                for (index, comprehension) in generators.iter().enumerate() {
+                    // Later iterables see the targets bound so far
+                    if index > 0 {
+                        self.visit_expr(&comprehension.iter);
+                    }
+                    let mut target_names: Vec<String> = Vec::new();
+                    Self::collect_binding_names(&comprehension.target, &mut |name| {
+                        target_names.push(name);
+                    });
+                    if let Some(top) = self.shadowed_names_stack.last_mut() {
+                        top.extend(target_names);
+                    }
+                    for if_clause in &comprehension.ifs {
+                        self.visit_expr(if_clause);
+                    }
+                }
+                // Element expressions see every target
+                match expr {
+                    Expr::ListComp(comp) => self.visit_expr(&comp.elt),
+                    Expr::SetComp(comp) => self.visit_expr(&comp.elt),
+                    Expr::DictComp(comp) => {
+                        if let Some(key) = &comp.key {
+                            self.visit_expr(key);
+                        }
+                        self.visit_expr(&comp.value);
+                    }
+                    Expr::Generator(comp) => self.visit_expr(&comp.elt),
+                    _ => unreachable!("matched comprehension variants only"),
+                }
                 self.imported_names_stack.pop();
                 self.shadowed_names_stack.pop();
                 self.conditionally_shadowed_names_stack.pop();

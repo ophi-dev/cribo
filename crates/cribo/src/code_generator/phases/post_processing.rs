@@ -171,9 +171,14 @@ impl PostProcessingPhase {
             let namespace_variable = sanitize_module_name_for_identifier(name);
             let is_package = bundler.resolver.is_package_init(module_id)
                 || bundler.resolver.is_namespace_package(module_id);
+            let first_party = !is_package
+                && !name.contains('.')
+                && bundler.resolver.classify_import(name).origin
+                    == crate::resolver::ImportOrigin::FirstParty;
             log::debug!(
                 "Registering bundled module '{name}' with the meta-path finder \
-                 (init={init_function:?}, namespace='{namespace_variable}', is_package={is_package})"
+                 (init={init_function:?}, namespace='{namespace_variable}', \
+                 is_package={is_package}, first_party={first_party})"
             );
             statements.push(
                 crate::ast_builder::preserved_finder::generate_preserved_target_registration(
@@ -181,6 +186,7 @@ impl PostProcessingPhase {
                     init_function.map(String::as_str),
                     &namespace_variable,
                     is_package,
+                    first_party,
                 ),
             );
         }
@@ -190,13 +196,20 @@ impl PostProcessingPhase {
             };
             let is_package = bundler.resolver.is_package_init(module_id)
                 || bundler.resolver.is_namespace_package(module_id);
+            let first_party = !is_package
+                && !name.contains('.')
+                && bundler.resolver.classify_import(name).origin
+                    == crate::resolver::ImportOrigin::FirstParty;
             log::debug!(
                 "Registering inlined class module '{name}' with the meta-path finder \
-                 (exports={exports:?}, is_package={is_package})"
+                 (exports={exports:?}, is_package={is_package}, first_party={first_party})"
             );
             statements.push(
                 crate::ast_builder::preserved_finder::generate_inlined_module_registration(
-                    name, exports, is_package,
+                    name,
+                    exports,
+                    is_package,
+                    first_party,
                 ),
             );
         }
@@ -220,18 +233,20 @@ impl PostProcessingPhase {
         let mut binding_modules: FxIndexMap<String, String> = FxIndexMap::default();
         // binding -> original export name (from __name__ stamps on renamed classes)
         let mut binding_exports: FxIndexMap<String, String> = FxIndexMap::default();
-        for stmt in final_body {
+        let record_stamp = |binding_modules: &mut FxIndexMap<String, String>,
+                            binding_exports: &mut FxIndexMap<String, String>,
+                            stmt: &Stmt| {
             let Stmt::Assign(assign) = stmt else {
-                continue;
+                return;
             };
             let [Expr::Attribute(attribute)] = assign.targets.as_slice() else {
-                continue;
+                return;
             };
             let Expr::Name(binding) = &*attribute.value else {
-                continue;
+                return;
             };
             let Expr::StringLiteral(value) = &*assign.value else {
-                continue;
+                return;
             };
             match attribute.attr.as_str() {
                 "__module__" => {
@@ -242,6 +257,18 @@ impl PostProcessingPhase {
                 }
                 _ => {}
             }
+        };
+        for stmt in final_body {
+            // Decorated definitions carry their stamps inside a try/except
+            // guard (decorators may return objects rejecting attribute writes);
+            // harvest those blocks too so their exports register with the finder
+            if let Stmt::Try(try_stmt) = stmt {
+                for guarded in &try_stmt.body {
+                    record_stamp(&mut binding_modules, &mut binding_exports, guarded);
+                }
+                continue;
+            }
+            record_stamp(&mut binding_modules, &mut binding_exports, stmt);
         }
 
         let mut exports_by_module: FxIndexMap<String, Vec<(String, String)>> =

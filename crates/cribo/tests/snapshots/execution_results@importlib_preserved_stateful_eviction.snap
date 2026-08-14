@@ -1,0 +1,9 @@
+---
+source: crates/cribo/tests/test_bundling_snapshots.rs
+input_file: crates/cribo/tests/fixtures/importlib_preserved_stateful_eviction/main.py
+---
+ExecutionResults {
+    status: Success,
+    stdout: "stateful_helper body runs\nfirst attempts: 1\nstateful_helper body runs\nsecond attempts: 1",
+    stderr: "",
+}
