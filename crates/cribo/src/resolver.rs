@@ -2272,7 +2272,7 @@ impl ModuleResolver {
         // executed by a regular package found later. Try the importing
         // module's own package directory first.
         if let Some(path) =
-            Self::resolve_relative_in_package_dir(descriptor, current_module_path, level)
+            self.resolve_relative_in_package_dir(descriptor, current_module_path, level)
         {
             return Ok(Some(path));
         }
@@ -2299,6 +2299,7 @@ impl ModuleResolver {
     /// the current package's `__path__`, never the global search path, so a
     /// same-named directory earlier on the search path cannot hijack them.
     fn resolve_relative_in_package_dir(
+        &self,
         descriptor: &ImportModuleDescriptor,
         current_module_path: &Path,
         level: u32,
@@ -2313,7 +2314,7 @@ impl ModuleResolver {
         if descriptor.name_parts.is_empty() {
             // `from . import X`: the anchor package itself
             let init = anchor.join(INIT_FILE);
-            return init.is_file().then_some(init);
+            return init.is_file().then(|| self.canonicalize_path(init));
         }
         let mut current = anchor;
         for part in &descriptor.name_parts[..descriptor.name_parts.len() - 1] {
@@ -2328,10 +2329,12 @@ impl ModuleResolver {
             .expect("name_parts checked non-empty");
         let module_file = current.join(format!("{last}.py"));
         if module_file.is_file() {
-            return Some(module_file);
+            return Some(self.canonicalize_path(module_file));
         }
         let package_init = current.join(last).join(INIT_FILE);
-        package_init.is_file().then_some(package_init)
+        package_init
+            .is_file()
+            .then(|| self.canonicalize_path(package_init))
     }
 
     /// Resolve a module in virtualenv site-packages when third-party bundling is enabled.
