@@ -4,6 +4,6 @@ input_file: crates/cribo/tests/fixtures/bundle_third_party_namespace_portion_fal
 ---
 ExecutionResults {
     status: Success,
-    stdout: "VALUE: regular package wins over the namespace portion",
+    stdout: "VALUE: regular package wins over the namespace portion\nPACKAGE: regular",
     stderr: "",
 }

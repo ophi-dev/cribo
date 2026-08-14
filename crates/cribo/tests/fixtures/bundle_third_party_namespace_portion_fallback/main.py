@@ -8,3 +8,4 @@ the regular package wins, so `import pkg.sub` must resolve and bundle.
 import pkg.sub
 
 print("VALUE:", pkg.sub.VALUE)
+print("PACKAGE:", pkg.PACKAGE)

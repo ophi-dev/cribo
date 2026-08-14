@@ -103,6 +103,9 @@ pkg = _cribo.types.SimpleNamespace(__name__='pkg', __initializing__=False, __ini
 pkg.sub = pkg_sub
 VALUE = "regular package wins over the namespace portion"
 pkg_sub.VALUE = VALUE
+PACKAGE = "regular"
+pkg.PACKAGE = PACKAGE
 """A local PEP 420 namespace portion must not block the site-packages fallback.\n\nThe entry directory contains `pkg/` WITHOUT __init__.py (a namespace portion),\nwhile site-packages provides a regular `pkg` package: Python keeps scanning and\nthe regular package wins, so `import pkg.sub` must resolve and bundle.\n"""
 print("VALUE:", pkg.sub.VALUE)
+print("PACKAGE:", pkg.PACKAGE)
 sub = pkg.sub

@@ -1,0 +1,7 @@
+---
+source: crates/cribo/tests/test_bundling_snapshots.rs
+input_file: crates/cribo/tests/fixtures/xfail_bundle_third_party_sibling_root_blocked/main.py
+---
+packages:
+  - duo-pkg
+count: 1

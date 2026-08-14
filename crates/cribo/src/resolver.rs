@@ -399,6 +399,16 @@ struct UnbundlablePatternDetector {
 }
 
 impl UnbundlablePatternDetector {
+    /// Whether an expression denotes (or plausibly denotes) `types.ModuleType`.
+    fn mentions_module_type(expr: &ruff_python_ast::Expr) -> bool {
+        use ruff_python_ast::Expr;
+        match expr {
+            Expr::Attribute(attribute) => attribute.attr.as_str() == "ModuleType",
+            Expr::Name(name) => name.id.as_str() == "ModuleType",
+            _ => false,
+        }
+    }
+
     const INSTALLED_PACKAGE_APIS: [&'static str; 8] = [
         "importlib.metadata",
         "importlib_metadata",
@@ -823,6 +833,31 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
                 literal.value.to_str(),
                 "__file__" | "__spec__" | "__path__" | "__loader__" | "__cached__"
             )
+        {
+            self.found = true;
+            return;
+        }
+        // Module-type identity checks (`isinstance(sys.modules[__name__],
+        // types.ModuleType)`, `type(x) is types.ModuleType`) distinguish real
+        // module objects from generated namespaces: a wrapped provider would
+        // observe False where the installed module observes True. Constructing
+        // module objects (`types.ModuleType("name")`) is NOT flagged.
+        if let Expr::Call(call) = expr
+            && matches!(&*call.func, Expr::Name(callee) if callee.id.as_str() == "isinstance")
+        {
+            let class_mentions_module_type = match call.arguments.args.get(1) {
+                Some(Expr::Tuple(tuple)) => tuple.elts.iter().any(Self::mentions_module_type),
+                Some(class_expr) => Self::mentions_module_type(class_expr),
+                None => false,
+            };
+            if class_mentions_module_type {
+                self.found = true;
+                return;
+            }
+        }
+        if let Expr::Compare(compare) = expr
+            && (Self::mentions_module_type(&compare.left)
+                || compare.comparators.iter().any(Self::mentions_module_type))
         {
             self.found = true;
             return;
@@ -2060,10 +2095,21 @@ impl ModuleResolver {
             return Ok(None);
         }
 
-        // Try each search directory in order
+        // Try each search directory in order. A PEP 420 namespace portion does
+        // NOT stop the search: Python keeps scanning the remaining roots and a
+        // regular package found later (including in bundled site-packages)
+        // wins; the namespace portion is used only when nothing concrete
+        // exists anywhere.
         let search_dirs = self.get_search_directories();
+        let mut namespace_candidate: Option<Option<PathBuf>> = None;
         for search_dir in &search_dirs {
             if let Some(resolved) = self.resolve_in_directory(search_dir, &descriptor) {
+                if matches!(resolved.source, ImportSource::NamespacePackage) {
+                    if namespace_candidate.is_none() {
+                        namespace_candidate = Some(resolved.bundle_path());
+                    }
+                    continue;
+                }
                 let bundle_path = resolved.bundle_path();
                 self.module_cache
                     .borrow_mut()
@@ -2079,6 +2125,14 @@ impl ModuleResolver {
                 .borrow_mut()
                 .insert(module_name.to_owned(), Some(bundle_path.clone()));
             return Ok(Some(bundle_path));
+        }
+
+        // No regular package anywhere: the namespace portion wins after all
+        if let Some(bundle_path) = namespace_candidate {
+            self.module_cache
+                .borrow_mut()
+                .insert(module_name.to_owned(), bundle_path.clone());
+            return Ok(bundle_path);
         }
 
         // Not found - cache the negative result
@@ -2758,6 +2812,49 @@ impl ModuleResolver {
         }
 
         let top_level = module_name.split('.').next().unwrap_or(module_name);
+        if self.import_root_source_blocked(search_root, top_level) {
+            return true;
+        }
+
+        // A source-level blocker in a SIBLING import root of the same
+        // distribution taints this one: bundling one root while the blocked
+        // sibling stays installed would split module identity between the
+        // bundled copy and the installed distribution's own imports
+        let sibling_roots: Vec<String> =
+            self.with_distribution_ownership_index(search_root, |index| {
+                let mut roots = IndexSet::new();
+                for distribution in index.owning_distributions(top_level) {
+                    for name in distribution
+                        .declared_prefixes
+                        .iter()
+                        .chain(distribution.record_imports.iter())
+                    {
+                        let root = name.split('.').next().unwrap_or(name);
+                        if root != top_level {
+                            roots.insert(root.to_owned());
+                        }
+                    }
+                }
+                roots.into_iter().collect()
+            });
+        if let Some(blocked_sibling) = sibling_roots
+            .iter()
+            .find(|root| self.import_root_source_blocked(search_root, root))
+        {
+            debug!(
+                "Import '{module_name}' shares a distribution with source-blocked import root \
+                 '{blocked_sibling}'; keeping it external"
+            );
+            return true;
+        }
+        false
+    }
+
+    /// Return whether ONE top-level import root under a search root contains a
+    /// source-level bundling blocker: a native extension or blocking file for
+    /// single-file modules, a symlinked/unscannable directory, or a package
+    /// tree with external-marker files.
+    fn import_root_source_blocked(&self, search_root: &Path, top_level: &str) -> bool {
         let package_dir = search_root.join(top_level);
         if !package_dir.is_dir() {
             // Single-file module: check the file itself for metadata usage; native
@@ -2944,6 +3041,7 @@ impl ModuleResolver {
         if !source.contains("importlib")
             && !source.contains("import_module")
             && !source.contains("__class__")
+            && !source.contains("ModuleType")
             && !source.contains("pkg_resources")
             && !source.contains("pkgutil")
             && !source.contains("runpy")
