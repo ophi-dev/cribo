@@ -814,6 +814,54 @@ pub(crate) fn imported_module_dunder_read_targets(
                     }
                 }
             }
+            // Hash-requiring contexts: real modules are identity-hashable but a
+            // generated SimpleNamespace is not, so an imported provider used as
+            // a dict key, set element, hash() argument, or subscript key must
+            // stay a real installed module. Only WHOLE-MODULE bindings
+            // (`import provider`) are recorded: from-imported names are
+            // usually plain values, and subscripting by them is pervasive.
+            let module_binding = |name: &str| {
+                self.bindings
+                    .get(name)
+                    .filter(|module| !module.contains('.'))
+                    .cloned()
+            };
+            match expr {
+                Expr::Dict(dict) => {
+                    for item in &dict.items {
+                        if let Some(Expr::Name(key)) = item.key.as_ref()
+                            && let Some(module_name) = module_binding(key.id.as_str())
+                        {
+                            self.observed.insert(module_name);
+                        }
+                    }
+                }
+                Expr::Set(set) => {
+                    for element in &set.elts {
+                        if let Expr::Name(name) = element
+                            && let Some(module_name) = module_binding(name.id.as_str())
+                        {
+                            self.observed.insert(module_name);
+                        }
+                    }
+                }
+                Expr::Call(call) if matches!(&*call.func, Expr::Name(callee) if callee.id.as_str() == "hash") => {
+                    if let Some(Expr::Name(argument)) = call.arguments.args.first()
+                        && let Some(module_name) = module_binding(argument.id.as_str())
+                    {
+                        self.observed.insert(module_name);
+                    }
+                }
+                // Subscript accesses like `registry[provider]` hash the key
+                Expr::Subscript(subscript) => {
+                    if let Expr::Name(key) = &*subscript.slice
+                        && let Some(module_name) = module_binding(key.id.as_str())
+                    {
+                        self.observed.insert(module_name);
+                    }
+                }
+                _ => {}
+            }
             walk_expr(self, expr);
         }
     }

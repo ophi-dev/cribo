@@ -329,6 +329,12 @@ impl ImportClassification {
 struct ResolvedModule {
     path: PathBuf,
     source: ImportSource,
+    /// Whether resolution traversed a PEP 420 namespace portion (an
+    /// intermediate directory without `__init__.py`): Python discards such
+    /// portions when a LATER root provides a regular package of the same
+    /// name, so these results only apply when nothing concrete exists
+    /// anywhere else.
+    via_namespace_portion: bool,
 }
 
 impl ResolvedModule {
@@ -833,6 +839,16 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
                 literal.value.to_str(),
                 "__file__" | "__spec__" | "__path__" | "__loader__" | "__cached__"
             )
+        {
+            self.found = true;
+            return;
+        }
+        // `exec(...)` publishes names dynamically: inside a generated wrapper
+        // initializer the created names land in the init function's frame
+        // instead of the module namespace, and export collection cannot see
+        // them. Any exec call keeps the provider external.
+        if let Expr::Call(call) = expr
+            && matches!(&*call.func, Expr::Name(callee) if callee.id.as_str() == "exec")
         {
             self.found = true;
             return;
@@ -2096,15 +2112,18 @@ impl ModuleResolver {
         }
 
         // Try each search directory in order. A PEP 420 namespace portion does
-        // NOT stop the search: Python keeps scanning the remaining roots and a
-        // regular package found later (including in bundled site-packages)
-        // wins; the namespace portion is used only when nothing concrete
-        // exists anywhere.
+        // NOT stop the search — neither a bare namespace directory nor a child
+        // reached THROUGH a portion: Python keeps scanning the remaining roots
+        // and a regular package found later (including in bundled
+        // site-packages) wins together with ITS children; portion results are
+        // used only when nothing concrete exists anywhere.
         let search_dirs = self.get_search_directories();
         let mut namespace_candidate: Option<Option<PathBuf>> = None;
         for search_dir in &search_dirs {
             if let Some(resolved) = self.resolve_in_directory(search_dir, &descriptor) {
-                if matches!(resolved.source, ImportSource::NamespacePackage) {
+                if matches!(resolved.source, ImportSource::NamespacePackage)
+                    || resolved.via_namespace_portion
+                {
                     if namespace_candidate.is_none() {
                         namespace_candidate = Some(resolved.bundle_path());
                     }
@@ -2234,6 +2253,7 @@ impl ModuleResolver {
             for search_dir in &search_dirs {
                 if let Some(resolved) = self.resolve_in_directory(search_dir, &descriptor)
                     && !matches!(resolved.source, ImportSource::NamespacePackage)
+                    && !resolved.via_namespace_portion
                 {
                     debug!(
                         "Parent '{prefix}' of '{module_name}' resolves in a normal search root; \
@@ -2362,6 +2382,7 @@ impl ModuleResolver {
         }
 
         let mut current_path = root.to_path_buf();
+        let mut via_namespace_portion = false;
 
         // Process all parts except the last one
         for (i, part) in descriptor.name_parts.iter().enumerate() {
@@ -2384,6 +2405,7 @@ impl ModuleResolver {
                     return Some(ResolvedModule {
                         path: canonical,
                         source: ImportSource::Python,
+                        via_namespace_portion,
                     });
                 }
 
@@ -2397,6 +2419,7 @@ impl ModuleResolver {
                     return Some(ResolvedModule {
                         path: extension_path,
                         source: ImportSource::NativeExtension,
+                        via_namespace_portion,
                     });
                 }
 
@@ -2408,6 +2431,7 @@ impl ModuleResolver {
                     return Some(ResolvedModule {
                         path: canonical,
                         source: ImportSource::Python,
+                        via_namespace_portion,
                     });
                 }
 
@@ -2420,6 +2444,7 @@ impl ModuleResolver {
                     return Some(ResolvedModule {
                         path: extension_path,
                         source: ImportSource::NativeExtension,
+                        via_namespace_portion,
                     });
                 }
 
@@ -2431,6 +2456,7 @@ impl ModuleResolver {
                     return Some(ResolvedModule {
                         path: canonical,
                         source: ImportSource::NamespacePackage,
+                        via_namespace_portion,
                     });
                 }
             } else {
@@ -2446,7 +2472,10 @@ impl ModuleResolver {
                     );
                     current_path = package_dir;
                 } else if crate::python::module_path::is_namespace_package_dir(&package_dir) {
-                    // Namespace package - continue but don't add to resolved paths
+                    // Namespace package - continue but don't add to resolved paths.
+                    // Results reached through this portion lose to a regular
+                    // package found in a later root
+                    via_namespace_portion = true;
                     current_path = package_dir;
                 } else {
                     // Not found
@@ -2493,10 +2522,23 @@ impl ModuleResolver {
         directories: &[PathBuf],
     ) -> Option<(PathBuf, ResolvedModule)> {
         let descriptor = ImportModuleDescriptor::from_module_name(module_name);
-        directories.iter().find_map(|directory| {
-            self.resolve_in_directory(directory, &descriptor)
-                .map(|resolved| (directory.clone(), resolved))
-        })
+        // Namespace portions (and children reached through them) lose to a
+        // regular package in a LATER directory, like Python's own scan
+        let mut namespace_candidate: Option<(PathBuf, ResolvedModule)> = None;
+        for directory in directories {
+            if let Some(resolved) = self.resolve_in_directory(directory, &descriptor) {
+                if matches!(resolved.source, ImportSource::NamespacePackage)
+                    || resolved.via_namespace_portion
+                {
+                    if namespace_candidate.is_none() {
+                        namespace_candidate = Some((directory.clone(), resolved));
+                    }
+                    continue;
+                }
+                return Some((directory.clone(), resolved));
+            }
+        }
+        namespace_candidate
     }
 
     fn classify_resolved_import(
@@ -3042,6 +3084,7 @@ impl ModuleResolver {
             && !source.contains("import_module")
             && !source.contains("__class__")
             && !source.contains("ModuleType")
+            && !source.contains("exec")
             && !source.contains("pkg_resources")
             && !source.contains("pkgutil")
             && !source.contains("runpy")
@@ -4061,6 +4104,9 @@ impl ModuleResolver {
         #[derive(Default)]
         struct BundledDistribution {
             requires_dist: Vec<String>,
+            /// Declared `Version`, used to validate incoming versioned edges
+            /// from other bundled distributions
+            version: Option<String>,
             /// Active extras with their activation conditions: a requested extra
             /// is unconditional (`TRUE`), while an extra propagated through a
             /// marker-gated edge (`B[speed]; sys_platform == "win32"`) carries
@@ -4146,16 +4192,23 @@ impl ModuleResolver {
                         Some(
                             owners
                                 .iter()
-                                .map(|dist| (dist.name.clone(), dist.requires_dist.clone()))
+                                .map(|dist| {
+                                    (
+                                        dist.name.clone(),
+                                        dist.requires_dist.clone(),
+                                        dist.version.clone(),
+                                    )
+                                })
                                 .collect::<Vec<_>>(),
                         )
                     }
                 });
                 if let Some(owners) = found {
-                    for (name, requires_dist) in owners {
+                    for (name, requires_dist, version) in owners {
                         let normalized_name = Self::normalize_distribution_name(&name);
                         let record = bundled.entry(normalized_name).or_default();
                         record.requires_dist = requires_dist;
+                        record.version = version;
                         for extra in requested_extras {
                             // Explicitly requested extras apply unconditionally
                             record.activate_extra(extra.clone(), pep508_rs::MarkerTree::TRUE);
@@ -4251,13 +4304,27 @@ impl ModuleResolver {
                 parsed.marker.and(activation);
                 let name = parsed.name.to_string();
                 // Requirements satisfied by other bundled distributions are not
-                // needed — EXCEPT direct-URL pins: the locally inspected source
-                // cannot be proven to come from the pinned artifact, so the URL
-                // requirement is retained for the installer to enforce
-                let url_pinned =
-                    matches!(parsed.version_or_url, Some(pep508_rs::VersionOrUrl::Url(_)));
-                if bundled_names.contains(&name) && !url_pinned {
-                    continue;
+                // needed — EXCEPT when the edge cannot be PROVEN satisfied by
+                // the bundled copy: direct-URL pins are unverifiable against
+                // inspected sources, and a version specifier must be satisfied
+                // by the bundled owner's declared Version (constraints active
+                // only on other platforms would otherwise be silently dropped).
+                // Retained lines keep their markers for installer enforcement.
+                if bundled_names.contains(&name) {
+                    let provably_satisfied = match &parsed.version_or_url {
+                        None => true,
+                        Some(pep508_rs::VersionOrUrl::Url(_)) => false,
+                        Some(pep508_rs::VersionOrUrl::VersionSpecifier(specifiers)) => bundled
+                            .get(&name)
+                            .and_then(|record| record.version.as_deref())
+                            .and_then(|version| {
+                                pep508_rs::pep440_rs::Version::from_str(version).ok()
+                            })
+                            .is_some_and(|version| specifiers.contains(&version)),
+                    };
+                    if provably_satisfied {
+                        continue;
+                    }
                 }
                 let branches = merged.entry(name).or_default();
                 if let Some(existing) = branches
@@ -8018,6 +8085,52 @@ def read(package):
             requirements,
             vec!["accelerator>=3".to_owned()],
             "extras requested by bundled dependents must activate transitively"
+        );
+
+        Ok(())
+    }
+
+    /// A versioned edge to a bundled dependency is retained when the bundled
+    /// copy's declared Version does not provably satisfy it: `B>=2;
+    /// sys_platform == "win32"` over bundled B 1.0 must reach requirements so
+    /// Windows installations enforce the constraint the Linux build host
+    /// never evaluated.
+    #[test]
+    fn test_bundled_distribution_requirements_keep_unsatisfied_version_edges() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!("dist_a/{}", crate::python::constants::INIT_FILE)),
+            "import dist_b\n",
+        )?;
+        create_test_file(
+            &site_packages.join("dist_a-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: dist-a\nVersion: 1.0\nImport-Name: \
+             dist_a\nRequires-Dist: dist-b>=2; sys_platform == \"win32\"\nRequires-Dist: \
+             dist-b>=1\n",
+        )?;
+        create_test_file(
+            &site_packages.join(format!("dist_b/{}", crate::python::constants::INIT_FILE)),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("dist_b-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: dist-b\nVersion: 1.0\nImport-Name: dist_b\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let mut bundled_imports: FxIndexMap<String, Vec<pep508_rs::ExtraName>> =
+            FxIndexMap::default();
+        bundled_imports.insert("dist_a".to_owned(), Vec::new());
+        bundled_imports.insert("dist_b".to_owned(), Vec::new());
+
+        let requirements = resolver.bundled_distribution_requirements(&bundled_imports);
+        assert_eq!(
+            requirements,
+            vec!["dist-b>=2 ; sys_platform == 'win32'".to_owned()],
+            "the unsatisfied marker-gated edge must survive while the satisfied >=1 edge \
+             dedupes against the bundled copy"
         );
 
         Ok(())

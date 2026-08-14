@@ -826,19 +826,15 @@ impl BundleOrchestrator {
             }
 
             // Record imported providers whose filesystem/import-spec globals this
-            // module reads (provider.__file__, provider.__spec__.origin, ...) or
-            // that are passed to source-inspection APIs (inspect.getsource):
-            // generated namespaces carry no faithful values, so observed targets
-            // keep their installed module identity (same policy as resource reads)
-            if self.config.bundle_third_party()
-                && (processed.source.contains("__file__")
-                    || processed.source.contains("__spec__")
-                    || processed.source.contains("__loader__")
-                    || processed.source.contains("__cached__")
-                    || processed.source.contains("__path__")
-                    || processed.source.contains("inspect")
-                    || processed.source.contains("ModuleType"))
-            {
+            // module reads (provider.__file__, provider.__spec__.origin, ...),
+            // that are passed to source-inspection or module-identity APIs
+            // (inspect.getsource, ismodule, isinstance against ModuleType), or
+            // that appear in hash-requiring contexts (dict keys, set elements):
+            // generated namespaces carry no faithful values and are unhashable,
+            // so observed targets keep their installed module identity. No
+            // cheap textual prefilter exists for the hash contexts, so the
+            // collector runs on every module (one AST pass).
+            if self.config.bundle_third_party() {
                 params.resolver.record_resource_read_imports(
                     crate::visitors::utils::imported_module_dunder_read_targets(
                         &processed.ast.body,
