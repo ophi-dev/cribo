@@ -545,9 +545,10 @@ pub(crate) fn imported_module_dunder_read_targets(
     }
 
     /// Inspect APIs that need a REAL module object: source-inspection needs an
-    /// on-disk source file, and `ismodule` tests the object's TYPE, which a
-    /// generated `SimpleNamespace` fails.
-    const SOURCE_INSPECTION_APIS: [&str; 7] = [
+    /// on-disk source file, `ismodule` tests the object's TYPE, and `getmodule`
+    /// returns `None` for anything that is not a `ModuleType` — a generated
+    /// `SimpleNamespace` fails all of them.
+    const SOURCE_INSPECTION_APIS: [&str; 8] = [
         "getsource",
         "getsourcefile",
         "getsourcelines",
@@ -555,6 +556,7 @@ pub(crate) fn imported_module_dunder_read_targets(
         "getabsfile",
         "findsource",
         "ismodule",
+        "getmodule",
     ];
 
     impl DunderReadCollector {

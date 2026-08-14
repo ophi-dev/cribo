@@ -472,6 +472,14 @@ impl UnbundlablePatternDetector {
             {
                 Some(DynamicImportKind::ImportModule)
             }
+            // A directly invoked retrieval — `getattr(importlib,
+            // "import_module")(name)` — imports without any name discovery can
+            // resolve; the callee is itself a call expression
+            Expr::Call(inner)
+                if is_getattr_import_callable(inner, &self.importlib_module_aliases) =>
+            {
+                Some(DynamicImportKind::Undiscoverable)
+            }
             _ => None,
         }
     }
@@ -621,6 +629,30 @@ fn record_import_module_aliases(
     }
 }
 
+/// `getattr(obj, "import_module")` retrieves an import callable dynamically,
+/// and `getattr(importlib, anything)` may — bundled code cannot rewrite either.
+fn is_getattr_import_callable(
+    call: &ruff_python_ast::ExprCall,
+    importlib_module_aliases: &IndexSet<String>,
+) -> bool {
+    use ruff_python_ast::Expr;
+    let Expr::Name(callee) = &*call.func else {
+        return false;
+    };
+    if callee.id.as_str() != "getattr" {
+        return false;
+    }
+    match call.arguments.args.get(1) {
+        Some(Expr::StringLiteral(literal)) => matches!(
+            literal.value.to_str(),
+            "import_module" | "__import__" | "reload"
+        ),
+        _ => call.arguments.args.first().is_some_and(|receiver| {
+            matches!(receiver, Expr::Name(name) if importlib_module_aliases.contains(name.id.as_str()))
+        }),
+    }
+}
+
 /// Track callable aliases created by (annotated) assignments such as
 /// `load = importlib.import_module`, `load = __import__`,
 /// `load = builtins.__import__`, or `load = getattr(importlib, "import_module")`.
@@ -660,29 +692,9 @@ fn record_assigned_import_module_aliases(
         }
     }
 
-    /// `getattr(obj, "import_module")` retrieves an import callable dynamically,
-    /// and `getattr(importlib, anything)` may — bundled code cannot rewrite either.
-    fn is_getattr_import_callable(
-        call: &ruff_python_ast::ExprCall,
-        importlib_module_aliases: &IndexSet<String>,
-    ) -> bool {
-        let Expr::Name(callee) = &*call.func else {
-            return false;
-        };
-        if callee.id.as_str() != "getattr" {
-            return false;
-        }
-        match call.arguments.args.get(1) {
-            Some(Expr::StringLiteral(literal)) => matches!(
-                literal.value.to_str(),
-                "import_module" | "__import__" | "reload"
-            ),
-            _ => call.arguments.args.first().is_some_and(|receiver| {
-                matches!(receiver, Expr::Name(name) if importlib_module_aliases.contains(name.id.as_str()))
-            }),
-        }
-    }
-
+    // `getattr(obj, "import_module")` retrieval is handled by the module-level
+    // `is_getattr_import_callable` helper, shared with the dynamic-import
+    // kind dispatch.
     let value_is_import_callable =
         match value {
             Expr::Call(call) => {
@@ -3522,6 +3534,24 @@ impl ModuleResolver {
             );
             return true;
         };
+        // The mapped distribution NAME must match an owning distribution:
+        // mapping `yaml = "vendor-yaml"` selects a DIFFERENT provider than the
+        // installed PyYAML sources, so bundling those sources would silently
+        // defeat the configured provider selection and drop the explicit
+        // requirement that non-bundling mode emits
+        let mapped_name = Self::normalize_distribution_name(parsed.name.as_ref());
+        let name_matches = self.with_distribution_ownership_index(site_packages_dir, |index| {
+            index
+                .owning_distributions(import_name)
+                .iter()
+                .any(|distribution| {
+                    !distribution.name.is_empty()
+                        && Self::normalize_distribution_name(&distribution.name) == mapped_name
+                })
+        });
+        if !name_matches {
+            return true;
+        }
         match parsed.version_or_url {
             None => false,
             Some(pep508_rs::VersionOrUrl::Url(_)) => {
@@ -7792,6 +7822,10 @@ def read(package):
             // An arbitrary receiver may be the real importlib passed in by the
             // consumer: discovery never resolves such calls, even literal ones
             "def load(loader):\n    return loader.import_module('provider.backend')\n",
+            // A directly invoked retrieved import callable is equally invisible
+            // to discovery
+            "import importlib\ndef load(name):\n    return getattr(importlib, \
+             'import_module')(name)\n",
             "import importlib\nimportlib.import_module(module_variable)\n",
             "from importlib import import_module\nimport_module(module_variable)\n",
             "from importlib import import_module as load\nload(f'.{name}', __package__)\n",

@@ -133,6 +133,41 @@ impl SideEffectDetector {
         matches!(name, "__name__" | "__package__" | "__doc__")
     }
 
+    /// Return whether a statement list references `globals` anywhere (including
+    /// nested scopes). Inlined modules execute in the bundle entry's global
+    /// namespace: `globals()` inside their functions would read or mutate the
+    /// ENTRY module's state, so such modules take the wrapper path, which
+    /// rewrites `globals()` to the module's own namespace dictionary.
+    fn body_references_globals(body: &[Stmt]) -> bool {
+        use ruff_python_ast::visitor::{Visitor, walk_expr};
+
+        struct GlobalsFinder {
+            found: bool,
+        }
+
+        impl<'a> Visitor<'a> for GlobalsFinder {
+            fn visit_expr(&mut self, expr: &'a Expr) {
+                if self.found {
+                    return;
+                }
+                if matches!(expr, Expr::Name(name) if name.id.as_str() == "globals") {
+                    self.found = true;
+                    return;
+                }
+                walk_expr(self, expr);
+            }
+        }
+
+        let mut finder = GlobalsFinder { found: false };
+        for stmt in body {
+            finder.visit_stmt(stmt);
+            if finder.found {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Check if a statement is an augmented assignment to __all__
     fn is_all_augmented_assignment(&self, stmt: &Stmt) -> bool {
         if let Stmt::AugAssign(aug_assign) = stmt {
@@ -165,6 +200,13 @@ impl<'a> Visitor<'a> for SideEffectDetector {
         match stmt {
             // Function definitions need to check decorators and defaults for side effects
             Stmt::FunctionDef(func) => {
+                // A globals() reference in the body would read or mutate the
+                // bundle ENTRY's namespace if the module were inlined; the
+                // wrapper path rewrites it to the module's own dictionary
+                if Self::body_references_globals(&func.body) {
+                    self.has_side_effects = true;
+                    return;
+                }
                 // Check decorators for side effects (executed at import time)
                 self.in_expression_context = true;
                 for decorator in &func.decorator_list {
@@ -279,8 +321,15 @@ impl<'a> Visitor<'a> for SideEffectDetector {
                 // (but not method bodies - those are only executed when called)
                 for stmt in &class_def.body {
                     match stmt {
-                        // Method definitions are not side effects
-                        Stmt::FunctionDef(_) => {}
+                        // Method definitions are not side effects, but a
+                        // globals() reference inside one still needs the
+                        // wrapper path (see the FunctionDef arm)
+                        Stmt::FunctionDef(method) => {
+                            if Self::body_references_globals(&method.body) {
+                                self.has_side_effects = true;
+                                return;
+                            }
+                        }
 
                         // Assignments in class body could be side effects if they call functions
                         Stmt::Assign(assign) => {

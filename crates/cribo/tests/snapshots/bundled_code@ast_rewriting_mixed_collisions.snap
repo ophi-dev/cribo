@@ -83,6 +83,7 @@ _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
 _cribo_finder.register('models.base', '_cribo_init___cribo_bca2f6_models_base', 'models_base', False)
 _cribo_finder.register('models', '_cribo_init___cribo_98ecc1_models', 'models', True)
+_cribo_finder.register('models.user', '_cribo_init___cribo_b57669_models_user', 'models_user', False)
 _cribo_finder.register('services.auth', '_cribo_init___cribo_b16105_services_auth', 'services_auth', True)
 _cribo_finder.register('services', '_cribo_init___cribo_93a195_services', 'services', True)
 _cribo_finder.register('services.auth.manager', '_cribo_init___cribo_ee1d45_services_auth_manager', 'services_auth_manager', False)
@@ -90,7 +91,6 @@ _cribo_finder.register('core.utils', '_cribo_init___cribo_c57a32_core_utils', 'c
 _cribo_finder.register('core', '_cribo_init___cribo_62c387_core', 'core', True)
 _cribo_finder.register('core.database', None, 'core_database', True)
 _cribo_finder.register('core.utils.helpers', None, None, False, {'Logger': 'Logger_4', 'process': 'process_6', 'validate': 'validate_6'})
-_cribo_finder.register('models.user', None, None, False, {'Logger': 'Logger_2', 'User': 'User_2', 'process_user': 'process_user'})
 _cribo_finder.register('core.database.connection', None, None, False, {'Connection': 'Connection_6', 'process': 'process_7'})
 core_utils_helpers = _cribo.types.SimpleNamespace(__name__='core.utils.helpers', __doc__='\nUtility helpers module with extensive naming conflicts\n')
 core = _cribo.types.SimpleNamespace(__name__='core', __initializing__=False, __initialized__=False, __path__=[])
@@ -197,105 +197,195 @@ def _cribo_init___cribo_c57a32_core_utils(self):
     self.__initializing__ = False
     return self
 core_utils.__init__ = _cribo_init___cribo_c57a32_core_utils
-models_user = _cribo.types.SimpleNamespace(__name__='models.user', __doc__='\nUser model with extensive naming conflicts across the project\n')
+models_user = _cribo.types.SimpleNamespace(__name__='models.user', __initializing__=False, __initialized__=False)
+_cribo_models_user_result = None
+_cribo_models_user_connection = None
+_cribo_finder.bind('models.user', models_user)
+def _cribo_init___cribo_b57669_models_user(self):
+    if getattr(self, '__initialized__', False):
+        return self
+    if getattr(self, '__initializing__', False):
+        return self
+    self.__initializing__ = True
+    self.__package__ = 'models'
+    self.__doc__ = '\nUser model with extensive naming conflicts across the project\n'
+    global _cribo_models_user_connection, _cribo_models_user_result
+    """\nUser model with extensive naming conflicts across the project\n"""
+    List = _cribo.typing.List
+    self.List = List
+    Dict = _cribo.typing.Dict
+    self.Dict = Dict
+    Any = _cribo.typing.Any
+    self.Any = Any
+    util_process = process_6
+    models_user.util_process = util_process
+    UtilLogger = Logger_4
+    models_user.UtilLogger = UtilLogger
+    result = {"model": "user"}
+    _cribo_models_user_result = result
+    self.result = _cribo_models_user_result
+    connection = None
+    _cribo_models_user_connection = connection
+    self.connection = _cribo_models_user_connection
+
+    class Logger:
+        """Model Logger class - conflicts with other Logger classes"""
+
+        def __init__(self, context: str):
+            self.context = context
+            self.entries = []
+            self.process = self._log_process
+
+        def _log_process(self, message: str) -> None:
+            self.entries.append(f"{self.context}: {message}")
+
+        def get_message(self) -> str:
+            return f"Model Logger: {self.context}"
+
+        def validate(self, entry: str) -> bool:
+            """Method with name that conflicts with global functions"""
+            return len(entry) > 0
+    Logger.__module__ = 'models.user'
+    Logger.__qualname__ = 'Logger'
+    self.Logger = Logger
+
+    class User:
+        """Model User class - major conflict with other User classes"""
+
+        def __init__(self, name: str, email: str=""):
+            self.name = name
+            self.email = email
+            self.active = True
+            self.Logger = Logger(f"user_{name}")
+            self.process = self._user_process
+            self.validate = self._user_validate
+            self.result = None
+
+        def _user_process(self, data: _cribo.typing.Any) -> str:
+            """Private method using conflicted names"""
+            util_result = util_process(data)
+            self.Logger.validate(str(data))
+            self.Logger._log_process(f"Processing: {data}")
+            self.result = f"user_model_process: {util_result}"
+            return self.result
+
+        def _user_validate(self, field: str, value: _cribo.typing.Any) -> bool:
+            """Private validation with name conflicts"""
+            if field == "name":
+                return isinstance(value, str) and len(value) > 0
+            elif field == "email":
+                return "@" in str(value) if value else True
+            return False
+
+        def authenticate(self, password: str) -> _cribo.typing.Dict[str, _cribo.typing.Any]:
+            """Method with complex internal conflicts"""
+            validate = self.validate
+            process = self.process
+            Logger = self.Logger
+            result = {}
+            name_valid = validate("name", self.name)
+            email_valid = validate("email", self.email)
+            password_valid = len(password) >= 4
+            auth_data = {"name": self.name, "email": self.email, "password_length": len(password)}
+            process_result = process(auth_data)
+            Logger.validate(f"auth_{self.name}")
+            result = {"user": self.name, "valid": name_valid and email_valid and password_valid, "process_result": process_result, "logger_context": Logger.context}
+            return result
+
+        def connect(self) -> str:
+            """Method with name that conflicts with global functions"""
+            global _cribo_models_user_connection
+            _cribo_models_user_connection = f"user_model_connection_{self.name}"
+            models_user.connection = _cribo_models_user_connection
+            return _cribo_models_user_connection
+    User.__module__ = 'models.user'
+    User.__qualname__ = 'User'
+    self.User = User
+
+    def process_user(data: _cribo.typing.Any) -> str:
+        """Module function with naming conflicts"""
+        global _cribo_models_user_result
+        Logger = self.__dict__["Logger"]
+        validate = lambda x: x is not None
+        logger = Logger("process_user")
+        is_valid = validate(data)
+        if is_valid:
+            logger._log_process(f"Processing user data: {data}")
+            processed = f"model_user_processed: {data}"
+        else:
+            processed = "model_user_invalid_data"
+        _cribo_models_user_result["last_process"] = processed
+        return processed
+    process_user.__module__ = 'models.user'
+    process_user.__qualname__ = 'process_user'
+    self.process_user = process_user
+
+    def validate(user_data: _cribo.typing.Dict[str, _cribo.typing.Any]) -> bool:
+        """Module validate function - conflicts with other validates"""
+        required_fields = ["name"]
+        return all(field in user_data for field in required_fields)
+    validate.__module__ = 'models.user'
+    validate.__qualname__ = 'validate'
+    self.validate = validate
+
+    def process(data: _cribo.typing.Any) -> str:
+        """Module process function - major conflict"""
+        if isinstance(data, dict):
+            return process_user(data)
+        else:
+            return f"model_process_generic: {data}"
+    process.__module__ = 'models.user'
+    process.__qualname__ = 'process'
+    self.process = process
+
+    class Connection:
+        """Model connection class - conflicts with other Connection classes"""
+
+        def __init__(self, User: "User"):
+            self.User = User
+            self.connected = False
+
+        def connect(self) -> str:
+            self.connected = True
+            return f"Model connection for user: {self.User.name}"
+
+        def process(self, action: str) -> str:
+            """Method with conflicted name"""
+            return f"connection_process: {action} for {self.User.name}"
+    Connection.__module__ = 'models.user'
+    Connection.__qualname__ = 'Connection'
+    self.Connection = Connection
+
+    def connect(User: "User") -> Connection:
+        """Module connect function with parameter conflicts"""
+        return self.Connection(User)
+    connect.__module__ = 'models.user'
+    connect.__qualname__ = 'connect'
+    self.connect = connect
+
+    def complex_operation(User: _cribo.typing.Any=None, Logger: _cribo.typing.Any=None, process: _cribo.typing.Any=None, validate: _cribo.typing.Any=None, result: _cribo.typing.Any=None, connection: _cribo.typing.Any=None) -> _cribo.typing.Dict[str, _cribo.typing.Any]:
+        """Function with all parameter names conflicting with globals/classes"""
+        operation_result = {"user_param": User, "logger_param": Logger, "process_param": process, "validate_param": validate, "result_param": result, "connection_param": connection}
+        User = self.__dict__["User"]
+        Logger = self.__dict__["Logger"]
+        if operation_result["user_param"]:
+            user = User("complex_user")
+            logger = Logger("complex_operation")
+            operation_result["created_user"] = user.name
+            operation_result["created_logger"] = logger.context
+        return operation_result
+    complex_operation.__module__ = 'models.user'
+    complex_operation.__qualname__ = 'complex_operation'
+    self.complex_operation = complex_operation
+    self.List = _cribo.typing.List
+    self.Dict = _cribo.typing.Dict
+    self.Any = _cribo.typing.Any
+    self.__initialized__ = True
+    self.__initializing__ = False
+    return self
+models_user.__init__ = _cribo_init___cribo_b57669_models_user
 models = _cribo.types.SimpleNamespace(__name__='models', __initializing__=False, __initialized__=False, __path__=[])
 models.user = models_user
-"""\nUser model with extensive naming conflicts across the project\n"""
-util_process = core_utils_helpers.process
-UtilLogger = core_utils_helpers.Logger
-result_3 = {"model": "user"}
-connection_3 = None
-class Logger_2:
-    """Model Logger class - conflicts with other Logger classes"""
-
-    def __init__(self, context: str):
-        self.context = context
-        self.entries = []
-        self.process = self._log_process
-
-    def _log_process(self, message: str) -> None:
-        self.entries.append(f"{self.context}: {message}")
-
-    def get_message(self) -> str:
-        return f"Model Logger: {self.context}"
-
-    def validate(self, entry: str) -> bool:
-        """Method with name that conflicts with global functions"""
-        return len(entry) > 0
-Logger_2.__module__ = 'models.user'
-Logger_2.__name__ = 'Logger'
-Logger_2.__qualname__ = 'Logger'
-class User_2:
-    """Model User class - major conflict with other User classes"""
-
-    def __init__(self, name: str, email: str=""):
-        self.name = name
-        self.email = email
-        self.active = True
-        self.Logger = Logger_2(f"user_{name}")
-        self.process = self._user_process
-        self.validate = self._user_validate
-        self.result = None
-
-    def _user_process(self, data: _cribo.typing.Any) -> str:
-        """Private method using conflicted names"""
-        util_result = util_process(data)
-        self.Logger.validate(str(data))
-        self.Logger._log_process(f"Processing: {data}")
-        self.result = f"user_model_process: {util_result}"
-        return self.result
-
-    def _user_validate(self, field: str, value: _cribo.typing.Any) -> bool:
-        """Private validation with name conflicts"""
-        if field == "name":
-            return isinstance(value, str) and len(value) > 0
-        elif field == "email":
-            return "@" in str(value) if value else True
-        return False
-
-    def authenticate(self, password: str) -> _cribo.typing.Dict[str, _cribo.typing.Any]:
-        """Method with complex internal conflicts"""
-        validate_4 = self.validate
-        process_4 = self.process
-        Logger_2 = self.Logger
-        result_3 = {}
-        name_valid = validate_4("name", self.name)
-        email_valid = validate_4("email", self.email)
-        password_valid = len(password) >= 4
-        auth_data = {"name": self.name, "email": self.email, "password_length": len(password)}
-        process_result = process_4(auth_data)
-        Logger_2.validate(f"auth_{self.name}")
-        result_3 = {"user": self.name, "valid": name_valid and email_valid and password_valid, "process_result": process_result, "logger_context": Logger_2.context}
-        return result_3
-
-    def connect(self) -> str:
-        """Method with name that conflicts with global functions"""
-        global connection_3
-        connection_3 = f"user_model_connection_{self.name}"
-        return connection_3
-User_2.__module__ = 'models.user'
-User_2.__name__ = 'User'
-User_2.__qualname__ = 'User'
-def process_user(data: _cribo.typing.Any) -> str:
-    """Module function with naming conflicts"""
-    global result_3
-    Logger_2 = globals()["Logger"]
-    validate_4 = lambda x: x is not None
-    logger = Logger_2("process_user")
-    is_valid = validate_4(data)
-    if is_valid:
-        logger._log_process(f"Processing user data: {data}")
-        processed = f"model_user_processed: {data}"
-    else:
-        processed = "model_user_invalid_data"
-    result_3["last_process"] = processed
-    return processed
-process_user.__module__ = 'models.user'
-models_user.Logger = Logger_2
-models_user.User = User_2
-models_user.connection = connection_3
-models_user.process_user = process_user
-models_user.result = result_3
 models_base = _cribo.types.SimpleNamespace(__name__='models.base', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('models.base', models_base)
 models.base = models_base
@@ -307,13 +397,17 @@ def _cribo_init___cribo_98ecc1_models(self):
     self.__initializing__ = True
     self.__package__ = 'models'
     self.__doc__ = None
-    global models_base
-    User = User_2
-    models.User = User
-    Logger = Logger_2
-    models.Logger = Logger
+    global models_base, models_user
+    models_user = _cribo_init___cribo_b57669_models_user(models_user)
+    User = models_user.User
+    self.User = User
+    self.User = User
+    Logger = models_user.Logger
+    self.Logger = Logger
+    self.Logger = Logger
     process_user = models_user.process_user
-    models.process_user = process_user
+    self.process_user = process_user
+    self.process_user = process_user
     models_base = _cribo_init___cribo_bca2f6_models_base(models_base)
     initialize = models_base.initialize
     self.initialize = initialize
@@ -324,7 +418,6 @@ def _cribo_init___cribo_98ecc1_models(self):
     self.validate = validate
     connection = "models_connection_string"
     self.connection = connection
-    self.user = models_user
     self.__initialized__ = True
     self.__initializing__ = False
     return self
@@ -339,6 +432,7 @@ def _cribo_init___cribo_bca2f6_models_base(self):
     self.__package__ = 'models'
     self.__doc__ = '\nBase model functionality with relative import conflicts\n'
     global _cribo_models_base_result
+    global models_user
     """\nBase model functionality with relative import conflicts\n"""
     Any = _cribo.typing.Any
     self.Any = Any
@@ -346,8 +440,10 @@ def _cribo_init___cribo_bca2f6_models_base(self):
     self.Dict = Dict
     core_validate = validate_6
     models_base.core_validate = core_validate
-    UserLogger = Logger_2
-    models_base.UserLogger = UserLogger
+    models_user = _cribo_init___cribo_b57669_models_user(models_user)
+    UserLogger = models.user.Logger
+    self.UserLogger = UserLogger
+    self.UserLogger = UserLogger
     result = "base_result"
     _cribo_models_base_result = result
     self.result = _cribo_models_base_result
@@ -473,6 +569,7 @@ core_database = _cribo.types.SimpleNamespace(__name__='core.database', __initial
 core.database = core_database
 core_database.connection = core_database_connection
 """\nDatabase connection module with naming conflicts\n"""
+models_user = models_user.__init__(models_user)
 helper_validate = core_utils_helpers.validate
 result_8 = []
 connection_5 = None
@@ -501,7 +598,7 @@ def process_7(data):
     """Database process function - conflicts with other process functions"""
     global result_8
     validated = helper_validate(data)
-    user_result = process_user(data)
+    user_result = models.user.process_user(data)
     processed = {"db_process": True, "data": validated, "user_processing": user_result, "timestamp": "2024-01-01"}
     result_8.append(processed)
     return f"db_processed: {data}"
@@ -740,6 +837,7 @@ def _cribo_init___cribo_b16105_services_auth(self):
 services_auth.__init__ = _cribo_init___cribo_b16105_services_auth
 """\nComprehensive AST rewriter test fixture - Main entry point\nThis module demonstrates complex naming conflicts and import scenarios\n"""
 db_process = core_database_connection.process
+UtilLogger = core_utils_helpers.Logger
 __cribo_init_result = _cribo_init___cribo_93a195_services(services)
 for attr in dir(__cribo_init_result):
     if not attr.startswith('_'):
@@ -751,8 +849,14 @@ for attr in dir(__cribo_init_result):
 services_auth_manager = _cribo_init___cribo_ee1d45_services_auth_manager(services_auth_manager)
 auth_process = services.auth.manager.process
 auth_validate = services.auth.manager.validate
-UserModel = models_user.User
-Logger = models_user.Logger
+__cribo_init_result = _cribo_init___cribo_98ecc1_models(models)
+for attr in dir(__cribo_init_result):
+    if not attr.startswith('_'):
+        setattr(models, attr, getattr(__cribo_init_result, attr))
+models_user = _cribo_init___cribo_b57669_models_user(models_user)
+UserModel = models.user.User
+process_user = models.user.process_user
+Logger = models.user.Logger
 __cribo_init_result = _cribo_init___cribo_98ecc1_models(models)
 for attr in dir(__cribo_init_result):
     if not attr.startswith('_'):
@@ -815,4 +919,5 @@ if __name__ == "__main__":
     results = main()
     print("Comprehensive AST rewriter test completed")
     print(f"Final results: {results}")
-user = models.user
+utils = core.utils
+database = core.database
