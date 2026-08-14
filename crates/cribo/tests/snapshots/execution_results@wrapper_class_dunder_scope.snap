@@ -4,6 +4,6 @@ input_file: crates/cribo/tests/fixtures/wrapper_class_dunder_scope/main.py
 ---
 ExecutionResults {
     status: Success,
-    stdout: "provider loaded\nbody: local\nmethod: provider\ninner: provider",
+    stdout: "provider loaded\nbody: local\nmethod: provider\ninner: provider\nconditional: provider",
     stderr: "",
 }

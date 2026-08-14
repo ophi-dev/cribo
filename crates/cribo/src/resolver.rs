@@ -405,6 +405,14 @@ struct UnbundlablePatternDetector {
 }
 
 impl UnbundlablePatternDetector {
+    /// Whether binding this name would hijack the namespace-introspection
+    /// rewrites: wrapper finalization redirects zero-argument `globals()` and
+    /// `locals()` calls to the generated module namespace without checking
+    /// for local rebindings of those names.
+    fn name_shadows_namespace_introspection(name: &str) -> bool {
+        matches!(name, "globals" | "locals")
+    }
+
     /// Whether an expression denotes (or plausibly denotes) `types.ModuleType`.
     fn mentions_module_type(expr: &ruff_python_ast::Expr) -> bool {
         use ruff_python_ast::Expr;
@@ -753,12 +761,41 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
             return;
         }
         match stmt {
+            // Rebinding the name `globals` or `locals` hijacks the namespace
+            // introspection rewrites: wrapper finalization redirects every
+            // zero-argument `globals()`/`locals()` call to the generated
+            // module namespace without checking bindings, so a provider-defined
+            // callable of the same name would silently be replaced
+            Stmt::FunctionDef(func_def) => {
+                if Self::name_shadows_namespace_introspection(func_def.name.as_str())
+                    || func_def.parameters.iter().any(|param| {
+                        Self::name_shadows_namespace_introspection(param.name().as_str())
+                    })
+                {
+                    self.found = true;
+                    return;
+                }
+            }
+            Stmt::ClassDef(class_def) => {
+                if Self::name_shadows_namespace_introspection(class_def.name.as_str()) {
+                    self.found = true;
+                    return;
+                }
+            }
             Stmt::Import(import_stmt) => {
                 if import_stmt
                     .names
                     .iter()
                     .any(|alias| Self::module_is_metadata_api(alias.name.as_str()))
                 {
+                    self.found = true;
+                    return;
+                }
+                if import_stmt.names.iter().any(|alias| {
+                    Self::name_shadows_namespace_introspection(
+                        alias.asname.as_ref().unwrap_or(&alias.name).as_str(),
+                    )
+                }) {
                     self.found = true;
                     return;
                 }
@@ -802,6 +839,14 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
                         record_import_module_aliases(import_from, &mut self.dynamic_import_aliases);
                     }
                 }
+                if import_from.names.iter().any(|alias| {
+                    Self::name_shadows_namespace_introspection(
+                        alias.asname.as_ref().unwrap_or(&alias.name).as_str(),
+                    )
+                }) {
+                    self.found = true;
+                    return;
+                }
             }
             _ => {}
         }
@@ -826,6 +871,25 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
                 name.id.as_str(),
                 "__file__" | "__spec__" | "__path__" | "__loader__" | "__cached__"
             )
+        {
+            self.found = true;
+            return;
+        }
+        // Rebinding `globals`/`locals` through any store (assignment, loop or
+        // with target, walrus, del) hijacks the namespace-introspection
+        // rewrites (see `name_shadows_namespace_introspection`)
+        if let Expr::Name(name) = expr
+            && !name.ctx.is_load()
+            && Self::name_shadows_namespace_introspection(name.id.as_str())
+        {
+            self.found = true;
+            return;
+        }
+        if let Expr::Lambda(lambda) = expr
+            && let Some(parameters) = &lambda.parameters
+            && parameters
+                .iter()
+                .any(|param| Self::name_shadows_namespace_introspection(param.name().as_str()))
         {
             self.found = true;
             return;
@@ -3125,6 +3189,8 @@ impl ModuleResolver {
             && !source.contains("exec")
             && !source.contains("eval")
             && !source.contains("vars")
+            && !source.contains("globals")
+            && !source.contains("locals")
             && !Self::source_has_module_level_annotation_candidate(source)
             && !source.contains("pkg_resources")
             && !source.contains("pkgutil")

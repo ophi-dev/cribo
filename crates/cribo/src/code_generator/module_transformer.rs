@@ -239,7 +239,17 @@ impl ImportGlobalRewriter<'_> {
             replacement: self.replacement,
             names: inner_names,
         };
-        for stmt in &mut class_def.body {
+        self.rewrite_class_suite(&body_rewriter, &mut class_def.body);
+    }
+
+    /// Rewrite one class-body statement suite: direct class-body expressions
+    /// (including compound-statement headers like `if` tests and `for`
+    /// iterables) see the class-namespace filtering of `body_rewriter`, while
+    /// function and class definitions — however deeply nested in module-level
+    /// control flow — resolve globals from the ENCLOSING module scope (`self`).
+    fn rewrite_class_suite(&self, body_rewriter: &Self, stmts: &mut [Stmt]) {
+        use ruff_python_ast::visitor::transformer::Transformer as _;
+        for stmt in stmts {
             match stmt {
                 // Method bodies resolve globals from the MODULE, not the class
                 // namespace: analyze them against the enclosing module scope
@@ -247,6 +257,58 @@ impl ImportGlobalRewriter<'_> {
                 // Nested class bodies likewise skip the enclosing class
                 // namespace and fall through to the module scope
                 Stmt::ClassDef(nested) => self.rewrite_class(nested),
+                Stmt::If(if_stmt) => {
+                    body_rewriter.visit_expr(&mut if_stmt.test);
+                    self.rewrite_class_suite(body_rewriter, &mut if_stmt.body);
+                    for clause in &mut if_stmt.elif_else_clauses {
+                        if let Some(clause_test) = &mut clause.test {
+                            body_rewriter.visit_expr(clause_test);
+                        }
+                        self.rewrite_class_suite(body_rewriter, &mut clause.body);
+                    }
+                }
+                Stmt::While(while_stmt) => {
+                    body_rewriter.visit_expr(&mut while_stmt.test);
+                    self.rewrite_class_suite(body_rewriter, &mut while_stmt.body);
+                    self.rewrite_class_suite(body_rewriter, &mut while_stmt.orelse);
+                }
+                Stmt::For(for_stmt) => {
+                    body_rewriter.visit_expr(&mut for_stmt.target);
+                    body_rewriter.visit_expr(&mut for_stmt.iter);
+                    self.rewrite_class_suite(body_rewriter, &mut for_stmt.body);
+                    self.rewrite_class_suite(body_rewriter, &mut for_stmt.orelse);
+                }
+                Stmt::With(with_stmt) => {
+                    for item in &mut with_stmt.items {
+                        body_rewriter.visit_expr(&mut item.context_expr);
+                        if let Some(optional_vars) = &mut item.optional_vars {
+                            body_rewriter.visit_expr(optional_vars);
+                        }
+                    }
+                    self.rewrite_class_suite(body_rewriter, &mut with_stmt.body);
+                }
+                Stmt::Try(try_stmt) => {
+                    self.rewrite_class_suite(body_rewriter, &mut try_stmt.body);
+                    for handler in &mut try_stmt.handlers {
+                        let ExceptHandler::ExceptHandler(handler) = handler;
+                        if let Some(type_) = &mut handler.type_ {
+                            body_rewriter.visit_expr(type_);
+                        }
+                        self.rewrite_class_suite(body_rewriter, &mut handler.body);
+                    }
+                    self.rewrite_class_suite(body_rewriter, &mut try_stmt.orelse);
+                    self.rewrite_class_suite(body_rewriter, &mut try_stmt.finalbody);
+                }
+                Stmt::Match(match_stmt) => {
+                    body_rewriter.visit_expr(&mut match_stmt.subject);
+                    for case in &mut match_stmt.cases {
+                        body_rewriter.visit_pattern(&mut case.pattern);
+                        if let Some(guard) = &mut case.guard {
+                            body_rewriter.visit_expr(guard);
+                        }
+                        self.rewrite_class_suite(body_rewriter, &mut case.body);
+                    }
+                }
                 _ => body_rewriter.visit_stmt(stmt),
             }
         }

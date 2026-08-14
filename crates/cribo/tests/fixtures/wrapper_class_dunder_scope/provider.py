@@ -14,3 +14,9 @@ class Reporter:
     class Inner:
         def module_name(self):
             return __name__
+
+    if True:
+        def conditional(self):
+            # Methods defined under class-body control flow still resolve
+            # globals from MODULE scope
+            return __name__

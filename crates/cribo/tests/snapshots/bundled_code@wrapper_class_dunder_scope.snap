@@ -106,10 +106,10 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
         break
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
-_cribo_finder_local.register('provider', '_cribo_init___cribo_6de60f_provider', 'provider', False)
+_cribo_finder_local.register('provider', '_cribo_init___cribo_f82e44_provider', 'provider', False)
 provider = _cribo.types.SimpleNamespace(__name__='provider', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('provider', provider)
-def _cribo_init___cribo_6de60f_provider(_cribo_self):
+def _cribo_init___cribo_f82e44_provider(_cribo_self):
     if getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if getattr(_cribo_self, '__initializing__', False):
@@ -130,16 +130,21 @@ def _cribo_init___cribo_6de60f_provider(_cribo_self):
 
             def module_name(self):
                 return _cribo_self.__name__
+        if True:
+
+            def conditional(self):
+                return _cribo_self.__name__
     Reporter.__module__ = 'provider'
     Reporter.__qualname__ = 'Reporter'
     _cribo_self.Reporter = Reporter
     _cribo_self.__initialized__ = True
     _cribo_self.__initializing__ = False
     return _cribo_self
-provider.__init__ = _cribo_init___cribo_6de60f_provider
+provider.__init__ = _cribo_init___cribo_f82e44_provider
 """Class-body vs method scoping of import globals in a wrapper module.\n\nA class attribute named __name__ shadows the module global only for\ndirect class-body expressions; methods and nested-class methods resolve\n__name__ from the MODULE scope.\n"""
-provider = _cribo_init___cribo_6de60f_provider(provider)
+provider = _cribo_init___cribo_f82e44_provider(provider)
 Reporter = provider.Reporter
 print("body:", Reporter.seen_in_body)
 print("method:", Reporter().module_name())
 print("inner:", Reporter.Inner().module_name())
+print("conditional:", Reporter().conditional())

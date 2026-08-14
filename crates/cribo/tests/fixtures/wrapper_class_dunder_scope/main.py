@@ -10,3 +10,4 @@ from provider import Reporter
 print("body:", Reporter.seen_in_body)
 print("method:", Reporter().module_name())
 print("inner:", Reporter.Inner().module_name())
+print("conditional:", Reporter().conditional())
