@@ -186,6 +186,16 @@ impl ImportGlobalRewriter<'_> {
         if let Some(returns) = &mut func_def.returns {
             self.visit_expr(returns);
         }
+        if let Some(vararg) = &mut func_def.parameters.vararg
+            && let Some(annotation) = &mut vararg.annotation
+        {
+            self.visit_expr(annotation);
+        }
+        if let Some(kwarg) = &mut func_def.parameters.kwarg
+            && let Some(annotation) = &mut kwarg.annotation
+        {
+            self.visit_expr(annotation);
+        }
         let inner_names = self.unshadowed_names(Some(&func_def.parameters), &func_def.body);
         if !inner_names.is_empty() {
             let inner = ImportGlobalRewriter {

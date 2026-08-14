@@ -2824,6 +2824,19 @@ impl ModuleResolver {
             return true;
         }
 
+        // A distribution that STAYS EXTERNAL (native artifacts, unusable
+        // metadata) lands in requirements, and the installer pulls its
+        // Requires-Dist targets in transitively: bundling such a target would
+        // split module identity between the inlined copy (used by bundled
+        // code) and the installed copy (imported by the external dependent)
+        if self.external_distribution_depends_on_import(search_root, module_name) {
+            debug!(
+                "Import '{module_name}' is a Requires-Dist target of a distribution that stays \
+                 external; keeping it external to preserve module identity"
+            );
+            return true;
+        }
+
         // Providers of one PEP 420 namespace stay external TOGETHER: bundling one
         // child while a sibling provider stays external would rebind the namespace
         // root to the real namespace at runtime, hiding the bundled-only children
@@ -3162,12 +3175,16 @@ impl ModuleResolver {
     }
 
     /// Whether a module-scope statement list binds a PEP 562 hook
-    /// Cheap textual gate for module-level annotations: a non-indented line
-    /// containing ':' that is not a compound-statement, comment, string, or
-    /// import line. Over-inclusive (it merely triggers AST analysis).
+    /// Cheap textual gate for module-level annotations: any line containing
+    /// ':' whose first token is not a compound-statement keyword, comment,
+    /// string, or import. Indented lines count too — module-level annotations
+    /// may live inside `if`/`try` suites (function-local ones are filtered by
+    /// the AST check, which does not enter nested scopes). Over-inclusive (it
+    /// merely triggers AST analysis).
     fn source_has_module_level_annotation_candidate(source: &str) -> bool {
         source.lines().any(|line| {
-            if line.starts_with([' ', '\t']) || !line.contains(':') {
+            let line = line.trim_start();
+            if !line.contains(':') {
                 return false;
             }
             let keyword = line.split([' ', '(', ':']).next().unwrap_or("");
@@ -3906,6 +3923,58 @@ impl ModuleResolver {
                     })
                 })
             })
+        })
+    }
+
+    /// Return whether a distribution that is GUARANTEED to stay external
+    /// (ships native artifacts, or has missing/unparsable core metadata)
+    /// declares an extras-independent `Requires-Dist` edge on this import's
+    /// owner. Such a declarer lands in the emitted requirements, and the
+    /// installer resolves its dependency edges transitively: the external
+    /// dependent then imports the INSTALLED copy of the target while bundled
+    /// code uses the inlined copy, splitting class identity and module state.
+    fn external_distribution_depends_on_import(
+        &self,
+        site_packages_dir: &Path,
+        import_name: &str,
+    ) -> bool {
+        use std::str::FromStr;
+        self.with_distribution_ownership_index(site_packages_dir, |index| {
+            let owner_names: Vec<String> = index
+                .owning_distributions(import_name)
+                .iter()
+                .filter(|owner| !owner.name.is_empty())
+                .map(|owner| Self::normalize_distribution_name(&owner.name))
+                .collect();
+            if owner_names.is_empty() {
+                return false;
+            }
+            index
+                .distributions
+                .iter()
+                .filter(|declarer| {
+                    declarer.ships_native_artifacts
+                        || declarer.missing_core_metadata
+                        || declarer.unparsable_requirements
+                })
+                .any(|declarer| {
+                    let declarer_name = Self::normalize_distribution_name(&declarer.name);
+                    declarer.requires_dist.iter().any(|entry| {
+                        let Ok(parsed) =
+                            pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(entry)
+                        else {
+                            return false;
+                        };
+                        // Edges that can only apply with extras enabled are
+                        // not active for a plain installation
+                        if !parsed.marker.evaluate_extras(&[]) {
+                            return false;
+                        }
+                        let target = Self::normalize_distribution_name(parsed.name.as_ref());
+                        // Self-edges cannot split identity
+                        target != declarer_name && owner_names.contains(&target)
+                    })
+                })
         })
     }
 
