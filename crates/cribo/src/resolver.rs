@@ -843,15 +843,27 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
             self.found = true;
             return;
         }
-        // `exec(...)` publishes names dynamically: inside a generated wrapper
-        // initializer the created names land in the init function's frame
-        // instead of the module namespace, and export collection cannot see
-        // them. Any exec call keeps the provider external.
+        // `exec(...)` and `eval(...)` publish names or perform imports through
+        // dynamically evaluated strings: inside a generated wrapper initializer
+        // exec'd names land in the function frame instead of the module
+        // namespace, and eval'd payloads can import modules no discovery ever
+        // saw. Any such call keeps the provider external. No-argument `vars()`
+        // is the module namespace in a real module but the initializer's local
+        // dictionary inside a wrapper, so it blocks bundling likewise.
         if let Expr::Call(call) = expr
-            && matches!(&*call.func, Expr::Name(callee) if callee.id.as_str() == "exec")
+            && let Expr::Name(callee) = &*call.func
         {
-            self.found = true;
-            return;
+            match callee.id.as_str() {
+                "exec" | "eval" => {
+                    self.found = true;
+                    return;
+                }
+                "vars" if call.arguments.args.is_empty() && call.arguments.keywords.is_empty() => {
+                    self.found = true;
+                    return;
+                }
+                _ => {}
+            }
         }
         // Module-type identity checks (`isinstance(sys.modules[__name__],
         // types.ModuleType)`, `type(x) is types.ModuleType`) distinguish real
@@ -2799,6 +2811,19 @@ impl ModuleResolver {
             return true;
         }
 
+        // Another installed distribution may pin this import's owner to a
+        // version range its installed copy does not provably satisfy (e.g. a
+        // Windows-only `B>=2` over installed B 1.0): bundling would freeze the
+        // violating copy into the deployment
+        if self.distribution_with_unsatisfiable_incoming_edge_owns_import(search_root, module_name)
+        {
+            debug!(
+                "Import '{module_name}' is owned by a distribution that another distribution \
+                 pins to an unsatisfied version range; keeping it external"
+            );
+            return true;
+        }
+
         // Providers of one PEP 420 namespace stay external TOGETHER: bundling one
         // child while a sibling provider stays external would rebind the namespace
         // root to the real namespace at runtime, hiding the bundled-only children
@@ -3085,6 +3110,9 @@ impl ModuleResolver {
             && !source.contains("__class__")
             && !source.contains("ModuleType")
             && !source.contains("exec")
+            && !source.contains("eval")
+            && !source.contains("vars")
+            && !Self::source_has_module_level_annotation_candidate(source)
             && !source.contains("pkg_resources")
             && !source.contains("pkgutil")
             && !source.contains("runpy")
@@ -3104,6 +3132,13 @@ impl ModuleResolver {
             // Conservative: unparsable source keeps the package external
             return true;
         };
+        // Module-level annotations create `__annotations__` on real modules;
+        // neither the inlined nor the wrapper path reproduces that metadata
+        // (and value-less annotations vanish inside a function frame), so
+        // annotated providers stay external
+        if Self::stmts_bind_module_annotations(&parsed.syntax().body) {
+            return true;
+        }
         // PEP 562 module-level __getattr__/__dir__ hooks participate in attribute
         // lookup only on REAL module objects; generated SimpleNamespace instances
         // ignore instance attributes with these names, so lazy exports and
@@ -3124,6 +3159,81 @@ impl ModuleResolver {
             detector.visit_stmt(stmt);
         }
         detector.found
+    }
+
+    /// Whether a module-scope statement list binds a PEP 562 hook
+    /// Cheap textual gate for module-level annotations: a non-indented line
+    /// containing ':' that is not a compound-statement, comment, string, or
+    /// import line. Over-inclusive (it merely triggers AST analysis).
+    fn source_has_module_level_annotation_candidate(source: &str) -> bool {
+        source.lines().any(|line| {
+            if line.starts_with([' ', '\t']) || !line.contains(':') {
+                return false;
+            }
+            let keyword = line.split([' ', '(', ':']).next().unwrap_or("");
+            !keyword.is_empty()
+                && !matches!(
+                    keyword,
+                    "def"
+                        | "class"
+                        | "if"
+                        | "elif"
+                        | "else"
+                        | "for"
+                        | "while"
+                        | "with"
+                        | "try"
+                        | "except"
+                        | "finally"
+                        | "match"
+                        | "case"
+                        | "import"
+                        | "from"
+                )
+                && !keyword.starts_with(['#', '"', '\''])
+        })
+    }
+
+    /// Whether a module-scope statement list contains an annotated assignment
+    /// binding a plain name (`TOKEN: str`, `LIMIT: int = 10`), looking through
+    /// module-level control-flow suites but NOT into function or class scopes.
+    /// Real modules expose these through `__annotations__`, which generated
+    /// namespaces do not reproduce.
+    fn stmts_bind_module_annotations(body: &[ruff_python_ast::Stmt]) -> bool {
+        use ruff_python_ast::{Expr, Stmt};
+        body.iter().any(|stmt| match stmt {
+            Stmt::AnnAssign(ann_assign) => matches!(&*ann_assign.target, Expr::Name(_)),
+            Stmt::If(if_stmt) => {
+                Self::stmts_bind_module_annotations(&if_stmt.body)
+                    || if_stmt
+                        .elif_else_clauses
+                        .iter()
+                        .any(|clause| Self::stmts_bind_module_annotations(&clause.body))
+            }
+            Stmt::Try(try_stmt) => {
+                Self::stmts_bind_module_annotations(&try_stmt.body)
+                    || try_stmt.handlers.iter().any(|handler| {
+                        let ruff_python_ast::ExceptHandler::ExceptHandler(handler) = handler;
+                        Self::stmts_bind_module_annotations(&handler.body)
+                    })
+                    || Self::stmts_bind_module_annotations(&try_stmt.orelse)
+                    || Self::stmts_bind_module_annotations(&try_stmt.finalbody)
+            }
+            Stmt::For(for_stmt) => {
+                Self::stmts_bind_module_annotations(&for_stmt.body)
+                    || Self::stmts_bind_module_annotations(&for_stmt.orelse)
+            }
+            Stmt::While(while_stmt) => {
+                Self::stmts_bind_module_annotations(&while_stmt.body)
+                    || Self::stmts_bind_module_annotations(&while_stmt.orelse)
+            }
+            Stmt::With(with_stmt) => Self::stmts_bind_module_annotations(&with_stmt.body),
+            Stmt::Match(match_stmt) => match_stmt
+                .cases
+                .iter()
+                .any(|case| Self::stmts_bind_module_annotations(&case.body)),
+            _ => false,
+        })
     }
 
     /// Whether a module-scope statement list binds a PEP 562 hook
@@ -3735,6 +3845,67 @@ impl ModuleResolver {
                 .owning_distributions(import_name)
                 .iter()
                 .any(|distribution| distribution.unparsable_requirements)
+        })
+    }
+
+    /// Return whether another installed distribution declares a versioned
+    /// `Requires-Dist` edge on an import's owner that the owner's installed
+    /// Version does NOT provably satisfy (edges gated purely on extras are
+    /// ignored). Bundling such an owner would embed a copy that violates the
+    /// constraint on platforms where the edge's marker applies: the installer
+    /// must stay in charge of selecting a compatible version.
+    fn distribution_with_unsatisfiable_incoming_edge_owns_import(
+        &self,
+        site_packages_dir: &Path,
+        import_name: &str,
+    ) -> bool {
+        use std::str::FromStr;
+        self.with_distribution_ownership_index(site_packages_dir, |index| {
+            let owners = index.owning_distributions(import_name);
+            if owners.is_empty() {
+                return false;
+            }
+            let owner_facts: Vec<(String, Option<pep508_rs::pep440_rs::Version>)> = owners
+                .iter()
+                .filter(|owner| !owner.name.is_empty())
+                .map(|owner| {
+                    (
+                        Self::normalize_distribution_name(&owner.name),
+                        owner.version.as_deref().and_then(|version| {
+                            pep508_rs::pep440_rs::Version::from_str(version).ok()
+                        }),
+                    )
+                })
+                .collect();
+            if owner_facts.is_empty() {
+                return false;
+            }
+            index.distributions.iter().any(|declarer| {
+                declarer.requires_dist.iter().any(|entry| {
+                    let Ok(parsed) =
+                        pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(entry)
+                    else {
+                        return false;
+                    };
+                    // Edges that can only apply with extras enabled are not
+                    // active for a plain installation
+                    if !parsed.marker.evaluate_extras(&[]) {
+                        return false;
+                    }
+                    let Some(pep508_rs::VersionOrUrl::VersionSpecifier(specifiers)) =
+                        &parsed.version_or_url
+                    else {
+                        return false;
+                    };
+                    let target = Self::normalize_distribution_name(parsed.name.as_ref());
+                    owner_facts.iter().any(|(owner_name, owner_version)| {
+                        *owner_name == target
+                            && !owner_version
+                                .as_ref()
+                                .is_some_and(|version| specifiers.contains(version))
+                    })
+                })
+            })
         })
     }
 

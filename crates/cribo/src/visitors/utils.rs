@@ -567,6 +567,11 @@ pub(crate) fn imported_module_dunder_read_targets(
     /// module object serves the same dunder reads as the import binding.
     struct ImportBindingCollector {
         bindings: FxIndexMap<String, String>,
+        /// Binding names known to hold WHOLE MODULE OBJECTS (`import X`,
+        /// `import a.b as m`, and aliases thereof): identity-sensitive
+        /// contexts (hashing) only apply to these, because from-imported
+        /// names are usually plain values
+        whole_module_bindings: FxIndexSet<String>,
         changed: bool,
     }
 
@@ -577,10 +582,10 @@ pub(crate) fn imported_module_dunder_read_targets(
                     for alias in &import_stmt.names {
                         let module_name = alias.name.as_str();
                         if let Some(asname) = &alias.asname {
-                            self.insert(asname.as_str(), module_name.to_owned());
+                            self.insert(asname.as_str(), module_name.to_owned(), true);
                         } else {
                             let top_level = module_name.split('.').next().unwrap_or(module_name);
-                            self.insert(top_level, top_level.to_owned());
+                            self.insert(top_level, top_level.to_owned(), true);
                         }
                     }
                 }
@@ -595,7 +600,11 @@ pub(crate) fn imported_module_dunder_read_targets(
                                 .as_ref()
                                 .map_or_else(|| alias.name.as_str(), |name| name.as_str());
                             // `from pkg import sub` may bind the submodule
-                            self.insert(bound_name, format!("{module}.{}", alias.name.as_str()));
+                            self.insert(
+                                bound_name,
+                                format!("{module}.{}", alias.name.as_str()),
+                                false,
+                            );
                         }
                     }
                 }
@@ -606,9 +615,10 @@ pub(crate) fn imported_module_dunder_read_targets(
                     if let Expr::Name(value) = &*assign.value
                         && let Some(module) = self.bindings.get(value.id.as_str()).cloned()
                     {
+                        let whole = self.whole_module_bindings.contains(value.id.as_str());
                         for target in &assign.targets {
                             if let Expr::Name(target_name) = target {
-                                self.insert(target_name.id.as_str(), module.clone());
+                                self.insert(target_name.id.as_str(), module.clone(), whole);
                             }
                         }
                     }
@@ -619,7 +629,8 @@ pub(crate) fn imported_module_dunder_read_targets(
                         && let Some(module) = self.bindings.get(value_name.id.as_str()).cloned()
                         && let Expr::Name(target_name) = &*ann_assign.target
                     {
-                        self.insert(target_name.id.as_str(), module);
+                        let whole = self.whole_module_bindings.contains(value_name.id.as_str());
+                        self.insert(target_name.id.as_str(), module, whole);
                     }
                 }
                 _ => {}
@@ -629,9 +640,12 @@ pub(crate) fn imported_module_dunder_read_targets(
     }
 
     impl ImportBindingCollector {
-        fn insert(&mut self, name: &str, module: String) {
+        fn insert(&mut self, name: &str, module: String, whole_module: bool) {
             if self.bindings.get(name) != Some(&module) {
                 self.bindings.insert(name.to_owned(), module);
+                self.changed = true;
+            }
+            if whole_module && self.whole_module_bindings.insert(name.to_owned()) {
                 self.changed = true;
             }
         }
@@ -640,6 +654,7 @@ pub(crate) fn imported_module_dunder_read_targets(
     struct DunderReadCollector {
         observed: FxIndexSet<String>,
         bindings: FxIndexMap<String, String>,
+        whole_module_bindings: FxIndexSet<String>,
     }
 
     /// Inspect APIs that need a REAL module object: source-inspection needs an
@@ -757,6 +772,23 @@ pub(crate) fn imported_module_dunder_read_targets(
                 _ => None,
             }
         }
+
+        /// Return whether a call creates a weak reference (`weakref.ref`,
+        /// `weakref.proxy`, or their from-imported forms).
+        fn is_weakref_call(&self, call: &ruff_python_ast::ExprCall) -> bool {
+            match &*call.func {
+                Expr::Attribute(attribute) => {
+                    matches!(attribute.attr.as_str(), "ref" | "proxy")
+                        && matches!(&*attribute.value, Expr::Name(base)
+                            if self.bindings.get(base.id.as_str()).is_some_and(|module| module == "weakref"))
+                }
+                Expr::Name(name) => self
+                    .bindings
+                    .get(name.id.as_str())
+                    .is_some_and(|module| module == "weakref.ref" || module == "weakref.proxy"),
+                _ => false,
+            }
+        }
     }
 
     impl<'ast> Visitor<'ast> for DunderReadCollector {
@@ -814,17 +846,28 @@ pub(crate) fn imported_module_dunder_read_targets(
                     }
                 }
             }
+            // weakref.ref(provider) / weakref.proxy(provider): Python modules
+            // support weak references, a generated SimpleNamespace does not
+            if let Expr::Call(call) = expr
+                && Self::is_weakref_call(self, call)
+                && let Some(Expr::Name(argument)) = call.arguments.args.first()
+                && let Some(module_name) = self.bindings.get(argument.id.as_str())
+                && module_name != "weakref"
+            {
+                self.observed.insert(module_name.clone());
+            }
             // Hash-requiring contexts: real modules are identity-hashable but a
             // generated SimpleNamespace is not, so an imported provider used as
             // a dict key, set element, hash() argument, or subscript key must
             // stay a real installed module. Only WHOLE-MODULE bindings
-            // (`import provider`) are recorded: from-imported names are
-            // usually plain values, and subscripting by them is pervasive.
+            // (`import provider`, `import a.b as m`, and aliases) are
+            // recorded: from-imported names are usually plain values, and
+            // subscripting by them is pervasive.
             let module_binding = |name: &str| {
-                self.bindings
-                    .get(name)
-                    .filter(|module| !module.contains('.'))
-                    .cloned()
+                self.whole_module_bindings
+                    .contains(name)
+                    .then(|| self.bindings.get(name).cloned())
+                    .flatten()
             };
             match expr {
                 Expr::Dict(dict) => {
@@ -868,6 +911,7 @@ pub(crate) fn imported_module_dunder_read_targets(
 
     let mut binding_collector = ImportBindingCollector {
         bindings: FxIndexMap::default(),
+        whole_module_bindings: FxIndexSet::default(),
         changed: false,
     };
     // Alias chains (`a = provider; b = a`) resolve iteratively; textual order
@@ -884,6 +928,7 @@ pub(crate) fn imported_module_dunder_read_targets(
     let mut collector = DunderReadCollector {
         observed: FxIndexSet::default(),
         bindings: binding_collector.bindings,
+        whole_module_bindings: binding_collector.whole_module_bindings,
     };
     for stmt in body {
         collector.visit_stmt(stmt);
