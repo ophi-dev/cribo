@@ -8425,6 +8425,9 @@ def read(package):
     fn test_dynamic_import_detection() {
         for source in [
             "import importlib\nimportlib.import_module(f'.{name}', __package__)\n",
+            // A LITERAL relative name with a non-literal package context is
+            // equally unresolvable: `__package__` cannot be evaluated statically
+            "import importlib\nimportlib.import_module('.helper', __package__)\n",
             // An arbitrary receiver may be the real importlib passed in by the
             // consumer: discovery never resolves such calls, even literal ones
             "def load(loader):\n    return loader.import_module('provider.backend')\n",
