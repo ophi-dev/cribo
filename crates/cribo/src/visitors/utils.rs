@@ -123,10 +123,50 @@ pub(crate) fn accesses_own_sys_modules_entry(body: &[ruff_python_ast::Stmt]) -> 
     use crate::types::FxIndexSet;
 
     /// Collect every alias bound to `sys` or to `sys.modules`, anywhere in the body
-    /// (aliases may be imported after the use site inside functions).
+    /// (aliases may be imported after the use site inside functions). Assignment-
+    /// derived aliases (`loaded = sys.modules`, `system = sys`) rebind the same
+    /// objects under new names, so they propagate too (fixpoint over chains).
     struct AliasCollector {
         sys_aliases: FxIndexSet<String>,
         modules_aliases: FxIndexSet<String>,
+        changed: bool,
+    }
+
+    impl AliasCollector {
+        /// Whether an expression denotes the `sys.modules` object through the
+        /// collected aliases.
+        fn value_is_sys_modules(&self, expr: &Expr) -> bool {
+            match expr {
+                Expr::Attribute(attribute) if attribute.attr.as_str() == "modules" => {
+                    matches!(&*attribute.value, Expr::Name(name) if self.sys_aliases.contains(name.id.as_str()))
+                }
+                Expr::Name(name) => self.modules_aliases.contains(name.id.as_str()),
+                _ => false,
+            }
+        }
+
+        fn record_assignment_alias(&mut self, targets: &[Expr], value: &Expr) {
+            let is_modules = self.value_is_sys_modules(value);
+            let is_sys = !is_modules
+                && matches!(value, Expr::Name(name) if self.sys_aliases.contains(name.id.as_str()));
+            if !is_modules && !is_sys {
+                return;
+            }
+            for target in targets {
+                let Expr::Name(target_name) = target else {
+                    continue;
+                };
+                let inserted = if is_modules {
+                    self.modules_aliases
+                        .insert(target_name.id.as_str().to_owned())
+                } else {
+                    self.sys_aliases.insert(target_name.id.as_str().to_owned())
+                };
+                if inserted {
+                    self.changed = true;
+                }
+            }
+        }
     }
 
     impl<'ast> Visitor<'ast> for AliasCollector {
@@ -139,7 +179,9 @@ pub(crate) fn accesses_own_sys_modules_entry(body: &[ruff_python_ast::Stmt]) -> 
                                 .asname
                                 .as_ref()
                                 .map_or_else(|| alias.name.as_str(), |name| name.as_str());
-                            self.sys_aliases.insert(bound_name.to_owned());
+                            if self.sys_aliases.insert(bound_name.to_owned()) {
+                                self.changed = true;
+                            }
                         }
                     }
                 }
@@ -152,8 +194,23 @@ pub(crate) fn accesses_own_sys_modules_entry(body: &[ruff_python_ast::Stmt]) -> 
                                 .asname
                                 .as_ref()
                                 .map_or_else(|| alias.name.as_str(), |name| name.as_str());
-                            self.modules_aliases.insert(bound_name.to_owned());
+                            if self.modules_aliases.insert(bound_name.to_owned()) {
+                                self.changed = true;
+                            }
                         }
+                    }
+                }
+                // `loaded = sys.modules` / `system = sys` rebind the same
+                // objects under new names (conservative over-approximation)
+                Stmt::Assign(assign) => {
+                    self.record_assignment_alias(&assign.targets, &assign.value);
+                }
+                Stmt::AnnAssign(ann_assign) => {
+                    if let Some(value) = &ann_assign.value {
+                        self.record_assignment_alias(
+                            std::slice::from_ref(&*ann_assign.target),
+                            value,
+                        );
                     }
                 }
                 _ => {}
@@ -239,12 +296,21 @@ pub(crate) fn accesses_own_sys_modules_entry(body: &[ruff_python_ast::Stmt]) -> 
     let mut alias_collector = AliasCollector {
         sys_aliases: FxIndexSet::default(),
         modules_aliases: FxIndexSet::default(),
+        changed: false,
     };
     // `sys` itself is always recognized: the bundled rewrite may reference it
     // without a surviving import statement
     alias_collector.sys_aliases.insert("sys".to_owned());
-    for stmt in body {
-        alias_collector.visit_stmt(stmt);
+    // Alias chains (`loaded = sys.modules; registry = loaded`) may appear in any
+    // source order, so run to fixpoint (bounded)
+    for _ in 0..16 {
+        alias_collector.changed = false;
+        for stmt in body {
+            alias_collector.visit_stmt(stmt);
+        }
+        if !alias_collector.changed {
+            break;
+        }
     }
 
     let mut detector = SelfEntryDetector {

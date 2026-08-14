@@ -405,12 +405,15 @@ struct UnbundlablePatternDetector {
 }
 
 impl UnbundlablePatternDetector {
-    /// Whether binding this name would hijack the namespace-introspection
-    /// rewrites: wrapper finalization redirects zero-argument `globals()` and
-    /// `locals()` calls to the generated module namespace without checking
-    /// for local rebindings of those names.
+    /// Whether binding this name would desynchronize the generated wrapper
+    /// from real module semantics: wrapper finalization redirects
+    /// zero-argument `globals()`/`locals()` calls to the generated module
+    /// namespace without checking for local rebindings of those names, and a
+    /// module-level `__builtins__` replacement becomes the builtins namespace
+    /// of every function subsequently defined in the real module — the
+    /// generated init cannot reproduce that capture.
     fn name_shadows_namespace_introspection(name: &str) -> bool {
-        matches!(name, "globals" | "locals")
+        matches!(name, "globals" | "locals" | "__builtins__")
     }
 
     /// Whether an expression denotes (or plausibly denotes) `types.ModuleType`.
@@ -2263,6 +2266,17 @@ impl ModuleResolver {
             .resolve_relative_to_absolute_module_name(level, name, current_module_path)
             .ok_or_else(|| anyhow!("Failed to resolve relative import"))?;
 
+        // Python resolves relative imports through the CURRENT package's
+        // __path__, not the global search path: a same-named namespace portion
+        // earlier on the search path must not hijack `from . import sub`
+        // executed by a regular package found later. Try the importing
+        // module's own package directory first.
+        if let Some(path) =
+            Self::resolve_relative_in_package_dir(descriptor, current_module_path, level)
+        {
+            return Ok(Some(path));
+        }
+
         // Now resolve the absolute module name to a path
         // Create a new descriptor for the absolute import
         let absolute_descriptor = ImportModuleDescriptor::from_module_name(&absolute_module_name);
@@ -2278,6 +2292,46 @@ impl ModuleResolver {
         // Opt-in third-party bundling: relative imports inside bundled site-packages
         // modules resolve against site-packages as well
         Ok(self.resolve_in_site_packages_for_bundling(&absolute_module_name))
+    }
+
+    /// Resolve a relative import against the importing module's OWN package
+    /// directory on the filesystem — Python's semantics: relative imports use
+    /// the current package's `__path__`, never the global search path, so a
+    /// same-named directory earlier on the search path cannot hijack them.
+    fn resolve_relative_in_package_dir(
+        descriptor: &ImportModuleDescriptor,
+        current_module_path: &Path,
+        level: u32,
+    ) -> Option<PathBuf> {
+        use crate::python::constants::INIT_FILE;
+        // Level 1 anchors at the directory containing the importing module
+        // (its package's __path__); each extra dot climbs one package up
+        let mut anchor = current_module_path.parent()?.to_path_buf();
+        for _ in 1..level {
+            anchor = anchor.parent()?.to_path_buf();
+        }
+        if descriptor.name_parts.is_empty() {
+            // `from . import X`: the anchor package itself
+            let init = anchor.join(INIT_FILE);
+            return init.is_file().then_some(init);
+        }
+        let mut current = anchor;
+        for part in &descriptor.name_parts[..descriptor.name_parts.len() - 1] {
+            current = current.join(part);
+            if !current.is_dir() {
+                return None;
+            }
+        }
+        let last = descriptor
+            .name_parts
+            .last()
+            .expect("name_parts checked non-empty");
+        let module_file = current.join(format!("{last}.py"));
+        if module_file.is_file() {
+            return Some(module_file);
+        }
+        let package_init = current.join(last).join(INIT_FILE);
+        package_init.is_file().then_some(package_init)
     }
 
     /// Resolve a module in virtualenv site-packages when third-party bundling is enabled.
@@ -3191,6 +3245,7 @@ impl ModuleResolver {
             && !source.contains("vars")
             && !source.contains("globals")
             && !source.contains("locals")
+            && !source.contains("__builtins__")
             && !Self::source_has_module_level_annotation_candidate(source)
             && !source.contains("pkg_resources")
             && !source.contains("pkgutil")
@@ -3992,13 +4047,19 @@ impl ModuleResolver {
         })
     }
 
-    /// Return whether a distribution that is GUARANTEED to stay external
-    /// (ships native artifacts, or has missing/unparsable core metadata)
-    /// declares an extras-independent `Requires-Dist` edge on this import's
-    /// owner. Such a declarer lands in the emitted requirements, and the
-    /// installer resolves its dependency edges transitively: the external
-    /// dependent then imports the INSTALLED copy of the target while bundled
-    /// code uses the inlined copy, splitting class identity and module state.
+    /// Return whether a distribution whose FINAL disposition is external
+    /// declares an extras-independent `Requires-Dist` edge (directly or
+    /// through a chain of such edges) on this import's owner. External
+    /// declarers land in the emitted requirements, and the installer resolves
+    /// their dependency edges transitively: the external dependent then
+    /// imports the INSTALLED copy of the target while bundled code uses the
+    /// inlined copy, splitting class identity and module state.
+    ///
+    /// A declarer counts as external through every statically decidable
+    /// blocker: native artifacts, missing/unparsable core metadata, `.pth`
+    /// startup hooks, runtime entry points, incompatible `Requires-Python`,
+    /// `known_third_party` configuration, and source-level blockers in any of
+    /// its import roots (`__file__` access, metadata queries, ...).
     fn external_distribution_depends_on_import(
         &self,
         site_packages_dir: &Path,
@@ -4015,32 +4076,112 @@ impl ModuleResolver {
             if owner_names.is_empty() {
                 return false;
             }
-            index
+            // Parse every extras-independent Requires-Dist edge up front;
+            // only distributions with outgoing edges can propagate
+            // externality, so direct dispositions are computed for those only
+            let mut edges: Vec<(usize, String)> = Vec::new();
+            for (declarer_index, declarer) in index.distributions.iter().enumerate() {
+                let declarer_name = Self::normalize_distribution_name(&declarer.name);
+                for entry in &declarer.requires_dist {
+                    let Ok(parsed) =
+                        pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(entry)
+                    else {
+                        continue;
+                    };
+                    // Edges that can only apply with extras enabled are not
+                    // active for a plain installation
+                    if !parsed.marker.evaluate_extras(&[]) {
+                        continue;
+                    }
+                    let target = Self::normalize_distribution_name(parsed.name.as_ref());
+                    // Self-edges cannot split identity
+                    if target != declarer_name {
+                        edges.push((declarer_index, target));
+                    }
+                }
+            }
+            if edges.is_empty() {
+                return false;
+            }
+            let mut external: Vec<bool> = index
                 .distributions
                 .iter()
-                .filter(|declarer| {
-                    declarer.ships_native_artifacts
-                        || declarer.missing_core_metadata
-                        || declarer.unparsable_requirements
+                .enumerate()
+                .map(|(declarer_index, declarer)| {
+                    edges.iter().any(|(from, _)| *from == declarer_index)
+                        && self.distribution_stays_external_directly(declarer, site_packages_dir)
                 })
-                .any(|declarer| {
-                    let declarer_name = Self::normalize_distribution_name(&declarer.name);
-                    declarer.requires_dist.iter().any(|entry| {
-                        let Ok(parsed) =
-                            pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(entry)
-                        else {
-                            return false;
-                        };
-                        // Edges that can only apply with extras enabled are
-                        // not active for a plain installation
-                        if !parsed.marker.evaluate_extras(&[]) {
-                            return false;
+                .collect();
+            // Externality flows along dependency edges: installing an external
+            // declarer installs its targets transitively, so a target that
+            // itself declares edges keeps propagating (fixpoint)
+            let name_to_index: FxIndexMap<String, Vec<usize>> = {
+                let mut map: FxIndexMap<String, Vec<usize>> = FxIndexMap::default();
+                for (distribution_index, distribution) in index.distributions.iter().enumerate() {
+                    map.entry(Self::normalize_distribution_name(&distribution.name))
+                        .or_default()
+                        .push(distribution_index);
+                }
+                map
+            };
+            loop {
+                let mut changed = false;
+                for (declarer_index, target) in &edges {
+                    if !external[*declarer_index] {
+                        continue;
+                    }
+                    for &target_index in name_to_index.get(target).into_iter().flatten() {
+                        if !external[target_index] {
+                            external[target_index] = true;
+                            changed = true;
                         }
-                        let target = Self::normalize_distribution_name(parsed.name.as_ref());
-                        // Self-edges cannot split identity
-                        target != declarer_name && owner_names.contains(&target)
-                    })
-                })
+                    }
+                }
+                if !changed {
+                    break;
+                }
+            }
+            edges.iter().any(|(declarer_index, target)| {
+                external[*declarer_index] && owner_names.contains(target)
+            })
+        })
+    }
+
+    /// Return whether one distribution's DIRECT disposition is external, from
+    /// statically decidable facts only (no dependency propagation): metadata
+    /// facts, target-version compatibility, configuration, and source-level
+    /// blockers in any of its import roots.
+    fn distribution_stays_external_directly(
+        &self,
+        distribution: &DistributionInfo,
+        site_packages_dir: &Path,
+    ) -> bool {
+        if distribution.ships_native_artifacts
+            || distribution.missing_core_metadata
+            || distribution.unparsable_requirements
+            || distribution.installs_startup_hooks
+            || distribution.has_runtime_entry_points
+        {
+            return true;
+        }
+        if distribution
+            .requires_python
+            .as_deref()
+            .is_some_and(|specifiers| !self.target_python_satisfies(specifiers))
+        {
+            return true;
+        }
+        let mut roots = IndexSet::new();
+        for name in distribution
+            .declared_prefixes
+            .iter()
+            .chain(distribution.record_imports.iter())
+        {
+            roots.insert(name.split('.').next().unwrap_or(name));
+        }
+        roots.into_iter().any(|root| {
+            self.is_explicit_third_party(root)
+                || self.import_root_source_blocked(site_packages_dir, root)
         })
     }
 

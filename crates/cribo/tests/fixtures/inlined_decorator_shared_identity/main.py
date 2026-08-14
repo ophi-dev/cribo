@@ -5,10 +5,10 @@ result still carries the definition's __name__; the shared `canonical`
 function keeps its own __module__/__qualname__.
 """
 
-from provider import wrapped
+from provider import exported
 from shared import canonical
 
-print("same object:", wrapped is canonical)
-print("module:", wrapped.__module__)
-print("qualname:", wrapped.__qualname__)
-print("call:", wrapped())
+print("same object:", exported is canonical)
+print("module:", exported.__module__)
+print("qualname:", exported.__qualname__)
+print("call:", exported())

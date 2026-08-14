@@ -6,5 +6,5 @@ def replace_with_shared(_function):
 
 
 @replace_with_shared
-def wrapped():
+def exported():
     return "never seen"

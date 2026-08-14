@@ -107,7 +107,7 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
 _cribo_finder_local.register('shared', '_cribo_init___cribo_1ea63f_shared', 'shared', False)
-_cribo_finder_local.register('provider', '_cribo_init___cribo_56b688_provider', 'provider', False)
+_cribo_finder_local.register('provider', '_cribo_init___cribo_28f3cf_provider', 'provider', False)
 shared = _cribo.types.SimpleNamespace(__name__='shared', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('shared', shared)
 def _cribo_init___cribo_1ea63f_shared(_cribo_self):
@@ -131,7 +131,7 @@ def _cribo_init___cribo_1ea63f_shared(_cribo_self):
 shared.__init__ = _cribo_init___cribo_1ea63f_shared
 provider = _cribo.types.SimpleNamespace(__name__='provider', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('provider', provider)
-def _cribo_init___cribo_56b688_provider(_cribo_self):
+def _cribo_init___cribo_28f3cf_provider(_cribo_self):
     if getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if getattr(_cribo_self, '__initializing__', False):
@@ -153,25 +153,25 @@ def _cribo_init___cribo_56b688_provider(_cribo_self):
     _cribo_self.replace_with_shared = replace_with_shared
 
     @replace_with_shared
-    def wrapped():
+    def exported():
         return "never seen"
     try:
-        if getattr(wrapped, '__name__', None) == 'wrapped':
-            wrapped.__module__ = 'provider'
-            wrapped.__qualname__ = 'wrapped'
+        if getattr(exported, '__name__', None) == 'exported':
+            exported.__module__ = 'provider'
+            exported.__qualname__ = 'exported'
     except (AttributeError, TypeError):
         pass
-    _cribo_self.wrapped = wrapped
+    _cribo_self.exported = exported
     _cribo_self.__initialized__ = True
     _cribo_self.__initializing__ = False
     return _cribo_self
-provider.__init__ = _cribo_init___cribo_56b688_provider
+provider.__init__ = _cribo_init___cribo_28f3cf_provider
 """A decorator returning a SHARED imported object must not be re-stamped.\n\nThe wrapper init only stamps a decorator result that still carries the\ndefinition's __name__; stamping the shared `canonical` function would\ncorrupt its __module__/__qualname__ for every other reference.\n"""
-provider = _cribo_init___cribo_56b688_provider(provider)
-wrapped = provider.wrapped
+provider = _cribo_init___cribo_28f3cf_provider(provider)
+exported = provider.exported
 shared = _cribo_init___cribo_1ea63f_shared(shared)
 canonical = shared.canonical
-print("same object:", wrapped is canonical)
-print("module:", wrapped.__module__)
-print("qualname:", wrapped.__qualname__)
-print("call:", wrapped())
+print("same object:", exported is canonical)
+print("module:", exported.__module__)
+print("qualname:", exported.__qualname__)
+print("call:", exported())
