@@ -10,21 +10,21 @@ import sys as _sys
 import importlib as _importlib
 class _CriboModule():
 
-    def __init__(self, m, p):
-        self._m, self._p = m, p
+    def __init__(_cribo_self, m, p):
+        _cribo_self._m, _cribo_self._p = m, p
 
-    def __getattr__(self, n):
-        f = self._p + '.' + n
+    def __getattr__(_cribo_self, n):
+        f = _cribo_self._p + '.' + n
         try:
             return _CriboModule(_importlib.import_module(f), f)
         except ImportError:
-            return getattr(self._m, n)
+            return getattr(_cribo_self._m, n)
 
-    def __getattribute__(self, n):
-        return object.__getattribute__(self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else getattr(object.__getattribute__(self, '_m'), n)
+    def __getattribute__(_cribo_self, n):
+        return object.__getattribute__(_cribo_self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else getattr(object.__getattribute__(_cribo_self, '_m'), n)
 class _Cribo():
 
-    def __getattr__(self, n):
+    def __getattr__(_cribo_self, n):
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
@@ -36,10 +36,18 @@ class _CriboPreservedLoader:
         self._namespace = namespace
 
     def create_module(self, spec):
+        module = None
         if self._namespace is not None:
-            return self._namespace
-        if self._entry[1] is not None:
-            return globals()[self._entry[1]]
+            module = self._namespace
+        elif self._entry[1] is not None:
+            module = globals()[self._entry[1]]
+        if module is not None:
+            if getattr(module, '_cribo_machinery_loaded', False):
+                saved = type(self)._pristine.get(id(module))
+                fresh = _cribo.types.SimpleNamespace()
+                fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
+                return fresh
+            return module
         module = _cribo.types.SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             setattr(module, export, globals()[binding])
@@ -98,19 +106,19 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
         break
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
-_cribo_finder.register('mypkg', '_cribo_init___cribo_30661c_mypkg', 'mypkg', True)
+_cribo_finder_local.register('mypkg', '_cribo_init___cribo_30661c_mypkg', 'mypkg', True)
 _cribo_finder.register('mypkg.exceptions', '_cribo_init___cribo_72b028_mypkg_exceptions', 'mypkg_exceptions', False)
 _cribo_finder.register('mypkg.compat', '_cribo_init___cribo_4089db_mypkg_compat', 'mypkg_compat', False)
 mypkg_compat = _cribo.types.SimpleNamespace(__name__='mypkg.compat', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('mypkg.compat', mypkg_compat)
-def _cribo_init___cribo_4089db_mypkg_compat(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    self.__package__ = 'mypkg'
-    self.__doc__ = None
+def _cribo_init___cribo_4089db_mypkg_compat(_cribo_self):
+    if getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    _cribo_self.__package__ = 'mypkg'
+    _cribo_self.__doc__ = None
     try:
         from fakejson import JSONDecodeError
         mypkg_compat.JSONDecodeError = JSONDecodeError
@@ -118,53 +126,53 @@ def _cribo_init___cribo_4089db_mypkg_compat(self):
         JSONDecodeError = _cribo.json.JSONDecodeError
         mypkg_compat.JSONDecodeError = JSONDecodeError
     MutableMapping = _cribo.collections.abc.MutableMapping
-    self.MutableMapping = MutableMapping
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+    _cribo_self.MutableMapping = MutableMapping
+    _cribo_self.__initialized__ = True
+    _cribo_self.__initializing__ = False
+    return _cribo_self
 mypkg_compat.__init__ = _cribo_init___cribo_4089db_mypkg_compat
 mypkg = _cribo.types.SimpleNamespace(__name__='mypkg', __initializing__=False, __initialized__=False, __path__=[])
 mypkg.compat = mypkg_compat
 mypkg_exceptions = _cribo.types.SimpleNamespace(__name__='mypkg.exceptions', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('mypkg.exceptions', mypkg_exceptions)
 mypkg.exceptions = mypkg_exceptions
-def _cribo_init___cribo_30661c_mypkg(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    self.__package__ = 'mypkg'
-    self.__doc__ = None
+def _cribo_init___cribo_30661c_mypkg(_cribo_self):
+    if getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    _cribo_self.__package__ = 'mypkg'
+    _cribo_self.__doc__ = None
     global mypkg_exceptions
     mypkg_exceptions = _cribo_init___cribo_72b028_mypkg_exceptions(mypkg_exceptions)
     CustomJSONError = mypkg_exceptions.CustomJSONError
-    self.CustomJSONError = CustomJSONError
-    self.CustomJSONError = CustomJSONError
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+    _cribo_self.CustomJSONError = CustomJSONError
+    _cribo_self.CustomJSONError = CustomJSONError
+    _cribo_self.__initialized__ = True
+    _cribo_self.__initializing__ = False
+    return _cribo_self
 mypkg.__init__ = _cribo_init___cribo_30661c_mypkg
-def _cribo_init___cribo_72b028_mypkg_exceptions(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    self.__package__ = 'mypkg'
-    self.__doc__ = None
+def _cribo_init___cribo_72b028_mypkg_exceptions(_cribo_self):
+    if getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    _cribo_self.__package__ = 'mypkg'
+    _cribo_self.__doc__ = None
     global mypkg_compat
     mypkg_compat = _cribo_init___cribo_4089db_mypkg_compat(mypkg_compat)
     CompatJSONDecodeError = mypkg.compat.JSONDecodeError
-    self.CompatJSONDecodeError = CompatJSONDecodeError
-    self.CompatJSONDecodeError = CompatJSONDecodeError
+    _cribo_self.CompatJSONDecodeError = CompatJSONDecodeError
+    _cribo_self.CompatJSONDecodeError = CompatJSONDecodeError
 
     class BaseException(Exception):
         """Base exception class"""
         pass
     BaseException.__module__ = 'mypkg.exceptions'
     BaseException.__qualname__ = 'BaseException'
-    self.BaseException = BaseException
+    _cribo_self.BaseException = BaseException
 
     class CustomJSONError(BaseException, CompatJSONDecodeError):
         """Custom JSON error that inherits from compat's JSONDecodeError"""
@@ -177,10 +185,10 @@ def _cribo_init___cribo_72b028_mypkg_exceptions(self):
             return CompatJSONDecodeError.__reduce__(self)
     CustomJSONError.__module__ = 'mypkg.exceptions'
     CustomJSONError.__qualname__ = 'CustomJSONError'
-    self.CustomJSONError = CustomJSONError
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+    _cribo_self.CustomJSONError = CustomJSONError
+    _cribo_self.__initialized__ = True
+    _cribo_self.__initializing__ = False
+    return _cribo_self
 mypkg_exceptions.__init__ = _cribo_init___cribo_72b028_mypkg_exceptions
 __cribo_init_result = _cribo_init___cribo_30661c_mypkg(mypkg)
 for attr in dir(__cribo_init_result):

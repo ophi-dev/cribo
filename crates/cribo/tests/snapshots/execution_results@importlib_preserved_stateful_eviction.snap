@@ -4,6 +4,6 @@ input_file: crates/cribo/tests/fixtures/importlib_preserved_stateful_eviction/ma
 ---
 ExecutionResults {
     status: Success,
-    stdout: "stateful_helper body runs\nfirst attempts: 1\nstateful_helper body runs\nsecond attempts: 1",
+    stdout: "stateful_helper body runs\nfirst attempts: 1\nstateful_helper body runs\nsecond attempts: 1\ndistinct objects: True\nfirst still stale: 1",
     stderr: "",
 }

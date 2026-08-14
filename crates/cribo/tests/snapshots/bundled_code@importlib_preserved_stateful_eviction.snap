@@ -10,21 +10,21 @@ import sys as _sys
 import importlib as _importlib
 class _CriboModule():
 
-    def __init__(self, m, p):
-        self._m, self._p = m, p
+    def __init__(_cribo_self, m, p):
+        _cribo_self._m, _cribo_self._p = m, p
 
-    def __getattr__(self, n):
-        f = self._p + '.' + n
+    def __getattr__(_cribo_self, n):
+        f = _cribo_self._p + '.' + n
         try:
             return _CriboModule(_importlib.import_module(f), f)
         except ImportError:
-            return getattr(self._m, n)
+            return getattr(_cribo_self._m, n)
 
-    def __getattribute__(self, n):
-        return object.__getattribute__(self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else getattr(object.__getattribute__(self, '_m'), n)
+    def __getattribute__(_cribo_self, n):
+        return object.__getattribute__(_cribo_self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else getattr(object.__getattribute__(_cribo_self, '_m'), n)
 class _Cribo():
 
-    def __getattr__(self, n):
+    def __getattr__(_cribo_self, n):
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
@@ -36,10 +36,18 @@ class _CriboPreservedLoader:
         self._namespace = namespace
 
     def create_module(self, spec):
+        module = None
         if self._namespace is not None:
-            return self._namespace
-        if self._entry[1] is not None:
-            return globals()[self._entry[1]]
+            module = self._namespace
+        elif self._entry[1] is not None:
+            module = globals()[self._entry[1]]
+        if module is not None:
+            if getattr(module, '_cribo_machinery_loaded', False):
+                saved = type(self)._pristine.get(id(module))
+                fresh = _cribo.types.SimpleNamespace()
+                fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
+                return fresh
+            return module
         module = _cribo.types.SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             setattr(module, export, globals()[binding])
@@ -101,27 +109,27 @@ else:
 _cribo_finder_local.register('stateful_helper', '_cribo_init___cribo_1e8e0c_stateful_helper', 'stateful_helper', False)
 stateful_helper = _cribo.types.SimpleNamespace(__name__='stateful_helper', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('stateful_helper', stateful_helper)
-def _cribo_init___cribo_1e8e0c_stateful_helper(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    self.__package__ = ''
-    self.__doc__ = None
+def _cribo_init___cribo_1e8e0c_stateful_helper(_cribo_self):
+    if getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    _cribo_self.__package__ = ''
+    _cribo_self.__doc__ = None
     try:
-        self.__spec__ = None
-        _sys.modules[self.__name__] = self
+        _cribo_self.__spec__ = None
+        _sys.modules[_cribo_self.__name__] = _cribo_self
         print("stateful_helper body runs")
-        attempts = self.__dict__.get("attempts", 0) + 1
-        self.attempts = attempts
-        self.__initialized__ = True
-        self.__initializing__ = False
-        return _sys.modules.get(self.__name__, self)
+        attempts = _cribo_self.__dict__.get("attempts", 0) + 1
+        _cribo_self.attempts = attempts
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _sys.modules.get(_cribo_self.__name__, _cribo_self)
     except BaseException:
-        self.__initializing__ = False
-        if _sys.modules.get(self.__name__) is self:
-            del _sys.modules[self.__name__]
+        _cribo_self.__initializing__ = False
+        if _sys.modules.get(_cribo_self.__name__) is _cribo_self:
+            del _sys.modules[_cribo_self.__name__]
         raise
 stateful_helper.__init__ = _cribo_init___cribo_1e8e0c_stateful_helper
 """Eviction re-imports observe a FRESH namespace, not stale globals.\n\nCPython creates a new module object after sys.modules.pop: a stateful\ncounter seeded from globals() must restart at 1 on the second life.\n"""
@@ -134,3 +142,5 @@ print("first attempts:", first.attempts)
 _cribo.sys.modules.pop("stateful_helper")
 second = load()
 print("second attempts:", second.attempts)
+print("distinct objects:", second is not first)
+print("first still stale:", first.attempts)

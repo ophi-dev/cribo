@@ -10,21 +10,21 @@ import sys as _sys
 import importlib as _importlib
 class _CriboModule():
 
-    def __init__(self, m, p):
-        self._m, self._p = m, p
+    def __init__(_cribo_self, m, p):
+        _cribo_self._m, _cribo_self._p = m, p
 
-    def __getattr__(self, n):
-        f = self._p + '.' + n
+    def __getattr__(_cribo_self, n):
+        f = _cribo_self._p + '.' + n
         try:
             return _CriboModule(_importlib.import_module(f), f)
         except ImportError:
-            return getattr(self._m, n)
+            return getattr(_cribo_self._m, n)
 
-    def __getattribute__(self, n):
-        return object.__getattribute__(self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else getattr(object.__getattribute__(self, '_m'), n)
+    def __getattribute__(_cribo_self, n):
+        return object.__getattribute__(_cribo_self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else getattr(object.__getattribute__(_cribo_self, '_m'), n)
 class _Cribo():
 
-    def __getattr__(self, n):
+    def __getattr__(_cribo_self, n):
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
@@ -36,10 +36,18 @@ class _CriboPreservedLoader:
         self._namespace = namespace
 
     def create_module(self, spec):
+        module = None
         if self._namespace is not None:
-            return self._namespace
-        if self._entry[1] is not None:
-            return globals()[self._entry[1]]
+            module = self._namespace
+        elif self._entry[1] is not None:
+            module = globals()[self._entry[1]]
+        if module is not None:
+            if getattr(module, '_cribo_machinery_loaded', False):
+                saved = type(self)._pristine.get(id(module))
+                fresh = _cribo.types.SimpleNamespace()
+                fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
+                return fresh
+            return module
         module = _cribo.types.SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             setattr(module, export, globals()[binding])
@@ -103,17 +111,17 @@ _cribo_finder_local.register('private_consumer', '_cribo_init___cribo_f05a42_pri
 _cribo_finder_local.register('first', '_cribo_init___cribo_39eca0_first', 'first', False)
 first = _cribo.types.SimpleNamespace(__name__='first', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('first', first)
-def _cribo_init___cribo_39eca0_first(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    self.__package__ = ''
-    self.__doc__ = None
+def _cribo_init___cribo_39eca0_first(_cribo_self):
+    if getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    _cribo_self.__package__ = ''
+    _cribo_self.__doc__ = None
     nullcontext = _cribo.contextlib.nullcontext
-    self.nullcontext = nullcontext
-    if self.__name__ != "__main__":
+    _cribo_self.nullcontext = nullcontext
+    if _cribo_self.__name__ != "__main__":
         CONDITIONAL_VALUE = "first"
         first.CONDITIONAL_VALUE = CONDITIONAL_VALUE
         _PRIVATE_CONDITIONAL_VALUE = "private"
@@ -134,7 +142,7 @@ def _cribo_init___cribo_39eca0_first(self):
         first.UNPACKED_RIGHT = UNPACKED_RIGHT
 
         def conditional_function():
-            return self.CONDITIONAL_VALUE
+            return _cribo_self.CONDITIONAL_VALUE
         first.conditional_function = conditional_function
 
         class ConditionalClass:
@@ -163,51 +171,51 @@ def _cribo_init___cribo_39eca0_first(self):
             first.MATCH_VALUE = MATCH_VALUE
             first.MATCH_REST = MATCH_REST
             pass
-    self.nullcontext = _cribo.contextlib.nullcontext
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+    _cribo_self.nullcontext = _cribo.contextlib.nullcontext
+    _cribo_self.__initialized__ = True
+    _cribo_self.__initializing__ = False
+    return _cribo_self
 first.__init__ = _cribo_init___cribo_39eca0_first
 private_consumer = _cribo.types.SimpleNamespace(__name__='private_consumer', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('private_consumer', private_consumer)
-def _cribo_init___cribo_f05a42_private_consumer(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    self.__package__ = ''
-    self.__doc__ = None
+def _cribo_init___cribo_f05a42_private_consumer(_cribo_self):
+    if getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    _cribo_self.__package__ = ''
+    _cribo_self.__doc__ = None
     global first
     first = _cribo_init___cribo_39eca0_first(first)
     _PRIVATE_CONDITIONAL_VALUE = first._PRIVATE_CONDITIONAL_VALUE
-    self._PRIVATE_CONDITIONAL_VALUE = _PRIVATE_CONDITIONAL_VALUE
+    _cribo_self._PRIVATE_CONDITIONAL_VALUE = _PRIVATE_CONDITIONAL_VALUE
     PRIVATE_VALUE = _PRIVATE_CONDITIONAL_VALUE
-    self.PRIVATE_VALUE = PRIVATE_VALUE
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+    _cribo_self.PRIVATE_VALUE = PRIVATE_VALUE
+    _cribo_self.__initialized__ = True
+    _cribo_self.__initializing__ = False
+    return _cribo_self
 private_consumer.__init__ = _cribo_init___cribo_f05a42_private_consumer
 second = _cribo.types.SimpleNamespace(__name__='second', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('second', second)
-def _cribo_init___cribo_4717e4_second(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    self.__package__ = ''
-    self.__doc__ = None
-    if self.__name__ != "__main__":
+def _cribo_init___cribo_4717e4_second(_cribo_self):
+    if getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    _cribo_self.__package__ = ''
+    _cribo_self.__doc__ = None
+    if _cribo_self.__name__ != "__main__":
         CONDITIONAL_VALUE = "second"
         second.CONDITIONAL_VALUE = CONDITIONAL_VALUE
 
         def conditional_function():
-            return self.CONDITIONAL_VALUE
+            return _cribo_self.CONDITIONAL_VALUE
         second.conditional_function = conditional_function
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+    _cribo_self.__initialized__ = True
+    _cribo_self.__initializing__ = False
+    return _cribo_self
 second.__init__ = _cribo_init___cribo_4717e4_second
 first = _cribo_init___cribo_39eca0_first(first)
 private_consumer = _cribo_init___cribo_f05a42_private_consumer(private_consumer)

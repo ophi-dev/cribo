@@ -10,21 +10,21 @@ import sys as _sys
 import importlib as _importlib
 class _CriboModule():
 
-    def __init__(self, m, p):
-        self._m, self._p = m, p
+    def __init__(_cribo_self, m, p):
+        _cribo_self._m, _cribo_self._p = m, p
 
-    def __getattr__(self, n):
-        f = self._p + '.' + n
+    def __getattr__(_cribo_self, n):
+        f = _cribo_self._p + '.' + n
         try:
             return _CriboModule(_importlib.import_module(f), f)
         except ImportError:
-            return getattr(self._m, n)
+            return getattr(_cribo_self._m, n)
 
-    def __getattribute__(self, n):
-        return object.__getattribute__(self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else getattr(object.__getattribute__(self, '_m'), n)
+    def __getattribute__(_cribo_self, n):
+        return object.__getattribute__(_cribo_self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else getattr(object.__getattribute__(_cribo_self, '_m'), n)
 class _Cribo():
 
-    def __getattr__(self, n):
+    def __getattr__(_cribo_self, n):
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
@@ -36,10 +36,18 @@ class _CriboPreservedLoader:
         self._namespace = namespace
 
     def create_module(self, spec):
+        module = None
         if self._namespace is not None:
-            return self._namespace
-        if self._entry[1] is not None:
-            return globals()[self._entry[1]]
+            module = self._namespace
+        elif self._entry[1] is not None:
+            module = globals()[self._entry[1]]
+        if module is not None:
+            if getattr(module, '_cribo_machinery_loaded', False):
+                saved = type(self)._pristine.get(id(module))
+                fresh = _cribo.types.SimpleNamespace()
+                fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
+                return fresh
+            return module
         module = _cribo.types.SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             setattr(module, export, globals()[binding])
@@ -101,7 +109,7 @@ else:
 _cribo_finder.register('models', '_cribo_init___cribo_563ea2_models', 'models', True)
 _cribo_finder.register('core.database.connection', '_cribo_init___cribo_1f0c3d_core_database_connection', 'core_database_connection', False)
 _cribo_finder.register('core.database', '_cribo_init___cribo_782908_core_database', 'core_database', True)
-_cribo_finder.register('core', '_cribo_init___cribo_f00e4b_core', 'core', True)
+_cribo_finder_local.register('core', '_cribo_init___cribo_f00e4b_core', 'core', True)
 _cribo_finder.register('core.utils', None, 'core_utils', True)
 _cribo_finder.register('core.utils.helpers', None, None, False, {'validate': 'validate'})
 _cribo_finder.register('core.utils.config', None, None, False, {'set_config_reference': 'set_config_reference', 'get_config': 'get_config', 'is_debug': 'is_debug'})
@@ -149,22 +157,22 @@ core_utils_config.is_debug = is_debug
 core_utils_config.set_config_reference = set_config_reference
 _cribo_core__initialized = None
 _cribo_core__config = None
-def _cribo_init___cribo_f00e4b_core(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    self.__package__ = 'core'
-    self.__doc__ = 'Core package with initialization logic and cross-package imports.'
+def _cribo_init___cribo_f00e4b_core(_cribo_self):
+    if getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    _cribo_self.__package__ = 'core'
+    _cribo_self.__doc__ = 'Core package with initialization logic and cross-package imports.'
     global _cribo_core__config, _cribo_core__initialized
     """Core package with initialization logic and cross-package imports."""
     _initialized = False
     _cribo_core__initialized = _initialized
-    self._initialized = _cribo_core__initialized
+    _cribo_self._initialized = _cribo_core__initialized
     _config = {"debug": False}
     _cribo_core__config = _config
-    self._config = _cribo_core__config
+    _cribo_self._config = _cribo_core__config
     CORE_MODEL_VERSION = core_version.CORE_MODEL_VERSION
     core.CORE_MODEL_VERSION = CORE_MODEL_VERSION
     validate = core_utils_helpers.validate
@@ -173,7 +181,7 @@ def _cribo_init___cribo_f00e4b_core(self):
     core.get_config = get_config
     set_config_reference = core_utils_config.set_config_reference
     core.set_config_reference = set_config_reference
-    set_config_reference(self._config)
+    set_config_reference(_cribo_self._config)
 
     def initialize_core(debug=False):
         """Initialize the core package with configuration."""
@@ -186,21 +194,21 @@ def _cribo_init___cribo_f00e4b_core(self):
         return _cribo_core__initialized
     initialize_core.__module__ = 'core'
     initialize_core.__qualname__ = 'initialize_core'
-    self.initialize_core = initialize_core
+    _cribo_self.initialize_core = initialize_core
 
     def is_initialized():
         """Check if core is initialized."""
-        return self._initialized
+        return _cribo_self._initialized
     is_initialized.__module__ = 'core'
     is_initialized.__qualname__ = 'is_initialized'
-    self.is_initialized = is_initialized
-    self.version = core_version
-    self.utils = core_utils
-    self.validate = validate
-    self.get_config = get_config
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+    _cribo_self.is_initialized = is_initialized
+    _cribo_self.version = core_version
+    _cribo_self.utils = core_utils
+    _cribo_self.validate = validate
+    _cribo_self.get_config = get_config
+    _cribo_self.__initialized__ = True
+    _cribo_self.__initializing__ = False
+    return _cribo_self
 core.__init__ = _cribo_init___cribo_f00e4b_core
 models_base = _cribo.types.SimpleNamespace(__name__='models.base', __doc__='Base model module.')
 models = _cribo.types.SimpleNamespace(__name__='models', __initializing__=False, __initialized__=False, __path__=[])
@@ -229,28 +237,28 @@ def process_user(name: str) -> str:
 process_user.__module__ = 'models.user'
 models_user.process_user = process_user
 _cribo_models__base_model = None
-def _cribo_init___cribo_563ea2_models(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    self.__package__ = 'models'
-    self.__doc__ = 'Models package with conditional imports and circular dependency handling.'
+def _cribo_init___cribo_563ea2_models(_cribo_self):
+    if getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    _cribo_self.__package__ = 'models'
+    _cribo_self.__doc__ = 'Models package with conditional imports and circular dependency handling.'
     global _cribo_models__base_model
     """Models package with conditional imports and circular dependency handling."""
     sys = _cribo.sys
-    self.sys = sys
-    self.sys = sys
+    _cribo_self.sys = sys
+    _cribo_self.sys = sys
     _VERSION = "1.0.0"
-    self._VERSION = _VERSION
+    _cribo_self._VERSION = _VERSION
 
     def get_model_version():
         """Get the models package version."""
-        return self._VERSION
+        return _cribo_self._VERSION
     get_model_version.__module__ = 'models'
     get_model_version.__qualname__ = 'get_model_version'
-    self.get_model_version = get_model_version
+    _cribo_self.get_model_version = get_model_version
     if _cribo.sys.version_info >= (3, 9):
         TypeAlias = _cribo.typing.TypeAlias
         models.TypeAlias = TypeAlias
@@ -261,7 +269,7 @@ def _cribo_init___cribo_563ea2_models(self):
         models.ModelID = ModelID
     _base_model = None
     _cribo_models__base_model = _base_model
-    self._base_model = _cribo_models__base_model
+    _cribo_self._base_model = _cribo_models__base_model
 
     def get_base_model():
         """Lazy import of BaseModel to avoid circular imports."""
@@ -273,11 +281,11 @@ def _cribo_init___cribo_563ea2_models(self):
         return _cribo_models__base_model
     get_base_model.__module__ = 'models'
     get_base_model.__qualname__ = 'get_base_model'
-    self.get_base_model = get_base_model
+    _cribo_self.get_base_model = get_base_model
     process_user = models_user.process_user
     models.process_user = process_user
-    DEFAULT_MODEL_CONFIG = {"version": self._VERSION, "features": ["user_processing", "lazy_loading"]}
-    self.DEFAULT_MODEL_CONFIG = DEFAULT_MODEL_CONFIG
+    DEFAULT_MODEL_CONFIG = {"version": _cribo_self._VERSION, "features": ["user_processing", "lazy_loading"]}
+    _cribo_self.DEFAULT_MODEL_CONFIG = DEFAULT_MODEL_CONFIG
     try:
         from models.advanced import AdvancedModel
         models.AdvancedModel = AdvancedModel
@@ -290,24 +298,24 @@ def _cribo_init___cribo_563ea2_models(self):
         AdvancedModel = None
         models.AdvancedModel = AdvancedModel
     __all__ = ["get_model_version", "process_user", "get_base_model", "ModelID", "DEFAULT_MODEL_CONFIG", "HAS_ADVANCED"]
-    if self.HAS_ADVANCED:
+    if _cribo_self.HAS_ADVANCED:
         __all__.append("AdvancedModel")
-    self.user = models_user
-    self.base = models_base
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+    _cribo_self.user = models_user
+    _cribo_self.base = models_base
+    _cribo_self.__initialized__ = True
+    _cribo_self.__initializing__ = False
+    return _cribo_self
 models.__init__ = _cribo_init___cribo_563ea2_models
 core_database_connection = _cribo.types.SimpleNamespace(__name__='core.database.connection', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('core.database.connection', core_database_connection)
-def _cribo_init___cribo_1f0c3d_core_database_connection(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    self.__package__ = 'core.database'
-    self.__doc__ = "Database connection module demonstrating mixed import patterns.\n\nThis module combines:\n1. Absolute import from a different package (models.user)\n2. Relative import from within the same package (..utils.helpers)\n3. Import from parent package's version module (not __init__.py)\n4. No imports from parent package's __init__.py to avoid circular dependencies\n"
+def _cribo_init___cribo_1f0c3d_core_database_connection(_cribo_self):
+    if getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    _cribo_self.__package__ = 'core.database'
+    _cribo_self.__doc__ = "Database connection module demonstrating mixed import patterns.\n\nThis module combines:\n1. Absolute import from a different package (models.user)\n2. Relative import from within the same package (..utils.helpers)\n3. Import from parent package's version module (not __init__.py)\n4. No imports from parent package's __init__.py to avoid circular dependencies\n"
     """Database connection module demonstrating mixed import patterns.\n\nThis module combines:\n1. Absolute import from a different package (models.user)\n2. Relative import from within the same package (..utils.helpers)\n3. Import from parent package's version module (not __init__.py)\n4. No imports from parent package's __init__.py to avoid circular dependencies\n"""
     process_user = models_user.process_user
     core_database_connection.process_user = process_user
@@ -320,15 +328,15 @@ def _cribo_init___cribo_1f0c3d_core_database_connection(self):
         if not attr.startswith('_'):
             setattr(models, attr, getattr(__cribo_init_result, attr))
     DEFAULT_MODEL_CONFIG = models.DEFAULT_MODEL_CONFIG
-    self.DEFAULT_MODEL_CONFIG = DEFAULT_MODEL_CONFIG
-    self.DEFAULT_MODEL_CONFIG = DEFAULT_MODEL_CONFIG
+    _cribo_self.DEFAULT_MODEL_CONFIG = DEFAULT_MODEL_CONFIG
+    _cribo_self.DEFAULT_MODEL_CONFIG = DEFAULT_MODEL_CONFIG
     get_base_model = models.get_base_model
-    self.get_base_model = get_base_model
-    self.get_base_model = get_base_model
+    _cribo_self.get_base_model = get_base_model
+    _cribo_self.get_base_model = get_base_model
     _connection_types = ["standard", "pooled", "async"]
-    self._connection_types = _connection_types
+    _cribo_self._connection_types = _connection_types
     CONNECTION_METADATA = {"supported_types": _connection_types, "validator": helper_validate.__name__, "processor": process_user.__name__, "core_version": CORE_MODEL_VERSION, "model_config": DEFAULT_MODEL_CONFIG}
-    self.CONNECTION_METADATA = CONNECTION_METADATA
+    _cribo_self.CONNECTION_METADATA = CONNECTION_METADATA
 
     class Connection:
         """Connection class using mixed imports."""
@@ -347,14 +355,14 @@ def _cribo_init___cribo_1f0c3d_core_database_connection(self):
             return f"Connection to {self.name}"
     Connection.__module__ = 'core.database.connection'
     Connection.__qualname__ = 'Connection'
-    self.Connection = Connection
+    _cribo_self.Connection = Connection
 
     def connect(database_name: str) -> Connection:
         """Create a new database connection."""
         return Connection(database_name)
     connect.__module__ = 'core.database.connection'
     connect.__qualname__ = 'connect'
-    self.connect = connect
+    _cribo_self.connect = connect
 
     def get_connection_info() -> dict:
         """Get general connection information."""
@@ -368,28 +376,28 @@ def _cribo_init___cribo_1f0c3d_core_database_connection(self):
         return info
     get_connection_info.__module__ = 'core.database.connection'
     get_connection_info.__qualname__ = 'get_connection_info'
-    self.get_connection_info = get_connection_info
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+    _cribo_self.get_connection_info = get_connection_info
+    _cribo_self.__initialized__ = True
+    _cribo_self.__initializing__ = False
+    return _cribo_self
 core_database_connection.__init__ = _cribo_init___cribo_1f0c3d_core_database_connection
 core_database = _cribo.types.SimpleNamespace(__name__='core.database', __initializing__=False, __initialized__=False, __path__=[])
 core.database = core_database
 core_database.connection = core_database_connection
-def _cribo_init___cribo_782908_core_database(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    self.__package__ = 'core.database'
-    self.__doc__ = 'Database subpackage with import-time initialization and re-exports.'
+def _cribo_init___cribo_782908_core_database(_cribo_self):
+    if getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    _cribo_self.__package__ = 'core.database'
+    _cribo_self.__doc__ = 'Database subpackage with import-time initialization and re-exports.'
     global core_database_connection
     """Database subpackage with import-time initialization and re-exports."""
     validate = core_utils_helpers.validate
     core_database.validate = validate
     _registered_types = []
-    self._registered_types = _registered_types
+    _cribo_self._registered_types = _registered_types
 
     def _register_type(type_name):
         """Internal function to register database types."""
@@ -397,7 +405,7 @@ def _cribo_init___cribo_782908_core_database(self):
         return type_name
     _register_type.__module__ = 'core.database'
     _register_type.__qualname__ = '_register_type'
-    self._register_type = _register_type
+    _cribo_self._register_type = _register_type
     _register_type("connection")
     _register_type("cursor")
 
@@ -408,27 +416,27 @@ def _cribo_init___cribo_782908_core_database(self):
         return not any(char in name for char in ["/", "\\", ":"])
     validate_db_name.__module__ = 'core.database'
     validate_db_name.__qualname__ = 'validate_db_name'
-    self.validate_db_name = validate_db_name
+    _cribo_self.validate_db_name = validate_db_name
     core_database_connection = _cribo_init___cribo_1f0c3d_core_database_connection(core_database_connection)
     connect = core_database_connection.connect
-    self.connect = connect
-    self.connect = connect
+    _cribo_self.connect = connect
+    _cribo_self.connect = connect
     get_connection_info = core_database_connection.get_connection_info
-    self.get_connection_info = get_connection_info
-    self.get_connection_info = get_connection_info
+    _cribo_self.get_connection_info = get_connection_info
+    _cribo_self.get_connection_info = get_connection_info
 
     def safe_connect(database_name: str) -> str:
         """Connect only if core is initialized."""
-        is_initialized = _cribo_init___cribo_f00e4b_core(self.__dict__['core']).is_initialized
+        is_initialized = _cribo_init___cribo_f00e4b_core(_cribo_self.__dict__['core']).is_initialized
         if not is_initialized():
             raise RuntimeError("Core package must be initialized before connecting")
         return connect(database_name)
     safe_connect.__module__ = 'core.database'
     safe_connect.__qualname__ = 'safe_connect'
-    self.safe_connect = safe_connect
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+    _cribo_self.safe_connect = safe_connect
+    _cribo_self.__initialized__ = True
+    _cribo_self.__initializing__ = False
+    return _cribo_self
 core_database.__init__ = _cribo_init___cribo_782908_core_database
 """Test fixture demonstrating cross-package mixed import patterns.\n\nThis tests the specific pattern where a module uses both:\n1. Deep absolute imports crossing package boundaries (e.g., from models.user)\n2. Relative imports within its package (e.g., from ..utils.helpers)\n3. Import order dependencies with __init__.py files\n"""
 __cribo_init_result = _cribo_init___cribo_f00e4b_core(core)

@@ -10,21 +10,21 @@ import sys as _sys
 import importlib as _importlib
 class _CriboModule():
 
-    def __init__(self, m, p):
-        self._m, self._p = m, p
+    def __init__(_cribo_self, m, p):
+        _cribo_self._m, _cribo_self._p = m, p
 
-    def __getattr__(self, n):
-        f = self._p + '.' + n
+    def __getattr__(_cribo_self, n):
+        f = _cribo_self._p + '.' + n
         try:
             return _CriboModule(_importlib.import_module(f), f)
         except ImportError:
-            return getattr(self._m, n)
+            return getattr(_cribo_self._m, n)
 
-    def __getattribute__(self, n):
-        return object.__getattribute__(self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else getattr(object.__getattribute__(self, '_m'), n)
+    def __getattribute__(_cribo_self, n):
+        return object.__getattribute__(_cribo_self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else getattr(object.__getattribute__(_cribo_self, '_m'), n)
 class _Cribo():
 
-    def __getattr__(self, n):
+    def __getattr__(_cribo_self, n):
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
@@ -36,10 +36,18 @@ class _CriboPreservedLoader:
         self._namespace = namespace
 
     def create_module(self, spec):
+        module = None
         if self._namespace is not None:
-            return self._namespace
-        if self._entry[1] is not None:
-            return globals()[self._entry[1]]
+            module = self._namespace
+        elif self._entry[1] is not None:
+            module = globals()[self._entry[1]]
+        if module is not None:
+            if getattr(module, '_cribo_machinery_loaded', False):
+                saved = type(self)._pristine.get(id(module))
+                fresh = _cribo.types.SimpleNamespace()
+                fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
+                return fresh
+            return module
         module = _cribo.types.SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             setattr(module, export, globals()[binding])
@@ -101,22 +109,22 @@ else:
 _cribo_finder_local.register('named_source', '_cribo_init___cribo_0a355e_named_source', 'named_source', False)
 named_source = _cribo.types.SimpleNamespace(__name__='named_source', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('named_source', named_source)
-def _cribo_init___cribo_0a355e_named_source(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    self.__package__ = ''
-    self.__doc__ = None
+def _cribo_init___cribo_0a355e_named_source(_cribo_self):
+    if getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    _cribo_self.__package__ = ''
+    _cribo_self.__doc__ = None
     nullcontext = _cribo.contextlib.nullcontext
-    self.nullcontext = nullcontext
+    _cribo_self.nullcontext = nullcontext
 
     def decorator(function):
         return function
     decorator.__module__ = 'named_source'
     decorator.__qualname__ = 'decorator'
-    self.decorator = decorator
+    _cribo_self.decorator = decorator
     if ((IF_VALUE := "if"), _cribo.builtins.setattr(named_source, 'IF_VALUE', IF_VALUE))[0]:
         pass
 
@@ -124,22 +132,23 @@ def _cribo_init___cribo_0a355e_named_source(self):
         return value
     with_default.__module__ = 'named_source'
     with_default.__qualname__ = 'with_default'
-    self.with_default = with_default
+    _cribo_self.with_default = with_default
 
     @((DECORATOR_VALUE := decorator), _cribo.builtins.setattr(named_source, 'DECORATOR_VALUE', DECORATOR_VALUE))[0]
     def decorated():
         return "decorated"
     try:
-        decorated.__module__ = 'named_source'
-        decorated.__qualname__ = 'decorated'
+        if getattr(decorated, '__name__', None) == 'decorated':
+            decorated.__module__ = 'named_source'
+            decorated.__qualname__ = 'decorated'
     except (AttributeError, TypeError):
         pass
-    self.decorated = decorated
+    _cribo_self.decorated = decorated
     with ((CONTEXT_MANAGER := _cribo.contextlib.nullcontext("context")), _cribo.builtins.setattr(named_source, 'CONTEXT_MANAGER', CONTEXT_MANAGER))[0] as CONTEXT_VALUE:
         named_source.CONTEXT_VALUE = CONTEXT_VALUE
         pass
     WITH_TARGET_SLOTS = [None]
-    self.WITH_TARGET_SLOTS = WITH_TARGET_SLOTS
+    _cribo_self.WITH_TARGET_SLOTS = WITH_TARGET_SLOTS
     with _cribo.contextlib.nullcontext("with-target") as WITH_TARGET_SLOTS[((WITH_TARGET_VALUE := 0), _cribo.builtins.setattr(named_source, 'WITH_TARGET_VALUE', WITH_TARGET_VALUE))[0]]:
         assert WITH_TARGET_SLOTS[WITH_TARGET_VALUE] == "with-target"
     match "subject":
@@ -147,17 +156,17 @@ def _cribo_init___cribo_0a355e_named_source(self):
             pass
     assert GUARD_VALUE == "guard"
     TARGET_SLOTS = [None]
-    self.TARGET_SLOTS = TARGET_SLOTS
+    _cribo_self.TARGET_SLOTS = TARGET_SLOTS
     for TARGET_SLOTS[((FOR_TARGET_VALUE := 0), _cribo.builtins.setattr(named_source, 'FOR_TARGET_VALUE', FOR_TARGET_VALUE))[0]] in ("for-target",):
         assert TARGET_SLOTS[FOR_TARGET_VALUE] == "for-target"
     COMPREHENSION_RESULT = [item for item in ("comprehension",) if ((COMPREHENSION_VALUE := item), _cribo.builtins.setattr(named_source, 'COMPREHENSION_VALUE', COMPREHENSION_VALUE))[0]]
-    self.COMPREHENSION_RESULT = COMPREHENSION_RESULT
+    _cribo_self.COMPREHENSION_RESULT = COMPREHENSION_RESULT
     LAMBDA = lambda: (LAMBDA_LOCAL := "lambda")
-    self.LAMBDA = LAMBDA
-    self.nullcontext = _cribo.contextlib.nullcontext
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+    _cribo_self.LAMBDA = LAMBDA
+    _cribo_self.nullcontext = _cribo.contextlib.nullcontext
+    _cribo_self.__initialized__ = True
+    _cribo_self.__initializing__ = False
+    return _cribo_self
 named_source.__init__ = _cribo_init___cribo_0a355e_named_source
 named_source = _cribo_init___cribo_0a355e_named_source(named_source)
 print(named_source.IF_VALUE)

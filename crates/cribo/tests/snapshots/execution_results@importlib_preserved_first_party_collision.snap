@@ -4,6 +4,6 @@ input_file: crates/cribo/tests/fixtures/importlib_preserved_first_party_collisio
 ---
 ExecutionResults {
     status: Success,
-    stdout: "first-party helper loaded\nVALUE: first-party helper",
+    stdout: "first-party helper loaded\nVALUE: first-party helper\nfirst-party helperpkg loaded\nPKG VALUE: first-party helperpkg",
     stderr: "",
 }

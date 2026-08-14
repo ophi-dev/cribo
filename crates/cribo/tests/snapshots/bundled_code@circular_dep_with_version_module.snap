@@ -10,21 +10,21 @@ import sys as _sys
 import importlib as _importlib
 class _CriboModule():
 
-    def __init__(self, m, p):
-        self._m, self._p = m, p
+    def __init__(_cribo_self, m, p):
+        _cribo_self._m, _cribo_self._p = m, p
 
-    def __getattr__(self, n):
-        f = self._p + '.' + n
+    def __getattr__(_cribo_self, n):
+        f = _cribo_self._p + '.' + n
         try:
             return _CriboModule(_importlib.import_module(f), f)
         except ImportError:
-            return getattr(self._m, n)
+            return getattr(_cribo_self._m, n)
 
-    def __getattribute__(self, n):
-        return object.__getattribute__(self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else getattr(object.__getattribute__(self, '_m'), n)
+    def __getattribute__(_cribo_self, n):
+        return object.__getattribute__(_cribo_self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else getattr(object.__getattribute__(_cribo_self, '_m'), n)
 class _Cribo():
 
-    def __getattr__(self, n):
+    def __getattr__(_cribo_self, n):
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
@@ -36,10 +36,18 @@ class _CriboPreservedLoader:
         self._namespace = namespace
 
     def create_module(self, spec):
+        module = None
         if self._namespace is not None:
-            return self._namespace
-        if self._entry[1] is not None:
-            return globals()[self._entry[1]]
+            module = self._namespace
+        elif self._entry[1] is not None:
+            module = globals()[self._entry[1]]
+        if module is not None:
+            if getattr(module, '_cribo_machinery_loaded', False):
+                saved = type(self)._pristine.get(id(module))
+                fresh = _cribo.types.SimpleNamespace()
+                fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
+                return fresh
+            return module
         module = _cribo.types.SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             setattr(module, export, globals()[binding])
@@ -98,7 +106,7 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
         break
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
-_cribo_finder.register('package', '_cribo_init___cribo_a4c23d_package', 'package', True)
+_cribo_finder_local.register('package', '_cribo_init___cribo_a4c23d_package', 'package', True)
 _cribo_finder.register('package.module_a', '_cribo_init___cribo_cc4906_package_module_a', 'package_module_a', False)
 package___version__ = _cribo.types.SimpleNamespace(__name__='package.__version__', __doc__='Version information for the package')
 package = _cribo.types.SimpleNamespace(__name__='package', __initializing__=False, __initialized__=False, __path__=[])
@@ -111,14 +119,14 @@ package___version__.__version__ = __version__
 package_module_a = _cribo.types.SimpleNamespace(__name__='package.module_a', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('package.module_a', package_module_a)
 package.module_a = package_module_a
-def _cribo_init___cribo_a4c23d_package(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    self.__package__ = 'package'
-    self.__doc__ = 'Package with circular dependency and __version__ import'
+def _cribo_init___cribo_a4c23d_package(_cribo_self):
+    if getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    _cribo_self.__package__ = 'package'
+    _cribo_self.__doc__ = 'Package with circular dependency and __version__ import'
     global package_module_a
     """Package with circular dependency and __version__ import"""
     __version__ = package___version__.__version__
@@ -127,29 +135,29 @@ def _cribo_init___cribo_a4c23d_package(self):
     package.__title__ = __title__
     package_module_a = _cribo_init___cribo_cc4906_package_module_a(package_module_a)
     func_a = package_module_a.func_a
-    self.func_a = func_a
-    self.func_a = func_a
+    _cribo_self.func_a = func_a
+    _cribo_self.func_a = func_a
 
     def package_func():
         return func_a() + " from package"
     package_func.__module__ = 'package'
     package_func.__qualname__ = 'package_func'
-    self.package_func = package_func
+    _cribo_self.package_func = package_func
     print(f"Package initialized with version {__version__}")
-    self.__version__ = __version__
-    self.__title__ = __title__
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+    _cribo_self.__version__ = __version__
+    _cribo_self.__title__ = __title__
+    _cribo_self.__initialized__ = True
+    _cribo_self.__initializing__ = False
+    return _cribo_self
 package.__init__ = _cribo_init___cribo_a4c23d_package
-def _cribo_init___cribo_cc4906_package_module_a(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    self.__package__ = 'package'
-    self.__doc__ = 'Module A that creates circular dependency'
+def _cribo_init___cribo_cc4906_package_module_a(_cribo_self):
+    if getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    _cribo_self.__package__ = 'package'
+    _cribo_self.__doc__ = 'Module A that creates circular dependency'
     """Module A that creates circular dependency"""
 
     def func_a():
@@ -157,16 +165,16 @@ def _cribo_init___cribo_cc4906_package_module_a(self):
         return "func_a"
     func_a.__module__ = 'package.module_a'
     func_a.__qualname__ = 'func_a'
-    self.func_a = func_a
+    _cribo_self.func_a = func_a
 
     def another_func():
         return "another"
     another_func.__module__ = 'package.module_a'
     another_func.__qualname__ = 'another_func'
-    self.another_func = another_func
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+    _cribo_self.another_func = another_func
+    _cribo_self.__initialized__ = True
+    _cribo_self.__initializing__ = False
+    return _cribo_self
 package_module_a.__init__ = _cribo_init___cribo_cc4906_package_module_a
 """Test case for circular dependency with __version__ module import"""
 __cribo_init_result = _cribo_init___cribo_a4c23d_package(package)

@@ -128,6 +128,8 @@ impl PostProcessingPhase {
     fn generate_module_finder_statements(bundler: &Bundler<'_>, final_body: &[Stmt]) -> Vec<Stmt> {
         use crate::code_generator::module_registry::sanitize_module_name_for_identifier;
 
+        let external_submodule_roots = Self::collect_external_submodule_roots(bundler, final_body);
+
         // Every wrapper module (with an init function) is registered under its
         // original name; preserved import_module targets are wrapper modules too
         let mut names: FxIndexSet<String> = bundler
@@ -171,8 +173,8 @@ impl PostProcessingPhase {
             let namespace_variable = sanitize_module_name_for_identifier(name);
             let is_package = bundler.resolver.is_package_init(module_id)
                 || bundler.resolver.is_namespace_package(module_id);
-            let first_party = !is_package
-                && !name.contains('.')
+            let first_party = !name.contains('.')
+                && !external_submodule_roots.contains(name.as_str())
                 && bundler.resolver.classify_import(name).origin
                     == crate::resolver::ImportOrigin::FirstParty;
             log::debug!(
@@ -196,8 +198,8 @@ impl PostProcessingPhase {
             };
             let is_package = bundler.resolver.is_package_init(module_id)
                 || bundler.resolver.is_namespace_package(module_id);
-            let first_party = !is_package
-                && !name.contains('.')
+            let first_party = !name.contains('.')
+                && !external_submodule_roots.contains(name.as_str())
                 && bundler.resolver.classify_import(name).origin
                     == crate::resolver::ImportOrigin::FirstParty;
             log::debug!(
@@ -214,6 +216,64 @@ impl PostProcessingPhase {
             );
         }
         statements
+    }
+
+    /// Collect top-level roots of dotted import targets that remain EXTERNAL
+    /// in the emitted bundle (e.g. `from yaml._yaml import ...` for an
+    /// optional C extension kept as a real import). A bundled first-party
+    /// package with such a submodule must NOT register in front of `PathFinder`:
+    /// the external import resolves through the INSTALLED distribution's
+    /// `__path__`, which the bundled namespace cannot provide, so the
+    /// installed package must stay reachable under the original name.
+    fn collect_external_submodule_roots(
+        bundler: &Bundler<'_>,
+        final_body: &[Stmt],
+    ) -> FxIndexSet<String> {
+        use ruff_python_ast::visitor::source_order::{SourceOrderVisitor, walk_stmt};
+
+        struct Collector<'a> {
+            bundler: &'a Bundler<'a>,
+            roots: FxIndexSet<String>,
+        }
+
+        impl Collector<'_> {
+            fn record(&mut self, name: &str) {
+                let Some((root, _)) = name.split_once('.') else {
+                    return;
+                };
+                if self.bundler.get_module_id(name).is_none() {
+                    self.roots.insert(root.to_owned());
+                }
+            }
+        }
+
+        impl<'a> SourceOrderVisitor<'a> for Collector<'a> {
+            fn visit_stmt(&mut self, stmt: &'a Stmt) {
+                match stmt {
+                    Stmt::Import(import) => {
+                        for alias in &import.names {
+                            self.record(alias.name.as_str());
+                        }
+                    }
+                    Stmt::ImportFrom(import_from) if import_from.level == 0 => {
+                        if let Some(module) = &import_from.module {
+                            self.record(module.as_str());
+                        }
+                    }
+                    _ => {}
+                }
+                walk_stmt(self, stmt);
+            }
+        }
+
+        let mut collector = Collector {
+            bundler,
+            roots: FxIndexSet::default(),
+        };
+        for stmt in final_body {
+            collector.visit_stmt(stmt);
+        }
+        collector.roots
     }
 
     /// Harvest inlined definition stamps (classes AND functions) from the
@@ -260,10 +320,18 @@ impl PostProcessingPhase {
         };
         for stmt in final_body {
             // Decorated definitions carry their stamps inside a try/except
-            // guard (decorators may return objects rejecting attribute writes);
-            // harvest those blocks too so their exports register with the finder
+            // guard (decorators may return objects rejecting attribute writes),
+            // wrapped in an identity check (only results still carrying the
+            // definition's __name__ are stamped); harvest those blocks too so
+            // their exports register with the finder
             if let Stmt::Try(try_stmt) = stmt {
                 for guarded in &try_stmt.body {
+                    if let Stmt::If(if_stmt) = guarded {
+                        for conditional in &if_stmt.body {
+                            record_stamp(&mut binding_modules, &mut binding_exports, conditional);
+                        }
+                        continue;
+                    }
                     record_stamp(&mut binding_modules, &mut binding_exports, guarded);
                 }
                 continue;

@@ -10,21 +10,21 @@ import sys as _sys
 import importlib as _importlib
 class _CriboModule():
 
-    def __init__(self, m, p):
-        self._m, self._p = m, p
+    def __init__(_cribo_self, m, p):
+        _cribo_self._m, _cribo_self._p = m, p
 
-    def __getattr__(self, n):
-        f = self._p + '.' + n
+    def __getattr__(_cribo_self, n):
+        f = _cribo_self._p + '.' + n
         try:
             return _CriboModule(_importlib.import_module(f), f)
         except ImportError:
-            return getattr(self._m, n)
+            return getattr(_cribo_self._m, n)
 
-    def __getattribute__(self, n):
-        return object.__getattribute__(self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else getattr(object.__getattribute__(self, '_m'), n)
+    def __getattribute__(_cribo_self, n):
+        return object.__getattribute__(_cribo_self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else getattr(object.__getattribute__(_cribo_self, '_m'), n)
 class _Cribo():
 
-    def __getattr__(self, n):
+    def __getattr__(_cribo_self, n):
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
@@ -36,10 +36,18 @@ class _CriboPreservedLoader:
         self._namespace = namespace
 
     def create_module(self, spec):
+        module = None
         if self._namespace is not None:
-            return self._namespace
-        if self._entry[1] is not None:
-            return globals()[self._entry[1]]
+            module = self._namespace
+        elif self._entry[1] is not None:
+            module = globals()[self._entry[1]]
+        if module is not None:
+            if getattr(module, '_cribo_machinery_loaded', False):
+                saved = type(self)._pristine.get(id(module))
+                fresh = _cribo.types.SimpleNamespace()
+                fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
+                return fresh
+            return module
         module = _cribo.types.SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             setattr(module, export, globals()[binding])
@@ -98,20 +106,20 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
         break
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
-_cribo_finder.register('pkg1', '_cribo_init___cribo_176078_pkg1', 'pkg1', True)
-_cribo_finder.register('pkg2', '_cribo_init___cribo_a6e036_pkg2', 'pkg2', True)
+_cribo_finder_local.register('pkg1', '_cribo_init___cribo_176078_pkg1', 'pkg1', True)
+_cribo_finder_local.register('pkg2', '_cribo_init___cribo_a6e036_pkg2', 'pkg2', True)
 pkg1 = _cribo.types.SimpleNamespace(__name__='pkg1', __initializing__=False, __initialized__=False, __path__=[])
 _cribo_finder.bind('pkg1', pkg1)
 pkg2 = _cribo.types.SimpleNamespace(__name__='pkg2', __initializing__=False, __initialized__=False, __path__=[])
 _cribo_finder.bind('pkg2', pkg2)
-def _cribo_init___cribo_176078_pkg1(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    self.__package__ = 'pkg1'
-    self.__doc__ = None
+def _cribo_init___cribo_176078_pkg1(_cribo_self):
+    if getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    _cribo_self.__package__ = 'pkg1'
+    _cribo_self.__doc__ = None
 
     def main_function():
         """Main function that uses helper from pkg2"""
@@ -119,7 +127,7 @@ def _cribo_init___cribo_176078_pkg1(self):
         return f"pkg1.main({helper_function()})"
     main_function.__module__ = 'pkg1'
     main_function.__qualname__ = 'main_function'
-    self.main_function = main_function
+    _cribo_self.main_function = main_function
 
     def utility_function():
         """Utility that pkg2 will import"""
@@ -127,19 +135,19 @@ def _cribo_init___cribo_176078_pkg1(self):
         return "pkg1_utility"
     utility_function.__module__ = 'pkg1'
     utility_function.__qualname__ = 'utility_function'
-    self.utility_function = utility_function
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+    _cribo_self.utility_function = utility_function
+    _cribo_self.__initialized__ = True
+    _cribo_self.__initializing__ = False
+    return _cribo_self
 pkg1.__init__ = _cribo_init___cribo_176078_pkg1
-def _cribo_init___cribo_a6e036_pkg2(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    self.__package__ = 'pkg2'
-    self.__doc__ = None
+def _cribo_init___cribo_a6e036_pkg2(_cribo_self):
+    if getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    _cribo_self.__package__ = 'pkg2'
+    _cribo_self.__doc__ = None
 
     def helper_function():
         """Helper function that depends on pkg1"""
@@ -148,7 +156,7 @@ def _cribo_init___cribo_a6e036_pkg2(self):
         return f"pkg2.helper(using_{util_result})"
     helper_function.__module__ = 'pkg2'
     helper_function.__qualname__ = 'helper_function'
-    self.helper_function = helper_function
+    _cribo_self.helper_function = helper_function
 
     def another_helper():
         """Another function in pkg2"""
@@ -156,10 +164,10 @@ def _cribo_init___cribo_a6e036_pkg2(self):
         return "pkg2_helper"
     another_helper.__module__ = 'pkg2'
     another_helper.__qualname__ = 'another_helper'
-    self.another_helper = another_helper
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+    _cribo_self.another_helper = another_helper
+    _cribo_self.__initialized__ = True
+    _cribo_self.__initializing__ = False
+    return _cribo_self
 pkg2.__init__ = _cribo_init___cribo_a6e036_pkg2
 pkg1 = _cribo_init___cribo_176078_pkg1(pkg1)
 def main():

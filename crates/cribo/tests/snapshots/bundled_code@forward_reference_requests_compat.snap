@@ -10,21 +10,21 @@ import sys as _sys
 import importlib as _importlib
 class _CriboModule():
 
-    def __init__(self, m, p):
-        self._m, self._p = m, p
+    def __init__(_cribo_self, m, p):
+        _cribo_self._m, _cribo_self._p = m, p
 
-    def __getattr__(self, n):
-        f = self._p + '.' + n
+    def __getattr__(_cribo_self, n):
+        f = _cribo_self._p + '.' + n
         try:
             return _CriboModule(_importlib.import_module(f), f)
         except ImportError:
-            return getattr(self._m, n)
+            return getattr(_cribo_self._m, n)
 
-    def __getattribute__(self, n):
-        return object.__getattribute__(self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else getattr(object.__getattribute__(self, '_m'), n)
+    def __getattribute__(_cribo_self, n):
+        return object.__getattribute__(_cribo_self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else getattr(object.__getattribute__(_cribo_self, '_m'), n)
 class _Cribo():
 
-    def __getattr__(self, n):
+    def __getattr__(_cribo_self, n):
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
@@ -36,10 +36,18 @@ class _CriboPreservedLoader:
         self._namespace = namespace
 
     def create_module(self, spec):
+        module = None
         if self._namespace is not None:
-            return self._namespace
-        if self._entry[1] is not None:
-            return globals()[self._entry[1]]
+            module = self._namespace
+        elif self._entry[1] is not None:
+            module = globals()[self._entry[1]]
+        if module is not None:
+            if getattr(module, '_cribo_machinery_loaded', False):
+                saved = type(self)._pristine.get(id(module))
+                fresh = _cribo.types.SimpleNamespace()
+                fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
+                return fresh
+            return module
         module = _cribo.types.SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             setattr(module, export, globals()[binding])
@@ -98,28 +106,28 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
         break
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
-_cribo_finder.register('myrequests', '_cribo_init___cribo_a5ac5e_myrequests', 'myrequests', True)
+_cribo_finder_local.register('myrequests', '_cribo_init___cribo_a5ac5e_myrequests', 'myrequests', True)
 _cribo_finder.register('myrequests.utils', '_cribo_init___cribo_ce8acb_myrequests_utils', 'myrequests_utils', False)
 _cribo_finder.register('myrequests.exceptions', '_cribo_init___cribo_530a30_myrequests_exceptions', 'myrequests_exceptions', False)
 _cribo_finder.register('myrequests.cookies', '_cribo_init___cribo_135ee1_myrequests_cookies', 'myrequests_cookies', False)
 _cribo_finder.register('myrequests.compat', '_cribo_init___cribo_5ad29b_myrequests_compat', 'myrequests_compat', False)
 myrequests_compat = _cribo.types.SimpleNamespace(__name__='myrequests.compat', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('myrequests.compat', myrequests_compat)
-def _cribo_init___cribo_5ad29b_myrequests_compat(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    self.__package__ = 'myrequests'
-    self.__doc__ = 'Compat module that provides base classes and utilities used by other modules.'
+def _cribo_init___cribo_5ad29b_myrequests_compat(_cribo_self):
+    if getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    _cribo_self.__package__ = 'myrequests'
+    _cribo_self.__doc__ = 'Compat module that provides base classes and utilities used by other modules.'
     """Compat module that provides base classes and utilities used by other modules."""
     try:
         import simplejson as json
         myrequests_compat.json = json
     except ImportError:
         json = _cribo.json
-        self.json = json
+        _cribo_self.json = json
     if hasattr(json, "JSONDecodeError"):
         JSONDecodeError = json.JSONDecodeError
         myrequests_compat.JSONDecodeError = JSONDecodeError
@@ -127,30 +135,30 @@ def _cribo_init___cribo_5ad29b_myrequests_compat(self):
         JSONDecodeError = ValueError
         myrequests_compat.JSONDecodeError = JSONDecodeError
     MutableMapping = _cribo.collections.abc.MutableMapping
-    self.MutableMapping = MutableMapping
+    _cribo_self.MutableMapping = MutableMapping
     Mapping = _cribo.collections.abc.Mapping
-    self.Mapping = Mapping
+    _cribo_self.Mapping = Mapping
     cookielib = _cribo.http.cookiejar
-    self.cookielib = cookielib
+    _cribo_self.cookielib = cookielib
     builtin_str = str
-    self.builtin_str = builtin_str
+    _cribo_self.builtin_str = builtin_str
     basestring = str, bytes
-    self.basestring = basestring
+    _cribo_self.basestring = basestring
     urlparse = _cribo.urllib.parse.urlparse
-    self.urlparse = urlparse
+    _cribo_self.urlparse = urlparse
     urlunparse = _cribo.urllib.parse.urlunparse
-    self.urlunparse = urlunparse
+    _cribo_self.urlunparse = urlunparse
     urljoin = _cribo.urllib.parse.urljoin
-    self.urljoin = urljoin
-    self.MutableMapping = _cribo.collections.abc.MutableMapping
-    self.Mapping = _cribo.collections.abc.Mapping
-    self.cookielib = _cribo.http.cookiejar
-    self.urlparse = _cribo.urllib.parse.urlparse
-    self.urlunparse = _cribo.urllib.parse.urlunparse
-    self.urljoin = _cribo.urllib.parse.urljoin
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+    _cribo_self.urljoin = urljoin
+    _cribo_self.MutableMapping = _cribo.collections.abc.MutableMapping
+    _cribo_self.Mapping = _cribo.collections.abc.Mapping
+    _cribo_self.cookielib = _cribo.http.cookiejar
+    _cribo_self.urlparse = _cribo.urllib.parse.urlparse
+    _cribo_self.urlunparse = _cribo.urllib.parse.urlunparse
+    _cribo_self.urljoin = _cribo.urllib.parse.urljoin
+    _cribo_self.__initialized__ = True
+    _cribo_self.__initializing__ = False
+    return _cribo_self
 myrequests_compat.__init__ = _cribo_init___cribo_5ad29b_myrequests_compat
 myrequests = _cribo.types.SimpleNamespace(__name__='myrequests', __initializing__=False, __initialized__=False, __path__=[])
 myrequests.compat = myrequests_compat
@@ -163,64 +171,64 @@ myrequests.exceptions = myrequests_exceptions
 myrequests_utils = _cribo.types.SimpleNamespace(__name__='myrequests.utils', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('myrequests.utils', myrequests_utils)
 myrequests.utils = myrequests_utils
-def _cribo_init___cribo_a5ac5e_myrequests(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    self.__package__ = 'myrequests'
-    self.__doc__ = 'Main package that imports from multiple submodules.'
+def _cribo_init___cribo_a5ac5e_myrequests(_cribo_self):
+    if getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    _cribo_self.__package__ = 'myrequests'
+    _cribo_self.__doc__ = 'Main package that imports from multiple submodules.'
     global myrequests_compat, myrequests_cookies, myrequests_exceptions, myrequests_utils
     """Main package that imports from multiple submodules."""
     myrequests_compat = _cribo_init___cribo_5ad29b_myrequests_compat(myrequests_compat)
     compat = myrequests.compat
-    self.compat = compat
+    _cribo_self.compat = compat
     myrequests_cookies = _cribo_init___cribo_135ee1_myrequests_cookies(myrequests_cookies)
     cookies = myrequests.cookies
-    self.cookies = cookies
+    _cribo_self.cookies = cookies
     myrequests_exceptions = _cribo_init___cribo_530a30_myrequests_exceptions(myrequests_exceptions)
     exceptions = myrequests.exceptions
-    self.exceptions = exceptions
+    _cribo_self.exceptions = exceptions
     myrequests_utils = _cribo_init___cribo_ce8acb_myrequests_utils(myrequests_utils)
     utils = myrequests.utils
-    self.utils = utils
+    _cribo_self.utils = utils
     myrequests_cookies = _cribo_init___cribo_135ee1_myrequests_cookies(myrequests_cookies)
     CookieJar = myrequests_cookies.CookieJar
-    self.CookieJar = CookieJar
-    self.CookieJar = CookieJar
+    _cribo_self.CookieJar = CookieJar
+    _cribo_self.CookieJar = CookieJar
     myrequests_exceptions = _cribo_init___cribo_530a30_myrequests_exceptions(myrequests_exceptions)
     JSONDecodeError = myrequests_exceptions.JSONDecodeError
-    self.JSONDecodeError = JSONDecodeError
-    self.JSONDecodeError = JSONDecodeError
+    _cribo_self.JSONDecodeError = JSONDecodeError
+    _cribo_self.JSONDecodeError = JSONDecodeError
     myrequests_utils = _cribo_init___cribo_ce8acb_myrequests_utils(myrequests_utils)
     decode_json = myrequests_utils.decode_json
-    self.decode_json = decode_json
-    self.decode_json = decode_json
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+    _cribo_self.decode_json = decode_json
+    _cribo_self.decode_json = decode_json
+    _cribo_self.__initialized__ = True
+    _cribo_self.__initializing__ = False
+    return _cribo_self
 myrequests.__init__ = _cribo_init___cribo_a5ac5e_myrequests
-def _cribo_init___cribo_135ee1_myrequests_cookies(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    self.__package__ = 'myrequests'
-    self.__doc__ = "Cookies module that uses compat's MutableMapping in class inheritance."
+def _cribo_init___cribo_135ee1_myrequests_cookies(_cribo_self):
+    if getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    _cribo_self.__package__ = 'myrequests'
+    _cribo_self.__doc__ = "Cookies module that uses compat's MutableMapping in class inheritance."
     global myrequests_compat
     """Cookies module that uses compat's MutableMapping in class inheritance."""
     myrequests_compat = _cribo_init___cribo_5ad29b_myrequests_compat(myrequests_compat)
     cookielib = myrequests.compat.cookielib
-    self.cookielib = cookielib
-    self.cookielib = cookielib
+    _cribo_self.cookielib = cookielib
+    _cribo_self.cookielib = cookielib
     MutableMapping = myrequests.compat.MutableMapping
-    self.MutableMapping = MutableMapping
-    self.MutableMapping = MutableMapping
+    _cribo_self.MutableMapping = MutableMapping
+    _cribo_self.MutableMapping = MutableMapping
     urlparse = myrequests.compat.urlparse
-    self.urlparse = urlparse
-    self.urlparse = urlparse
+    _cribo_self.urlparse = urlparse
+    _cribo_self.urlparse = urlparse
 
     class CookieJar(cookielib.CookieJar, MutableMapping):
         """A cookie jar that also implements the MutableMapping interface."""
@@ -251,67 +259,67 @@ def _cribo_init___cribo_135ee1_myrequests_cookies(self):
             self._cookies[name] = value
     CookieJar.__module__ = 'myrequests.cookies'
     CookieJar.__qualname__ = 'CookieJar'
-    self.CookieJar = CookieJar
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+    _cribo_self.CookieJar = CookieJar
+    _cribo_self.__initialized__ = True
+    _cribo_self.__initializing__ = False
+    return _cribo_self
 myrequests_cookies.__init__ = _cribo_init___cribo_135ee1_myrequests_cookies
-def _cribo_init___cribo_530a30_myrequests_exceptions(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    self.__package__ = 'myrequests'
-    self.__doc__ = 'Exceptions module that uses compat types in class inheritance.'
+def _cribo_init___cribo_530a30_myrequests_exceptions(_cribo_self):
+    if getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    _cribo_self.__package__ = 'myrequests'
+    _cribo_self.__doc__ = 'Exceptions module that uses compat types in class inheritance.'
     global myrequests_compat
     """Exceptions module that uses compat types in class inheritance."""
     myrequests_compat = _cribo_init___cribo_5ad29b_myrequests_compat(myrequests_compat)
     CompatJSONDecodeError = myrequests.compat.JSONDecodeError
-    self.CompatJSONDecodeError = CompatJSONDecodeError
-    self.CompatJSONDecodeError = CompatJSONDecodeError
+    _cribo_self.CompatJSONDecodeError = CompatJSONDecodeError
+    _cribo_self.CompatJSONDecodeError = CompatJSONDecodeError
 
     class RequestException(Exception):
         """Base exception for all request errors."""
         pass
     RequestException.__module__ = 'myrequests.exceptions'
     RequestException.__qualname__ = 'RequestException'
-    self.RequestException = RequestException
+    _cribo_self.RequestException = RequestException
 
     class InvalidJSONError(RequestException):
         """A JSON error occurred."""
         pass
     InvalidJSONError.__module__ = 'myrequests.exceptions'
     InvalidJSONError.__qualname__ = 'InvalidJSONError'
-    self.InvalidJSONError = InvalidJSONError
+    _cribo_self.InvalidJSONError = InvalidJSONError
 
     class JSONDecodeError(InvalidJSONError, CompatJSONDecodeError):
         """Couldn't decode the text into json."""
         pass
     JSONDecodeError.__module__ = 'myrequests.exceptions'
     JSONDecodeError.__qualname__ = 'JSONDecodeError'
-    self.JSONDecodeError = JSONDecodeError
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+    _cribo_self.JSONDecodeError = JSONDecodeError
+    _cribo_self.__initialized__ = True
+    _cribo_self.__initializing__ = False
+    return _cribo_self
 myrequests_exceptions.__init__ = _cribo_init___cribo_530a30_myrequests_exceptions
-def _cribo_init___cribo_ce8acb_myrequests_utils(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    self.__package__ = 'myrequests'
-    self.__doc__ = 'Utils module that also uses compat.'
+def _cribo_init___cribo_ce8acb_myrequests_utils(_cribo_self):
+    if getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    _cribo_self.__package__ = 'myrequests'
+    _cribo_self.__doc__ = 'Utils module that also uses compat.'
     global myrequests_compat
     """Utils module that also uses compat."""
     myrequests_compat = _cribo_init___cribo_5ad29b_myrequests_compat(myrequests_compat)
     json = myrequests.compat.json
-    self.json = json
-    self.json = json
+    _cribo_self.json = json
+    _cribo_self.json = json
     builtin_str = myrequests.compat.builtin_str
-    self.builtin_str = builtin_str
-    self.builtin_str = builtin_str
+    _cribo_self.builtin_str = builtin_str
+    _cribo_self.builtin_str = builtin_str
 
     def to_native_string(string):
         """Convert to native string type."""
@@ -320,7 +328,7 @@ def _cribo_init___cribo_ce8acb_myrequests_utils(self):
         return str(string)
     to_native_string.__module__ = 'myrequests.utils'
     to_native_string.__qualname__ = 'to_native_string'
-    self.to_native_string = to_native_string
+    _cribo_self.to_native_string = to_native_string
 
     def decode_json(content):
         """Decode JSON content."""
@@ -331,10 +339,10 @@ def _cribo_init___cribo_ce8acb_myrequests_utils(self):
             raise OurJSONDecodeError(str(e))
     decode_json.__module__ = 'myrequests.utils'
     decode_json.__qualname__ = 'decode_json'
-    self.decode_json = decode_json
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+    _cribo_self.decode_json = decode_json
+    _cribo_self.__initialized__ = True
+    _cribo_self.__initializing__ = False
+    return _cribo_self
 myrequests_utils.__init__ = _cribo_init___cribo_ce8acb_myrequests_utils
 """Test that mimics requests' pattern causing forward reference."""
 __cribo_init_result = _cribo_init___cribo_a5ac5e_myrequests(myrequests)

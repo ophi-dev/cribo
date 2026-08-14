@@ -24,8 +24,10 @@ use crate::{ast_builder::statements, types::FxIndexMap};
 /// names the original module (pickle and multiprocessing resolve objects
 /// through `__import__(obj.__module__)` + getattr by qualified name), and
 /// renamed bindings restore the original `__name__`/`__qualname__`. Decorated
-/// definitions may evaluate to objects that reject attribute writes, so their
-/// stamps are guarded by try/except (`AttributeError`, `TypeError`).
+/// definitions may evaluate to unrelated replacement objects, so their stamps
+/// only apply when the result still carries the definition's `__name__`
+/// (original object or functools.wraps-style copy), wrapped in try/except
+/// (`AttributeError`, `TypeError`) for objects rejecting attribute writes.
 fn emit_inlined_identity_stamps(
     inlined_stmts: &mut Vec<Stmt>,
     binding: &str,
@@ -56,8 +58,31 @@ fn emit_inlined_identity_stamps(
         return;
     }
     use ruff_python_ast::{
-        AtomicNodeIndex, ExceptHandler, ExceptHandlerExceptHandler, ExprContext,
+        AtomicNodeIndex, CmpOp, ExceptHandler, ExceptHandlerExceptHandler, ExprCompare, ExprContext,
     };
+    // Only stamp a decorator RESULT that still carries the inlined
+    // definition's identity (the original object, or a functools.wraps-style
+    // replacement copying __name__): normal Python leaves unrelated
+    // replacement objects untouched, and stamping a shared imported object
+    // would corrupt its introspection for every other reference. The inlined
+    // `def` statement itself uses the (possibly renamed) binding name, so that
+    // is the runtime __name__ the decorator observed.
+    let carries_identity = Expr::Compare(ExprCompare {
+        node_index: AtomicNodeIndex::NONE,
+        range: TextRange::default(),
+        left: Box::new(crate::ast_builder::expressions::call(
+            crate::ast_builder::expressions::name("getattr", ExprContext::Load),
+            vec![
+                crate::ast_builder::expressions::name(binding, ExprContext::Load),
+                crate::ast_builder::expressions::string_literal("__name__"),
+                crate::ast_builder::expressions::none_literal(),
+            ],
+            vec![],
+        )),
+        ops: Box::new([CmpOp::Eq]),
+        comparators: Box::new([crate::ast_builder::expressions::string_literal(binding)]),
+    });
+    let guarded = vec![statements::if_stmt(carries_identity, stamps, vec![])];
     let handler = ExceptHandler::ExceptHandler(ExceptHandlerExceptHandler {
         node_index: AtomicNodeIndex::NONE,
         range: TextRange::default(),
@@ -68,7 +93,7 @@ fn emit_inlined_identity_stamps(
         name: None,
         body: vec![statements::pass()].into(),
     });
-    inlined_stmts.push(statements::try_stmt(stamps, vec![handler], vec![], vec![]));
+    inlined_stmts.push(statements::try_stmt(guarded, vec![handler], vec![], vec![]));
 }
 
 impl Bundler<'_> {

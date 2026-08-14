@@ -4,7 +4,12 @@
 //! initialization functions that can be called to create module objects.
 
 /// Name of the module object parameter used in generated init functions.
-pub(crate) const SELF_PARAM: &str = "self";
+///
+/// Deliberately NOT `self`: nested scopes inside the init body keep closure
+/// access to this name when import globals or `globals()` are rewritten to
+/// attributes of the module namespace, and user code (most prominently every
+/// method's `self` parameter) must not shadow it.
+pub(crate) const SELF_PARAM: &str = "_cribo_self";
 
 use log::debug;
 use ruff_python_ast::{
@@ -193,6 +198,11 @@ impl ImportGlobalRewriter<'_> {
 
     /// Apply the scope-aware rewrite to one class definition (decorators and
     /// base-class expressions evaluate in the enclosing scope).
+    ///
+    /// Class-namespace bindings shadow lookups only for expressions evaluated
+    /// IN the class body: nested methods resolve globals from the defining
+    /// module, so they are analyzed against the enclosing module scope,
+    /// filtered only by their own bindings.
     fn rewrite_class(&self, class_def: &mut ruff_python_ast::StmtClassDef) {
         use ruff_python_ast::visitor::transformer::Transformer as _;
         for decorator in &mut class_def.decorator_list {
@@ -215,12 +225,20 @@ impl ImportGlobalRewriter<'_> {
         ) {
             inner_names.retain(|name| *name != "__doc__");
         }
-        if !inner_names.is_empty() {
-            let inner = ImportGlobalRewriter {
-                replacement: self.replacement,
-                names: inner_names,
-            };
-            inner.visit_body(&mut class_def.body);
+        let body_rewriter = ImportGlobalRewriter {
+            replacement: self.replacement,
+            names: inner_names,
+        };
+        for stmt in &mut class_def.body {
+            match stmt {
+                // Method bodies resolve globals from the MODULE, not the class
+                // namespace: analyze them against the enclosing module scope
+                Stmt::FunctionDef(method) => self.rewrite_function(method),
+                // Nested class bodies likewise skip the enclosing class
+                // namespace and fall through to the module scope
+                Stmt::ClassDef(nested) => self.rewrite_class(nested),
+                _ => body_rewriter.visit_stmt(stmt),
+            }
         }
     }
 }
@@ -303,33 +321,55 @@ impl ruff_python_ast::visitor::transformer::Transformer for ImportGlobalRewriter
                     inner.visit_expr(&mut lambda.body);
                 }
             }
-            // Comprehension targets bind their own scope for the whole expression
+            // Comprehension targets bind their own scope, but Python evaluates
+            // the FIRST iterable in the enclosing scope; targets then apply to
+            // the following clauses and the element expressions sequentially
             Expr::ListComp(_) | Expr::SetComp(_) | Expr::DictComp(_) | Expr::Generator(_) => {
-                let generators = match &*expr {
-                    Expr::ListComp(comp) => &comp.generators,
-                    Expr::SetComp(comp) => &comp.generators,
-                    Expr::DictComp(comp) => &comp.generators,
-                    Expr::Generator(comp) => &comp.generators,
+                let generators = match expr {
+                    Expr::ListComp(comp) => &mut comp.generators,
+                    Expr::SetComp(comp) => &mut comp.generators,
+                    Expr::DictComp(comp) => &mut comp.generators,
+                    Expr::Generator(comp) => &mut comp.generators,
                     _ => unreachable!("matched comprehension variants only"),
                 };
-                let mut bound: Vec<String> = Vec::new();
-                for comprehension in generators {
-                    Self::collect_target_names(&comprehension.target, &mut bound);
-                }
-                let inner_names: Vec<&'static str> = self
-                    .names
-                    .iter()
-                    .copied()
-                    .filter(|name| !bound.iter().any(|target| target == name))
-                    .collect();
-                if inner_names.len() == self.names.len() {
-                    walk_expr(self, expr);
-                } else if !inner_names.is_empty() {
-                    let inner = ImportGlobalRewriter {
+                let mut active: Vec<&'static str> = self.names.clone();
+                for (index, comprehension) in generators.iter_mut().enumerate() {
+                    let clause_rewriter = ImportGlobalRewriter {
                         replacement: self.replacement,
-                        names: inner_names,
+                        names: active.clone(),
                     };
-                    walk_expr(&inner, expr);
+                    if index == 0 {
+                        // First iterable: full enclosing-scope rewriting
+                        self.visit_expr(&mut comprehension.iter);
+                    } else {
+                        clause_rewriter.visit_expr(&mut comprehension.iter);
+                    }
+                    let mut bound: Vec<String> = Vec::new();
+                    Self::collect_target_names(&comprehension.target, &mut bound);
+                    active.retain(|name| !bound.iter().any(|target| target == name));
+                    let guard_rewriter = ImportGlobalRewriter {
+                        replacement: self.replacement,
+                        names: active.clone(),
+                    };
+                    for if_clause in &mut comprehension.ifs {
+                        guard_rewriter.visit_expr(if_clause);
+                    }
+                }
+                let element_rewriter = ImportGlobalRewriter {
+                    replacement: self.replacement,
+                    names: active,
+                };
+                match expr {
+                    Expr::ListComp(comp) => element_rewriter.visit_expr(&mut comp.elt),
+                    Expr::SetComp(comp) => element_rewriter.visit_expr(&mut comp.elt),
+                    Expr::DictComp(comp) => {
+                        if let Some(key) = &mut comp.key {
+                            element_rewriter.visit_expr(key);
+                        }
+                        element_rewriter.visit_expr(&mut comp.value);
+                    }
+                    Expr::Generator(comp) => element_rewriter.visit_expr(&mut comp.elt),
+                    _ => unreachable!("matched comprehension variants only"),
                 }
             }
             _ => walk_expr(self, expr),
@@ -378,9 +418,34 @@ fn emit_identity_stamps(
         return;
     }
     use ruff_python_ast::{
-        AtomicNodeIndex, ExceptHandler, ExceptHandlerExceptHandler, ExprContext,
+        AtomicNodeIndex, CmpOp, ExceptHandler, ExceptHandlerExceptHandler, ExprCompare, ExprContext,
     };
     use ruff_text_size::TextRange;
+    // Only stamp a decorator RESULT that still carries the original
+    // definition's identity (the original object, or a functools.wraps-style
+    // replacement copying __name__): normal Python leaves unrelated
+    // replacement objects untouched, and stamping a shared imported object
+    // would corrupt its introspection for every other reference
+    let carries_identity = Expr::Compare(ExprCompare {
+        node_index: AtomicNodeIndex::NONE,
+        range: TextRange::default(),
+        left: Box::new(ast_builder::expressions::call(
+            ast_builder::expressions::name("getattr", ExprContext::Load),
+            vec![
+                ast_builder::expressions::name(symbol_name, ExprContext::Load),
+                ast_builder::expressions::string_literal("__name__"),
+                ast_builder::expressions::none_literal(),
+            ],
+            vec![],
+        )),
+        ops: Box::new([CmpOp::Eq]),
+        comparators: Box::new([ast_builder::expressions::string_literal(original_name)]),
+    });
+    let guarded = vec![ast_builder::statements::if_stmt(
+        carries_identity,
+        stamps,
+        vec![],
+    )];
     let handler = ExceptHandler::ExceptHandler(ExceptHandlerExceptHandler {
         node_index: AtomicNodeIndex::NONE,
         range: TextRange::default(),
@@ -392,7 +457,7 @@ fn emit_identity_stamps(
         body: vec![ast_builder::statements::pass()].into(),
     });
     body.push(ast_builder::statements::try_stmt(
-        stamps,
+        guarded,
         vec![handler],
         vec![],
         vec![],

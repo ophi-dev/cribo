@@ -4,6 +4,6 @@ input_file: crates/cribo/tests/fixtures/importlib_preserved_eviction_reimport/ma
 ---
 ExecutionResults {
     status: Success,
-    stdout: "evicted_helper body runs\nfirst VALUE: fresh\nevicted_helper body runs\nsecond VALUE: fresh",
+    stdout: "evicted_helper body runs\nfirst VALUE: fresh\nevicted_helper body runs\nsecond VALUE: fresh\ndistinct objects: True",
     stderr: "",
 }

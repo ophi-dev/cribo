@@ -218,6 +218,47 @@ impl<'a> ImportDiscoveryVisitor<'a> {
         None
     }
 
+    /// Install a function's binding scope: scope stack element, fresh
+    /// scope-local import map, and the body-wide shadow set. Python scoping
+    /// makes any name assigned in the function local for the WHOLE body, so a
+    /// call before the assignment must not be attributed to an enclosing
+    /// import either (it raises `UnboundLocalError` at runtime). This includes
+    /// IMPORT bindings: `import json as importlib` later in the body makes
+    /// earlier uses of `importlib` unbound too — the shadow is lifted when the
+    /// import statement itself is reached (see `insert_imported_name`). Names
+    /// declared `global` rebind the module scope instead of shadowing.
+    fn enter_function_scope(&mut self, func: &ruff_python_ast::StmtFunctionDef) {
+        self.scope_stack
+            .push(ScopeElement::Function(func.name.to_string()));
+        self.imported_names_stack.push(FxIndexMap::default());
+        // Parameters rebind their names for the function body, shadowing any
+        // same-named import from an enclosing scope
+        let mut parameter_names = FxIndexSet::default();
+        for param in func
+            .parameters
+            .posonlyargs
+            .iter()
+            .chain(&func.parameters.args)
+            .chain(&func.parameters.kwonlyargs)
+        {
+            parameter_names.insert(param.parameter.name.as_str().to_owned());
+        }
+        if let Some(vararg) = &func.parameters.vararg {
+            parameter_names.insert(vararg.name.as_str().to_owned());
+        }
+        if let Some(kwarg) = &func.parameters.kwarg {
+            parameter_names.insert(kwarg.name.as_str().to_owned());
+        }
+        {
+            let scope_globals = crate::visitors::collect_scope_global_declarations(&func.body);
+            crate::visitors::LocalVarCollector::new(&mut parameter_names, &scope_globals)
+                .collect_from_stmts(&func.body);
+        }
+        self.shadowed_names_stack.push(parameter_names);
+        self.conditionally_shadowed_names_stack
+            .push(FxIndexSet::default());
+    }
+
     #[inline]
     fn insert_shadowed_name(&mut self, name: String) {
         // A rebinding inside conditional control flow (if/try/for/while branch)
@@ -738,47 +779,9 @@ impl<'a> ImportDiscoveryVisitor<'a> {
 impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
     fn enter_node(&mut self, node: AnyNodeRef<'a>) -> TraversalSignal {
         match node {
-            // Handle scope-creating nodes
-            AnyNodeRef::StmtFunctionDef(func) => {
-                self.scope_stack
-                    .push(ScopeElement::Function(func.name.to_string()));
-                self.imported_names_stack.push(FxIndexMap::default());
-                // Parameters rebind their names for the function body, shadowing any
-                // same-named import from an enclosing scope
-                let mut parameter_names = FxIndexSet::default();
-                for param in func
-                    .parameters
-                    .posonlyargs
-                    .iter()
-                    .chain(&func.parameters.args)
-                    .chain(&func.parameters.kwonlyargs)
-                {
-                    parameter_names.insert(param.parameter.name.as_str().to_owned());
-                }
-                if let Some(vararg) = &func.parameters.vararg {
-                    parameter_names.insert(vararg.name.as_str().to_owned());
-                }
-                if let Some(kwarg) = &func.parameters.kwarg {
-                    parameter_names.insert(kwarg.name.as_str().to_owned());
-                }
-                // Python scoping makes any name assigned in the function local for
-                // the WHOLE body, so a call before the assignment must not be
-                // attributed to an enclosing import either (it raises
-                // UnboundLocalError at runtime). This includes IMPORT bindings:
-                // `import json as importlib` later in the body makes earlier uses
-                // of `importlib` unbound too — the shadow is lifted when the import
-                // statement itself is reached (see `insert_imported_name`). Names
-                // declared `global` rebind the module scope instead of shadowing.
-                {
-                    let scope_globals =
-                        crate::visitors::collect_scope_global_declarations(&func.body);
-                    crate::visitors::LocalVarCollector::new(&mut parameter_names, &scope_globals)
-                        .collect_from_stmts(&func.body);
-                }
-                self.shadowed_names_stack.push(parameter_names);
-                self.conditionally_shadowed_names_stack
-                    .push(FxIndexSet::default());
-            }
+            // Handle scope-creating nodes. StmtFunctionDef is fully handled in
+            // `visit_stmt` (definition-time expressions must be visited in the
+            // enclosing scope before the body-wide shadow set is installed).
             AnyNodeRef::StmtClassDef(class) => {
                 self.scope_stack
                     .push(ScopeElement::Class(class.name.to_string()));
@@ -823,14 +826,8 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
             // Clean up scope stack when leaving scope-creating nodes. The
             // definition's NAME then rebinds in the enclosing scope (recorded
             // after the definition-time expressions were visited): a later
-            // `def importlib(): ...` kills an earlier import alias.
-            AnyNodeRef::StmtFunctionDef(func) => {
-                self.scope_stack.pop();
-                self.imported_names_stack.pop();
-                self.shadowed_names_stack.pop();
-                self.conditionally_shadowed_names_stack.pop();
-                self.insert_shadowed_name(func.name.to_string());
-            }
+            // `class importlib: ...` kills an earlier import alias.
+            // StmtFunctionDef is fully handled in `visit_stmt`.
             AnyNodeRef::StmtClassDef(class) => {
                 self.scope_stack.pop();
                 self.imported_names_stack.pop();
@@ -880,6 +877,81 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
 
     fn visit_stmt(&mut self, stmt: &'a Stmt) {
         match stmt {
+            // Definition-time expressions of a `def` (decorators, parameter
+            // defaults and annotations, return annotation) evaluate in the
+            // ENCLOSING scope when the statement executes, BEFORE the function
+            // scope exists: `def f(importlib=importlib.import_module("helper"))`
+            // resolves `importlib` through the enclosing import. Visit them
+            // before installing the body-wide shadow set, mirroring the Lambda
+            // handling in `visit_expr`.
+            Stmt::FunctionDef(func) => {
+                for decorator in &func.decorator_list {
+                    self.visit_expr(&decorator.expression);
+                }
+                if let Some(type_params) = &func.type_params {
+                    for type_param in type_params.iter() {
+                        match type_param {
+                            ruff_python_ast::TypeParam::TypeVar(tv) => {
+                                if let Some(bound) = &tv.bound {
+                                    self.visit_expr(bound);
+                                }
+                                if let Some(default) = &tv.default {
+                                    self.visit_expr(default);
+                                }
+                            }
+                            ruff_python_ast::TypeParam::ParamSpec(ps) => {
+                                if let Some(default) = &ps.default {
+                                    self.visit_expr(default);
+                                }
+                            }
+                            ruff_python_ast::TypeParam::TypeVarTuple(tvt) => {
+                                if let Some(default) = &tvt.default {
+                                    self.visit_expr(default);
+                                }
+                            }
+                        }
+                    }
+                }
+                for param in func
+                    .parameters
+                    .posonlyargs
+                    .iter()
+                    .chain(&func.parameters.args)
+                    .chain(&func.parameters.kwonlyargs)
+                {
+                    if let Some(annotation) = &param.parameter.annotation {
+                        self.visit_expr(annotation);
+                    }
+                    if let Some(default) = &param.default {
+                        self.visit_expr(default);
+                    }
+                }
+                if let Some(vararg) = &func.parameters.vararg
+                    && let Some(annotation) = &vararg.annotation
+                {
+                    self.visit_expr(annotation);
+                }
+                if let Some(kwarg) = &func.parameters.kwarg
+                    && let Some(annotation) = &kwarg.annotation
+                {
+                    self.visit_expr(annotation);
+                }
+                if let Some(returns) = &func.returns {
+                    self.visit_expr(returns);
+                }
+                self.enter_function_scope(func);
+                for body_stmt in &func.body {
+                    self.visit_stmt(body_stmt);
+                }
+                self.scope_stack.pop();
+                self.imported_names_stack.pop();
+                self.shadowed_names_stack.pop();
+                self.conditionally_shadowed_names_stack.pop();
+                // The definition's NAME rebinds in the enclosing scope: a later
+                // `def importlib(): ...` kills an earlier import alias
+                self.insert_shadowed_name(func.name.to_string());
+                return;
+            }
             Stmt::If(if_stmt) => {
                 // Determine which branch (if any) is TYPE_CHECKING
                 let branch = Self::type_checking_branch(&if_stmt.test);

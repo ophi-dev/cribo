@@ -48,10 +48,24 @@ class _CriboPreservedLoader:
         self._namespace = namespace
 
     def create_module(self, spec):
+        module = None
         if self._namespace is not None:
-            return self._namespace
-        if self._entry[1] is not None:
-            return globals()[self._entry[1]]
+            module = self._namespace
+        elif self._entry[1] is not None:
+            module = globals()[self._entry[1]]
+        if module is not None:
+            if getattr(module, '_cribo_machinery_loaded', False):
+                # Eviction re-import: CPython executes a FRESH module object,
+                # and references to the EVICTED module keep observing its old
+                # namespace; rebuild from the pre-initialization snapshot so
+                # the two lives are distinct objects
+                saved = type(self)._pristine.get(id(module))
+                fresh = _cribo.types.SimpleNamespace()
+                fresh.__dict__.update(
+                    saved if saved is not None else {'__name__': spec.name}
+                )
+                return fresh
+            return module
         module = _cribo.types.SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             setattr(module, export, globals()[binding])
@@ -120,13 +134,12 @@ class _CriboPreservedFinder:
 
 _cribo_finder = _CriboPreservedFinder()
 {sys}.meta_path.append(_cribo_finder)
-# First-party bundled TOP-LEVEL PLAIN MODULES keep their original precedence:
-# the entry directory beat installed distributions before bundling, and a
-# top-level plain module neither has submodules nor resolves through an
-# installed parent, so its finder sits in FRONT of PathFinder (behind the
-# builtin/frozen importers). Packages, dotted submodules, and third-party
-# modules stay in the APPENDED finder, where installed distributions win
-# (native submodules resolve through installed parents).
+# First-party bundled TOP-LEVEL modules and packages keep their original
+# precedence: the entry directory beat installed distributions before
+# bundling, so their finder sits in FRONT of PathFinder (behind the
+# builtin/frozen importers). Dotted submodules and third-party modules stay
+# in the APPENDED finder, where installed distributions win (native
+# submodules resolve through installed parents).
 _cribo_finder_local = _CriboPreservedFinder()
 _cribo_finder_local._namespaces = _cribo_finder._namespaces
 for _cribo_index, _cribo_meta_finder in enumerate({sys}.meta_path):

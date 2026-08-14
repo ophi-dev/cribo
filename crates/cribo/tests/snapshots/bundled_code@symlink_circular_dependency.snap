@@ -10,21 +10,21 @@ import sys as _sys
 import importlib as _importlib
 class _CriboModule():
 
-    def __init__(self, m, p):
-        self._m, self._p = m, p
+    def __init__(_cribo_self, m, p):
+        _cribo_self._m, _cribo_self._p = m, p
 
-    def __getattr__(self, n):
-        f = self._p + '.' + n
+    def __getattr__(_cribo_self, n):
+        f = _cribo_self._p + '.' + n
         try:
             return _CriboModule(_importlib.import_module(f), f)
         except ImportError:
-            return getattr(self._m, n)
+            return getattr(_cribo_self._m, n)
 
-    def __getattribute__(self, n):
-        return object.__getattribute__(self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else getattr(object.__getattribute__(self, '_m'), n)
+    def __getattribute__(_cribo_self, n):
+        return object.__getattribute__(_cribo_self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else getattr(object.__getattribute__(_cribo_self, '_m'), n)
 class _Cribo():
 
-    def __getattr__(self, n):
+    def __getattr__(_cribo_self, n):
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
@@ -36,10 +36,18 @@ class _CriboPreservedLoader:
         self._namespace = namespace
 
     def create_module(self, spec):
+        module = None
         if self._namespace is not None:
-            return self._namespace
-        if self._entry[1] is not None:
-            return globals()[self._entry[1]]
+            module = self._namespace
+        elif self._entry[1] is not None:
+            module = globals()[self._entry[1]]
+        if module is not None:
+            if getattr(module, '_cribo_machinery_loaded', False):
+                saved = type(self)._pristine.get(id(module))
+                fresh = _cribo.types.SimpleNamespace()
+                fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
+                return fresh
+            return module
         module = _cribo.types.SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             setattr(module, export, globals()[binding])
@@ -104,59 +112,59 @@ moduleA = _cribo.types.SimpleNamespace(__name__='moduleA', __initializing__=Fals
 _cribo_finder.bind('moduleA', moduleA)
 moduleB = _cribo.types.SimpleNamespace(__name__='moduleB', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('moduleB', moduleB)
-def _cribo_init___cribo_895222_moduleA(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    self.__package__ = ''
-    self.__doc__ = None
+def _cribo_init___cribo_895222_moduleA(_cribo_self):
+    if getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    _cribo_self.__package__ = ''
+    _cribo_self.__doc__ = None
 
     def funcA():
         funcB = _cribo_init___cribo_19d6d4_moduleB(globals()['moduleB']).funcB
         return f"A calls {funcB()}"
     funcA.__module__ = 'moduleA'
     funcA.__qualname__ = 'funcA'
-    self.funcA = funcA
+    _cribo_self.funcA = funcA
 
     def get_chain():
         return "A -> B -> C(symlink to A)"
     get_chain.__module__ = 'moduleA'
     get_chain.__qualname__ = 'get_chain'
-    self.get_chain = get_chain
+    _cribo_self.get_chain = get_chain
 
     def funcC():
         return "Actually funcA pretending to be funcC"
     funcC.__module__ = 'moduleA'
     funcC.__qualname__ = 'funcC'
-    self.funcC = funcC
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+    _cribo_self.funcC = funcC
+    _cribo_self.__initialized__ = True
+    _cribo_self.__initializing__ = False
+    return _cribo_self
 moduleA.__init__ = _cribo_init___cribo_895222_moduleA
-def _cribo_init___cribo_19d6d4_moduleB(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    self.__package__ = ''
-    self.__doc__ = None
+def _cribo_init___cribo_19d6d4_moduleB(_cribo_self):
+    if getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    _cribo_self.__package__ = ''
+    _cribo_self.__doc__ = None
     global moduleA
     moduleA = _cribo_init___cribo_895222_moduleA(moduleA)
     funcC = moduleA.funcC
-    self.funcC = funcC
-    self.funcC = funcC
+    _cribo_self.funcC = funcC
+    _cribo_self.funcC = funcC
 
     def funcB():
         return f"B calls {funcC()}"
     funcB.__module__ = 'moduleB'
     funcB.__qualname__ = 'funcB'
-    self.funcB = funcB
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+    _cribo_self.funcB = funcB
+    _cribo_self.__initialized__ = True
+    _cribo_self.__initializing__ = False
+    return _cribo_self
 moduleB.__init__ = _cribo_init___cribo_19d6d4_moduleB
 moduleA = _cribo_init___cribo_895222_moduleA(moduleA)
 funcA = moduleA.funcA

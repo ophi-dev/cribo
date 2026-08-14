@@ -314,7 +314,7 @@ fn create_cribo_module_getattribute() -> Stmt {
             ExprContext::Load,
         ),
         vec![
-            expressions::name("self", ExprContext::Load),
+            expressions::name(SELF_PARAM, ExprContext::Load),
             expressions::name("n", ExprContext::Load),
         ],
         vec![],
@@ -328,7 +328,7 @@ fn create_cribo_module_getattribute() -> Stmt {
             ExprContext::Load,
         ),
         vec![
-            expressions::name("self", ExprContext::Load),
+            expressions::name(SELF_PARAM, ExprContext::Load),
             expressions::string_literal("_m"),
         ],
         vec![],

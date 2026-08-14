@@ -10,21 +10,21 @@ import sys as _sys
 import importlib as _importlib
 class _CriboModule():
 
-    def __init__(self, m, p):
-        self._m, self._p = m, p
+    def __init__(_cribo_self, m, p):
+        _cribo_self._m, _cribo_self._p = m, p
 
-    def __getattr__(self, n):
-        f = self._p + '.' + n
+    def __getattr__(_cribo_self, n):
+        f = _cribo_self._p + '.' + n
         try:
             return _CriboModule(_importlib.import_module(f), f)
         except ImportError:
-            return getattr(self._m, n)
+            return getattr(_cribo_self._m, n)
 
-    def __getattribute__(self, n):
-        return object.__getattribute__(self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else getattr(object.__getattribute__(self, '_m'), n)
+    def __getattribute__(_cribo_self, n):
+        return object.__getattribute__(_cribo_self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else getattr(object.__getattribute__(_cribo_self, '_m'), n)
 class _Cribo():
 
-    def __getattr__(self, n):
+    def __getattr__(_cribo_self, n):
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
@@ -36,10 +36,18 @@ class _CriboPreservedLoader:
         self._namespace = namespace
 
     def create_module(self, spec):
+        module = None
         if self._namespace is not None:
-            return self._namespace
-        if self._entry[1] is not None:
-            return globals()[self._entry[1]]
+            module = self._namespace
+        elif self._entry[1] is not None:
+            module = globals()[self._entry[1]]
+        if module is not None:
+            if getattr(module, '_cribo_machinery_loaded', False):
+                saved = type(self)._pristine.get(id(module))
+                fresh = _cribo.types.SimpleNamespace()
+                fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
+                return fresh
+            return module
         module = _cribo.types.SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             setattr(module, export, globals()[binding])
@@ -98,7 +106,7 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
         break
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
-_cribo_finder.register('complex_pkg', '_cribo_init___cribo_937418_complex_pkg', 'complex_pkg', True)
+_cribo_finder_local.register('complex_pkg', '_cribo_init___cribo_937418_complex_pkg', 'complex_pkg', True)
 _cribo_finder.register('complex_pkg.console', '_cribo_init___cribo_beaba5_complex_pkg_console', 'complex_pkg_console', False)
 _cribo_finder.register('complex_pkg.abc', None, None, False, {'Base': 'Base'})
 complex_pkg_abc = _cribo.types.SimpleNamespace(__name__='complex_pkg.abc')
@@ -119,49 +127,49 @@ complex_pkg_abc.Base = Base
 complex_pkg_console = _cribo.types.SimpleNamespace(__name__='complex_pkg.console', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('complex_pkg.console', complex_pkg_console)
 complex_pkg.console = complex_pkg_console
-def _cribo_init___cribo_937418_complex_pkg(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    self.__package__ = 'complex_pkg'
-    self.__doc__ = None
+def _cribo_init___cribo_937418_complex_pkg(_cribo_self):
+    if getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    _cribo_self.__package__ = 'complex_pkg'
+    _cribo_self.__doc__ = None
     global complex_pkg_console
     Base = complex_pkg_abc.Base
     complex_pkg.Base = Base
     complex_pkg_console = _cribo_init___cribo_beaba5_complex_pkg_console(complex_pkg_console)
     Console = complex_pkg_console.Console
-    self.Console = Console
-    self.Console = Console
+    _cribo_self.Console = Console
+    _cribo_self.Console = Console
 
     def main():
         console = Console()
         console.print("Testing")
     main.__module__ = 'complex_pkg'
     main.__qualname__ = 'main'
-    self.main = main
-    self.abc = complex_pkg_abc
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+    _cribo_self.main = main
+    _cribo_self.abc = complex_pkg_abc
+    _cribo_self.__initialized__ = True
+    _cribo_self.__initializing__ = False
+    return _cribo_self
 complex_pkg.__init__ = _cribo_init___cribo_937418_complex_pkg
-def _cribo_init___cribo_beaba5_complex_pkg_console(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    self.__package__ = 'complex_pkg'
-    self.__doc__ = None
+def _cribo_init___cribo_beaba5_complex_pkg_console(_cribo_self):
+    if getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    _cribo_self.__package__ = 'complex_pkg'
+    _cribo_self.__doc__ = None
     Any = _cribo.typing.Any
-    self.Any = Any
+    _cribo_self.Any = Any
     Optional = _cribo.typing.Optional
-    self.Optional = Optional
+    _cribo_self.Optional = Optional
     List = _cribo.typing.List
-    self.List = List
+    _cribo_self.List = List
     Enum = _cribo.enum.Enum
-    self.Enum = Enum
+    _cribo_self.Enum = Enum
     Base = complex_pkg_abc.Base
     complex_pkg_console.Base = Base
 
@@ -170,7 +178,7 @@ def _cribo_init___cribo_beaba5_complex_pkg_console(self):
         HTML = "html"
     RenderMode.__module__ = 'complex_pkg.console'
     RenderMode.__qualname__ = 'RenderMode'
-    self.RenderMode = RenderMode
+    _cribo_self.RenderMode = RenderMode
 
     class Console(Base):
         """Console class similar to rich.console.Console"""
@@ -186,14 +194,14 @@ def _cribo_init___cribo_beaba5_complex_pkg_console(self):
             print(*args)
     Console.__module__ = 'complex_pkg.console'
     Console.__qualname__ = 'Console'
-    self.Console = Console
-    self.Any = _cribo.typing.Any
-    self.Optional = _cribo.typing.Optional
-    self.List = _cribo.typing.List
-    self.Enum = _cribo.enum.Enum
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+    _cribo_self.Console = Console
+    _cribo_self.Any = _cribo.typing.Any
+    _cribo_self.Optional = _cribo.typing.Optional
+    _cribo_self.List = _cribo.typing.List
+    _cribo_self.Enum = _cribo.enum.Enum
+    _cribo_self.__initialized__ = True
+    _cribo_self.__initializing__ = False
+    return _cribo_self
 complex_pkg_console.__init__ = _cribo_init___cribo_beaba5_complex_pkg_console
 __cribo_init_result = _cribo_init___cribo_937418_complex_pkg(complex_pkg)
 for attr in dir(__cribo_init_result):

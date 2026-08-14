@@ -10,21 +10,21 @@ import sys as _sys
 import importlib as _importlib
 class _CriboModule():
 
-    def __init__(self, m, p):
-        self._m, self._p = m, p
+    def __init__(_cribo_self, m, p):
+        _cribo_self._m, _cribo_self._p = m, p
 
-    def __getattr__(self, n):
-        f = self._p + '.' + n
+    def __getattr__(_cribo_self, n):
+        f = _cribo_self._p + '.' + n
         try:
             return _CriboModule(_importlib.import_module(f), f)
         except ImportError:
-            return getattr(self._m, n)
+            return getattr(_cribo_self._m, n)
 
-    def __getattribute__(self, n):
-        return object.__getattribute__(self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else getattr(object.__getattribute__(self, '_m'), n)
+    def __getattribute__(_cribo_self, n):
+        return object.__getattribute__(_cribo_self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else getattr(object.__getattribute__(_cribo_self, '_m'), n)
 class _Cribo():
 
-    def __getattr__(self, n):
+    def __getattr__(_cribo_self, n):
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
@@ -36,10 +36,18 @@ class _CriboPreservedLoader:
         self._namespace = namespace
 
     def create_module(self, spec):
+        module = None
         if self._namespace is not None:
-            return self._namespace
-        if self._entry[1] is not None:
-            return globals()[self._entry[1]]
+            module = self._namespace
+        elif self._entry[1] is not None:
+            module = globals()[self._entry[1]]
+        if module is not None:
+            if getattr(module, '_cribo_machinery_loaded', False):
+                saved = type(self)._pristine.get(id(module))
+                fresh = _cribo.types.SimpleNamespace()
+                fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
+                return fresh
+            return module
         module = _cribo.types.SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             setattr(module, export, globals()[binding])
@@ -98,7 +106,7 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
         break
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
-_cribo_finder.register('yaml_module', '_cribo_init___cribo_952a76_yaml_module', 'yaml_module', True)
+_cribo_finder_local.register('yaml_module', '_cribo_init___cribo_952a76_yaml_module', 'yaml_module', True)
 _cribo_finder.register('yaml_module.loader', None, None, False, {'BaseLoader': 'BaseLoader', 'Loader': 'Loader', 'FullLoader': 'FullLoader', 'UnsafeLoader': 'UnsafeLoader', 'SafeLoader': 'SafeLoader'})
 _cribo_finder.register('yaml_module.dumper', None, None, False, {'BaseDumper': 'BaseDumper', 'Dumper': 'Dumper', 'SafeDumper': 'SafeDumper'})
 yaml_module_loader = _cribo.types.SimpleNamespace(__name__='yaml_module.loader')
@@ -170,14 +178,14 @@ SafeDumper.__module__ = 'yaml_module.dumper'
 yaml_module_dumper.BaseDumper = BaseDumper
 yaml_module_dumper.Dumper = Dumper
 yaml_module_dumper.SafeDumper = SafeDumper
-def _cribo_init___cribo_952a76_yaml_module(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    self.__package__ = 'yaml_module'
-    self.__doc__ = None
+def _cribo_init___cribo_952a76_yaml_module(_cribo_self):
+    if getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    _cribo_self.__package__ = 'yaml_module'
+    _cribo_self.__doc__ = None
     BaseLoader = yaml_module_loader.BaseLoader
     Loader = yaml_module_loader.Loader
     FullLoader = yaml_module_loader.FullLoader
@@ -200,7 +208,7 @@ def _cribo_init___cribo_952a76_yaml_module(self):
                         print(f"  - Would register with {cls.yaml_loader.__name__}")
     YAMLObjectMetaclass.__module__ = 'yaml_module'
     YAMLObjectMetaclass.__qualname__ = 'YAMLObjectMetaclass'
-    self.YAMLObjectMetaclass = YAMLObjectMetaclass
+    _cribo_self.YAMLObjectMetaclass = YAMLObjectMetaclass
 
     class YAMLObject(metaclass=YAMLObjectMetaclass):
         """\n    An object that can be serialized to/from YAML.\n    Uses wildcard-imported symbols in class body.\n    """
@@ -222,12 +230,12 @@ def _cribo_init___cribo_952a76_yaml_module(self):
             return f"Dumping {cls.__name__} to YAML"
     YAMLObject.__module__ = 'yaml_module'
     YAMLObject.__qualname__ = 'YAMLObject'
-    self.YAMLObject = YAMLObject
-    self.dumper = yaml_module_dumper
-    self.loader = yaml_module_loader
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+    _cribo_self.YAMLObject = YAMLObject
+    _cribo_self.dumper = yaml_module_dumper
+    _cribo_self.loader = yaml_module_loader
+    _cribo_self.__initialized__ = True
+    _cribo_self.__initializing__ = False
+    return _cribo_self
 yaml_module.__init__ = _cribo_init___cribo_952a76_yaml_module
 """\nTest fixture for wildcard imports with metaclass ordering.\n\nThis tests that when using wildcard imports, symbols from __all__\nare properly included even if not directly used in the class body.\n"""
 __cribo_init_result = _cribo_init___cribo_952a76_yaml_module(yaml_module)

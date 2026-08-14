@@ -656,6 +656,7 @@ fn check_for_duplicate_lines_with_result(
             || trimmed_no_indent == "break"
             || trimmed_no_indent.starts_with("def __")  // Any dunder method
             || (trimmed_no_indent.starts_with("self.") && !trimmed_line.contains("sys.modules"))   // Common in class methods
+            || (trimmed_no_indent.starts_with("_cribo_self.") && !trimmed_line.contains("sys.modules"))   // Init function module attribute stamps
             || (trimmed_no_indent.starts_with("return ") && !trimmed_line.contains("sys.modules"))
         // Return statements
         {
@@ -680,8 +681,8 @@ fn check_for_duplicate_lines_with_result(
                     // per-init registration/cleanup idioms every self-registering
                     // wrapper module emits
                     (line.contains("sys.modules[")
-                        && line.trim_start() != "_sys.modules[self.__name__] = self"
-                        && line.trim_start() != "del _sys.modules[self.__name__]") ||
+                        && line.trim_start() != "_sys.modules[_cribo_self.__name__] = _cribo_self"
+                        && line.trim_start() != "del _sys.modules[_cribo_self.__name__]") ||
                 // Report duplicate imports
                 line.trim_start().starts_with("import ") ||
                 line.trim_start().starts_with("from ") ||
