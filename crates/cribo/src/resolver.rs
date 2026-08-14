@@ -6628,6 +6628,7 @@ Import-Name: folded_module
     /// installation pointing outside site-packages) stays external: resolved
     /// module files canonicalize outside every known import root, losing the
     /// logical package path that relative imports need.
+    #[cfg(unix)]
     #[test]
     fn test_bundle_third_party_symlinked_package_root_keeps_package_external() -> Result<()> {
         let temp_dir = TempDir::new()?;
