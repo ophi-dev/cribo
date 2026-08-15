@@ -34,11 +34,12 @@ impl InitializationPhase {
         state: &mut InitFunctionState,
     ) {
         // Add __initialized__ check
-        // if getattr(self, "__initialized__", False):
+        // if _cribo_getattr(self, "__initialized__", False):
         //     return self
+        // (the builtin is a definition-time captured keyword-only parameter)
         let check_initialized = ast_builder::statements::if_stmt(
             ast_builder::expressions::call(
-                ast_builder::expressions::name("getattr", ExprContext::Load),
+                ast_builder::expressions::name(super::CAPTURED_GETATTR, ExprContext::Load),
                 vec![
                     ast_builder::expressions::name(SELF_PARAM, ExprContext::Load),
                     ast_builder::expressions::string_literal("__initialized__"),
@@ -54,11 +55,11 @@ impl InitializationPhase {
         state.body.push(check_initialized);
 
         // Add __initializing__ check (circular dependency guard)
-        // if getattr(self, "__initializing__", False):
+        // if _cribo_getattr(self, "__initializing__", False):
         //     return self  # Return partial module in partially-initialized state
         let check_initializing = ast_builder::statements::if_stmt(
             ast_builder::expressions::call(
-                ast_builder::expressions::name("getattr", ExprContext::Load),
+                ast_builder::expressions::name(super::CAPTURED_GETATTR, ExprContext::Load),
                 vec![
                     ast_builder::expressions::name(SELF_PARAM, ExprContext::Load),
                     ast_builder::expressions::string_literal("__initializing__"),

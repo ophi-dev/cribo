@@ -90,12 +90,36 @@ impl FinalizationPhase {
             node_index: AtomicNodeIndex::NONE,
         };
 
+        // Builtins used by the generated guards are captured as keyword-only
+        // parameter DEFAULTS at definition time (bundle prelude): the init runs
+        // lazily, after user code may have legally rebound `getattr` or
+        // `BaseException` in the bundle's global namespace
+        let captured_builtin =
+            |param_name: &str, builtin_name: &str| ruff_python_ast::ParameterWithDefault {
+                range: TextRange::default(),
+                parameter: ruff_python_ast::Parameter {
+                    range: TextRange::default(),
+                    name: Identifier::new(param_name, TextRange::default()),
+                    annotation: None,
+                    node_index: AtomicNodeIndex::NONE,
+                },
+                default: Some(Box::new(ast_builder::expressions::name(
+                    builtin_name,
+                    ExprContext::Load,
+                ))),
+                node_index: AtomicNodeIndex::NONE,
+            };
+
         let parameters = ruff_python_ast::Parameters {
             node_index: AtomicNodeIndex::NONE,
             posonlyargs: vec![].into(),
             args: vec![self_param].into(),
             vararg: None,
-            kwonlyargs: vec![].into(),
+            kwonlyargs: vec![
+                captured_builtin(super::CAPTURED_GETATTR, "getattr"),
+                captured_builtin(super::CAPTURED_BASE_EXCEPTION, "BaseException"),
+            ]
+            .into(),
             kwarg: None,
             range: TextRange::default(),
         };

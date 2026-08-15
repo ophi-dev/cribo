@@ -13,15 +13,15 @@ class _CriboModule():
     def __init__(_cribo_self, m, p):
         _cribo_self._m, _cribo_self._p = m, p
 
-    def __getattr__(_cribo_self, n):
+    def __getattr__(_cribo_self, n, *, _getattr=getattr):
         f = _cribo_self._p + '.' + n
         try:
             return _CriboModule(_importlib.import_module(f), f)
         except ImportError:
-            return getattr(_cribo_self._m, n)
+            return _getattr(_cribo_self._m, n)
 
-    def __getattribute__(_cribo_self, n):
-        return object.__getattribute__(_cribo_self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else getattr(object.__getattribute__(_cribo_self, '_m'), n)
+    def __getattribute__(_cribo_self, n, *, _getattr=getattr, _object=object):
+        return _object.__getattribute__(_cribo_self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else _getattr(_object.__getattribute__(_cribo_self, '_m'), n)
 class _Cribo():
 
     def __getattr__(_cribo_self, n):
@@ -36,41 +36,44 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type):
         module = None
         if self._namespace is not None:
             module = self._namespace
         elif self._entry[1] is not None:
-            module = globals()[self._entry[1]]
+            module = _globals()[self._entry[1]]
         if module is not None:
-            if getattr(module, '_cribo_machinery_loaded', False):
-                saved = type(self)._pristine.get(id(module))
+            if _getattr(module, '_cribo_machinery_loaded', False):
+                saved = _type(self)._pristine.get(_id(module))
                 fresh = _cribo.types.SimpleNamespace()
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 return fresh
             return module
         module = _cribo.types.SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
-            setattr(module, export, globals()[binding])
+            _setattr(module, export, _globals()[binding])
         return module
 
-    def exec_module(self, module):
+    def exec_module(self, module, *, _BaseException=BaseException, _dict=dict, _globals=globals, _id=id, _type=type):
         init = self._entry[0]
+        pristine = _type(self)._pristine
+        key = _id(module)
         if init is None:
+            if key not in pristine:
+                pristine[key] = _dict(module.__dict__)
+            module._cribo_machinery_loaded = True
             return
-        pristine = type(self)._pristine
-        key = id(module)
         is_reload = self._reload_target is module
         if is_reload:
             module.__initialized__ = False
             module.__initializing__ = False
-        state = dict(module.__dict__)
+        state = _dict(module.__dict__)
         if key not in pristine:
-            pristine[key] = dict(state)
+            pristine[key] = _dict(state)
         try:
-            globals()[init](module)
+            _globals()[init](module)
             module._cribo_machinery_loaded = True
-        except BaseException:
+        except _BaseException:
             if is_reload:
                 module.__initializing__ = False
             else:
@@ -179,10 +182,10 @@ SafeDumper.__module__ = 'yaml_module.dumper'
 yaml_module_dumper.BaseDumper = BaseDumper
 yaml_module_dumper.Dumper = Dumper
 yaml_module_dumper.SafeDumper = SafeDumper
-def _cribo_init___cribo_952a76_yaml_module(_cribo_self):
-    if getattr(_cribo_self, '__initialized__', False):
+def _cribo_init___cribo_952a76_yaml_module(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+    if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
-    if getattr(_cribo_self, '__initializing__', False):
+    if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
     _cribo_self.__package__ = 'yaml_module'

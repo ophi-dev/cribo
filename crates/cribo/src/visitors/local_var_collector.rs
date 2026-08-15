@@ -128,6 +128,32 @@ impl<'a> SourceOrderVisitor<'a> for LocalVarCollector<'a> {
         }
     }
 
+    fn visit_expr(&mut self, expr: &'a Expr) {
+        match expr {
+            // PEP 572: a walrus target binds in the CONTAINING scope (also from
+            // inside comprehensions, whose iteration variables stay scoped to the
+            // comprehension and are deliberately not collected)
+            Expr::Named(named) => {
+                if let Expr::Name(target) = &*named.target {
+                    self.insert_if_not_global(&target.id);
+                }
+                source_order::walk_expr(self, expr);
+            }
+            // A lambda BODY is its own scope (walrus there binds the lambda, not
+            // this scope), but parameter defaults evaluate in the enclosing scope
+            Expr::Lambda(lambda) => {
+                if let Some(parameters) = &lambda.parameters {
+                    for param in parameters {
+                        if let Some(default) = param.default() {
+                            self.visit_expr(default);
+                        }
+                    }
+                }
+            }
+            _ => source_order::walk_expr(self, expr),
+        }
+    }
+
     fn visit_stmt(&mut self, stmt: &'a Stmt) {
         // Process statements to collect variable bindings
         match stmt {

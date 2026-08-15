@@ -548,9 +548,18 @@ impl ExpressionRewriter {
             }
             // Walrus expressions: the VALUE may contain a static import call
             // (`(mod := importlib.import_module("helper"))`), and the target
-            // rebinds a name in the current scope
+            // rebinds a name in the current scope — record it as shadowed
+            // AFTER visiting the value (which still sees the old binding), so
+            // later uses of the name dispatch to the new binding instead of
+            // being rewritten as the original import alias
             Expr::Named(named_expr) => {
                 Self::transform_expr(transformer, &mut named_expr.value);
+                if let Expr::Name(target) = &*named_expr.target {
+                    let name = target.id.to_string();
+                    transformer.state.local_variables.insert(name.clone());
+                    transformer.state.shadowed_bindings.insert(name.clone());
+                    log::debug!("Tracking walrus target as local: {name}");
+                }
             }
             Expr::Subscript(subscript_expr) => {
                 Self::transform_expr(transformer, &mut subscript_expr.value);

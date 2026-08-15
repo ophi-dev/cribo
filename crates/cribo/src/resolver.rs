@@ -4279,6 +4279,21 @@ impl ModuleResolver {
             .contains(module_name)
     }
 
+    /// Return whether a bundled module is an ANCESTOR package of a preserved
+    /// `import_module` target: Python's machinery imports parents before dotted
+    /// targets, making the ancestors dynamically importable too (and thereby
+    /// subject to `importlib.reload` and `sys.modules` eviction), so they need
+    /// the wrapper/init path — an inlined `init=None` registration could
+    /// neither re-execute on reload nor reset state for a fresh life.
+    pub(crate) fn is_preserved_importlib_target_ancestor(&self, module_name: &str) -> bool {
+        let targets = self.preserved_importlib_module_targets.borrow();
+        targets.iter().any(|target| {
+            target
+                .strip_prefix(module_name)
+                .is_some_and(|rest| rest.starts_with('.'))
+        })
+    }
+
     /// Record module names whose `sys.modules` entries consumer modules observe
     /// (`sys.modules["dep"]`, `sys.modules[dep.__name__]`): bundled targets must
     /// register in `sys.modules` when their init runs, because static imports

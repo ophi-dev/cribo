@@ -212,10 +212,15 @@ impl<'a> ModuleClassifier<'a> {
             // registers it in sys.modules. Targets of preserved import_module calls
             // need the same registration so the runtime call resolves them, and so
             // do modules whose sys.modules entry a CONSUMER observes
-            // (`sys.modules[dep.__name__]`).
+            // (`sys.modules[dep.__name__]`). ANCESTOR packages of preserved dotted
+            // targets are imported by the machinery too (parents load before
+            // children), so they need a real init for reload/eviction semantics.
             let accesses_own_sys_modules =
                 crate::visitors::utils::accesses_own_sys_modules_entry(&ast.body)
                     || self.resolver.is_preserved_importlib_target(&module_name)
+                    || self
+                        .resolver
+                        .is_preserved_importlib_target_ancestor(&module_name)
                     || self.resolver.is_sys_modules_observed_target(&module_name);
 
             if has_side_effects

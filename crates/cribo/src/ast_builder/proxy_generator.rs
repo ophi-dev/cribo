@@ -26,13 +26,13 @@
 //! class _CriboModule:
 //!     def __init__(self, m, p):
 //!         self._m, self._p = m, p
-//!     def __getattr__(self, n):
+//!     def __getattr__(self, n, *, _getattr=getattr):
 //!         f = f"{self._p}.{n}"
 //!         try: return _CriboModule(_importlib.import_module(f), f)
-//!         except ImportError: return getattr(self._m, n)
-//!     def __getattribute__(self, n):
-//!         return (object.__getattribute__(self, n) if n in ('_m','_p','__getattr__')
-//!                 else getattr(object.__getattribute__(self, '_m'), n))
+//!         except ImportError: return _getattr(self._m, n)
+//!     def __getattribute__(self, n, *, _getattr=getattr, _object=object):
+//!         return (_object.__getattribute__(self, n) if n in ('_m','_p','__getattr__')
+//!                 else _getattr(_object.__getattribute__(self, '_m'), n))
 //!
 //! class _Cribo:
 //!     def __getattr__(self, n):
@@ -41,6 +41,10 @@
 //!
 //! _cribo = _Cribo()
 //! ```
+//!
+//! Builtins used by the lazily-invoked methods are captured as keyword-only
+//! parameter DEFAULTS at definition time: user code may legally rebind
+//! `getattr`/`object` in the bundle's global namespace afterwards.
 
 use ruff_python_ast::{
     Arguments, AtomicNodeIndex, ExceptHandler, ExprContext, Identifier, Parameter,
@@ -89,6 +93,30 @@ fn make_params(names: &[&str]) -> Parameters {
         range: TextRange::default(),
         node_index: AtomicNodeIndex::NONE,
     }
+}
+
+/// Extend parameters with keyword-only arguments whose DEFAULTS capture
+/// builtins at definition time (`*, _getattr=getattr`): proxy methods run
+/// lazily in the bundle's global namespace, where user code may legally
+/// rebind builtin names, so the captured default is the only reliable
+/// reference.
+fn with_captured_builtins(mut params: Parameters, captured: &[(&str, &str)]) -> Parameters {
+    params.kwonlyargs = captured
+        .iter()
+        .map(|(param_name, builtin_name)| ParameterWithDefault {
+            parameter: Parameter {
+                node_index: AtomicNodeIndex::NONE,
+                name: Identifier::new(*param_name, TextRange::default()),
+                annotation: None,
+                range: TextRange::default(),
+            },
+            default: Some(Box::new(expressions::name(builtin_name, ExprContext::Load))),
+            range: TextRange::default(),
+            node_index: AtomicNodeIndex::NONE,
+        })
+        .collect::<Vec<_>>()
+        .into();
+    params
 }
 
 /// Generate the _cribo proxy for dynamic stdlib access
@@ -245,9 +273,9 @@ fn create_cribo_module_getattr() -> Stmt {
     // return _CriboModule(...)
     let try_body = vec![statements::return_stmt(Some(cribo_module_call))];
 
-    // getattr(self._m, n)
+    // getattr(self._m, n) — through the definition-time captured builtin
     let getattr_call = expressions::call(
-        expressions::name("getattr", ExprContext::Load),
+        expressions::name("_getattr", ExprContext::Load),
         vec![
             expressions::attribute(
                 expressions::name(SELF_PARAM, ExprContext::Load),
@@ -280,7 +308,7 @@ fn create_cribo_module_getattr() -> Stmt {
 
     statements::function_def(
         "__getattr__",
-        make_params(&[SELF_PARAM, "n"]),
+        with_captured_builtins(make_params(&[SELF_PARAM, "n"]), &[("_getattr", "getattr")]),
         vec![f_assign, try_stmt],
         vec![], // decorator_list
         None,   // returns
@@ -306,10 +334,10 @@ fn create_cribo_module_getattribute() -> Stmt {
         ]),
     );
 
-    // object.__getattribute__(self, n)
+    // _object.__getattribute__(self, n)
     let object_getattr_n = expressions::call(
         expressions::attribute(
-            expressions::name("object", ExprContext::Load),
+            expressions::name("_object", ExprContext::Load),
             "__getattribute__",
             ExprContext::Load,
         ),
@@ -320,10 +348,10 @@ fn create_cribo_module_getattribute() -> Stmt {
         vec![],
     );
 
-    // object.__getattribute__(self, '_m')
+    // _object.__getattribute__(self, '_m')
     let object_getattr_m = expressions::call(
         expressions::attribute(
-            expressions::name("object", ExprContext::Load),
+            expressions::name("_object", ExprContext::Load),
             "__getattribute__",
             ExprContext::Load,
         ),
@@ -334,9 +362,9 @@ fn create_cribo_module_getattribute() -> Stmt {
         vec![],
     );
 
-    // getattr(object.__getattribute__(self, '_m'), n)
+    // _getattr(_object.__getattribute__(self, '_m'), n)
     let getattr_call = expressions::call(
-        expressions::name("getattr", ExprContext::Load),
+        expressions::name("_getattr", ExprContext::Load),
         vec![object_getattr_m, expressions::name("n", ExprContext::Load)],
         vec![],
     );
@@ -346,7 +374,10 @@ fn create_cribo_module_getattribute() -> Stmt {
 
     statements::function_def(
         "__getattribute__",
-        make_params(&[SELF_PARAM, "n"]),
+        with_captured_builtins(
+            make_params(&[SELF_PARAM, "n"]),
+            &[("_getattr", "getattr"), ("_object", "object")],
+        ),
         vec![statements::return_stmt(Some(cond_expr))],
         vec![], // decorator_list
         None,   // returns
@@ -578,15 +609,15 @@ class _CriboModule:
     def __init__(self, m, p):
         self._m, self._p = m, p
     
-    def __getattr__(self, n):
+    def __getattr__(self, n, *, _getattr=getattr):
         f = self._p + "." + n
         try:
             return _CriboModule(_importlib.import_module(f), f)
         except ImportError:
-            return getattr(self._m, n)
+            return _getattr(self._m, n)
     
-    def __getattribute__(self, n):
-        return object.__getattribute__(self, n) if n in ("_m", "_p", "__getattr__") else getattr(object.__getattribute__(self, "_m"), n)
+    def __getattribute__(self, n, *, _getattr=getattr, _object=object):
+        return _object.__getattribute__(self, n) if n in ("_m", "_p", "__getattr__") else _getattr(_object.__getattribute__(self, "_m"), n)
 
 class _Cribo:
     def __getattr__(self, n):

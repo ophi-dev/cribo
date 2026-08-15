@@ -235,7 +235,7 @@ impl<'a> InitFunctionBuilder<'a> {
         let handler = ExceptHandler::ExceptHandler(ExceptHandlerExceptHandler {
             node_index: ruff_python_ast::AtomicNodeIndex::NONE,
             type_: Some(Box::new(expressions::name(
-                "BaseException",
+                super::CAPTURED_BASE_EXCEPTION,
                 ExprContext::Load,
             ))),
             name: None,

@@ -254,6 +254,22 @@ impl PostProcessingPhase {
                     Stmt::ImportFrom(import_from) if import_from.level == 0 => {
                         if let Some(module) = &import_from.module {
                             self.record(module.as_str());
+                            // A surviving from-import also names its children
+                            // through the installed package's __path__:
+                            // `from mixed_package import _native` resolves the
+                            // dotted submodule `mixed_package._native`, so each
+                            // imported name is a potential external child that
+                            // must keep the installed root reachable
+                            for alias in &import_from.names {
+                                if alias.name.as_str() == "*" {
+                                    continue;
+                                }
+                                self.record(&format!(
+                                    "{}.{}",
+                                    module.as_str(),
+                                    alias.name.as_str()
+                                ));
+                            }
                         }
                     }
                     _ => {}

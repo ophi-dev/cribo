@@ -132,7 +132,14 @@ impl StatementsHandler {
         t: &mut RecursiveImportTransformer<'_>,
         s: &mut StmtFor,
     ) {
-        // Track loop variable as local before transforming
+        // Python evaluates the ITERABLE before assigning the loop target, so
+        // the iterable expression still sees the pre-loop binding (an imported
+        // name shadowed by the target is only rebound afterwards); transform it
+        // before installing the target shadows. Function-wide local shadowing
+        // is collected separately by the function pre-pass.
+        t.transform_expr(&mut s.iter);
+
+        // Track loop variable as local before transforming target and body
         {
             let mut loop_names = crate::types::FxIndexSet::default();
             crate::code_generator::import_transformer::statement::StatementProcessor::collect_assigned_names(
@@ -147,7 +154,6 @@ impl StatementsHandler {
         }
 
         t.transform_expr(&mut s.target);
-        t.transform_expr(&mut s.iter);
         t.transform_statements(&mut s.body);
         t.transform_statements(&mut s.orelse);
     }

@@ -17,6 +17,13 @@ mod wildcard_imports;
 mod wrapper_globals;
 mod wrapper_symbols;
 
+/// Keyword-only init parameter capturing the `getattr` builtin at definition
+/// time (user code may legally rebind the global name before the init runs).
+pub(crate) const CAPTURED_GETATTR: &str = "_cribo_getattr";
+/// Keyword-only init parameter capturing the `BaseException` builtin at
+/// definition time.
+pub(crate) const CAPTURED_BASE_EXCEPTION: &str = "_cribo_base_exception";
+
 use std::fmt;
 
 pub(crate) use body_preparation::BodyPreparationPhase;

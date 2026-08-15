@@ -14,15 +14,15 @@ class _CriboModule():
     def __init__(_cribo_self, m, p):
         _cribo_self._m, _cribo_self._p = m, p
 
-    def __getattr__(_cribo_self, n):
+    def __getattr__(_cribo_self, n, *, _getattr=getattr):
         f = _cribo_self._p + '.' + n
         try:
             return _CriboModule(_importlib.import_module(f), f)
         except ImportError:
-            return getattr(_cribo_self._m, n)
+            return _getattr(_cribo_self._m, n)
 
-    def __getattribute__(_cribo_self, n):
-        return object.__getattribute__(_cribo_self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else getattr(object.__getattribute__(_cribo_self, '_m'), n)
+    def __getattribute__(_cribo_self, n, *, _getattr=getattr, _object=object):
+        return _object.__getattribute__(_cribo_self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else _getattr(_object.__getattribute__(_cribo_self, '_m'), n)
 class _Cribo():
 
     def __getattr__(_cribo_self, n):

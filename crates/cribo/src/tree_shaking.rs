@@ -265,7 +265,12 @@ impl<'a> TreeShaker<'a> {
                 }
                 match &item.item_type {
                     ItemType::Import { module, .. } => {
-                        self.handle_direct_import(module, "module", worklist);
+                        self.handle_direct_import(
+                            module,
+                            "module",
+                            item.var_decls.is_empty(),
+                            worklist,
+                        );
                     }
                     ItemType::FromImport { .. } => {
                         self.handle_from_import(item, module_id, "module", worklist);
@@ -314,7 +319,12 @@ impl<'a> TreeShaker<'a> {
                 }
                 match &item.item_type {
                     ItemType::Import { module, .. } => {
-                        self.handle_direct_import(module, "entry module", &mut worklist);
+                        self.handle_direct_import(
+                            module,
+                            "entry module",
+                            item.var_decls.is_empty(),
+                            &mut worklist,
+                        );
                     }
                     ItemType::FromImport { .. } => {
                         self.handle_from_import(item, entry_id, "entry module", &mut worklist);
@@ -540,11 +550,17 @@ impl<'a> TreeShaker<'a> {
         }
     }
 
-    /// Handle direct import statements within a scope
+    /// Handle direct import statements within a scope.
+    ///
+    /// `anonymous` marks import items WITHOUT a binding (static
+    /// `import_module` calls in expression positions, recorded by the graph
+    /// builder): their namespace escapes to untrackable attribute accesses, so
+    /// every exported symbol must be retained.
     fn handle_direct_import(
         &self,
         imported_module: &str,
         scope_name: &str,
+        anonymous: bool,
         worklist: &mut VecDeque<(ModuleId, String)>,
     ) {
         debug!("Marking import {imported_module} as used (inside scope {scope_name})");
@@ -552,6 +568,14 @@ impl<'a> TreeShaker<'a> {
         let Some(imported_module_id) = self.get_graph_module_id(imported_module) else {
             return;
         };
+
+        if anonymous {
+            self.mark_module_namespace_as_used(
+                imported_module_id,
+                worklist,
+                "anonymous runtime import",
+            );
+        }
 
         if self.module_has_side_effects(imported_module_id) {
             self.seed_side_effects_for_module(imported_module_id, worklist);

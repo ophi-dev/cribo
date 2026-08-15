@@ -1572,6 +1572,7 @@ impl<'a> GraphBuilder<'a> {
 
     /// Process an expression statement
     fn process_expr_stmt(&mut self, expr: &Expr) {
+        self.record_static_importlib_calls_in_expr(expr);
         let mut read_vars = FxIndexSet::default();
         let mut attribute_accesses = FxIndexMap::default();
         self.collect_vars_in_expr_with_attrs(expr, &mut read_vars, &mut attribute_accesses);
@@ -1703,6 +1704,10 @@ impl<'a> GraphBuilder<'a> {
 
     /// Process for loop
     fn process_for_stmt(&mut self, for_stmt: &ast::StmtFor) -> Result<()> {
+        // The iterable may carry static import calls in a non-assignment
+        // position (`for m in [importlib.import_module("helper")]:`); record
+        // them so tree-shaking keeps the target's symbols
+        self.record_static_importlib_calls_in_expr(&for_stmt.iter);
         let mut read_vars = FxIndexSet::default();
         self.collect_vars_in_expr(&for_stmt.iter, &mut read_vars);
 
@@ -2066,6 +2071,63 @@ impl<'a> GraphBuilder<'a> {
             _ => {
                 // Simple names don't need special handling here
             }
+        }
+    }
+
+    /// Record every static `importlib.import_module()` call found in an
+    /// expression tree as an Import item (no alias binding).
+    ///
+    /// Assignments record their calls in `process_assign`, but a static call is
+    /// a real import in ANY position (`for m in [import_module("helper")]:`);
+    /// without an Import item tree-shaking would drop the target's symbols even
+    /// though the rewritten access needs them. Recording is conservative: an
+    /// extra edge only keeps a module alive.
+    fn record_static_importlib_calls_in_expr(&mut self, expr: &Expr) {
+        use ruff_python_ast::visitor::source_order::{SourceOrderVisitor, walk_expr};
+
+        struct CallCollector<'v> {
+            builder: &'v GraphBuilder<'v>,
+            found: Vec<String>,
+        }
+        impl<'a> SourceOrderVisitor<'a> for CallCollector<'_> {
+            fn visit_expr(&mut self, expr: &'a Expr) {
+                if let Some(module_name) = self.builder.is_static_importlib_call(expr) {
+                    self.found.push(module_name);
+                }
+                walk_expr(self, expr);
+            }
+        }
+        let mut collector = CallCollector {
+            builder: self,
+            found: Vec::new(),
+        };
+        collector.visit_expr(expr);
+        let found = collector.found;
+        for module_name in found {
+            log::debug!(
+                "Found importlib.import_module('{module_name}') in expression position; \
+                 recording import edge"
+            );
+            let mut imported_names = FxIndexSet::default();
+            imported_names.insert(module_name.clone());
+            self.graph.add_item(ItemData {
+                item_type: ItemType::Import {
+                    module: module_name,
+                    alias: None,
+                },
+                var_decls: FxIndexSet::default(),
+                read_vars: FxIndexSet::default(),
+                eventual_read_vars: FxIndexSet::default(),
+                write_vars: FxIndexSet::default(),
+                eventual_write_vars: FxIndexSet::default(),
+                has_side_effects: true,
+                imported_names,
+                reexported_names: FxIndexSet::default(),
+                defined_symbols: FxIndexSet::default(),
+                symbol_dependencies: FxIndexMap::default(),
+                attribute_accesses: FxIndexMap::default(),
+                containing_scope: self.scope_path.clone(),
+            });
         }
     }
 

@@ -52,19 +52,26 @@ class _CriboPreservedLoader:
         # "first machinery load" and "fresh life after eviction"
         self._reload_target = reload_target
 
-    def create_module(self, spec):
+    def create_module(
+        self, spec, *,
+        _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type,
+    ):
+        # Builtins and globals() are captured as parameter DEFAULTS at
+        # definition time (in the bundle prelude): these methods run lazily,
+        # after user code may have legally rebound any of those names in the
+        # bundle's global namespace
         module = None
         if self._namespace is not None:
             module = self._namespace
         elif self._entry[1] is not None:
-            module = globals()[self._entry[1]]
+            module = _globals()[self._entry[1]]
         if module is not None:
-            if getattr(module, '_cribo_machinery_loaded', False):
+            if _getattr(module, '_cribo_machinery_loaded', False):
                 # Eviction re-import: CPython executes a FRESH module object,
                 # and references to the EVICTED module keep observing its old
                 # namespace; rebuild from the pre-initialization snapshot so
                 # the two lives are distinct objects
-                saved = type(self)._pristine.get(id(module))
+                saved = _type(self)._pristine.get(_id(module))
                 fresh = _cribo.types.SimpleNamespace()
                 fresh.__dict__.update(
                     saved if saved is not None else {'__name__': spec.name}
@@ -73,17 +80,27 @@ class _CriboPreservedLoader:
             return module
         module = _cribo.types.SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
-            setattr(module, export, globals()[binding])
+            _setattr(module, export, _globals()[binding])
         return module
 
-    def exec_module(self, module):
+    def exec_module(
+        self, module, *,
+        _BaseException=BaseException, _dict=dict, _globals=globals, _id=id, _type=type,
+    ):
         init = self._entry[0]
-        if init is None:
-            return
         # The class GLOBAL may be legally rebound or deleted by user code;
         # reach the shared snapshot store through the instance's own type
-        pristine = type(self)._pristine
-        key = id(module)
+        pristine = _type(self)._pristine
+        key = _id(module)
+        if init is None:
+            # Init-less registrations (inlined ancestors) have no initializer
+            # to re-execute — their code ran at bundle load — but an eviction
+            # re-import must still observe a DISTINCT fresh life, so record the
+            # snapshot and the marker consumed by create_module
+            if key not in pristine:
+                pristine[key] = _dict(module.__dict__)
+            module._cribo_machinery_loaded = True
+            return
         is_reload = self._reload_target is module
         if is_reload:
             # RELOAD: Python re-executes the body over the RETAINED module
@@ -93,13 +110,13 @@ class _CriboPreservedLoader:
             # produced a fresh namespace for it
             module.__initialized__ = False
             module.__initializing__ = False
-        state = dict(module.__dict__)
+        state = _dict(module.__dict__)
         if key not in pristine:
-            pristine[key] = dict(state)
+            pristine[key] = _dict(state)
         try:
-            globals()[init](module)
+            _globals()[init](module)
             module._cribo_machinery_loaded = True
-        except BaseException:
+        except _BaseException:
             if is_reload:
                 # A failed reload leaves partial mutations in place, exactly
                 # like CPython's exec(code, module.__dict__); only unwind the
