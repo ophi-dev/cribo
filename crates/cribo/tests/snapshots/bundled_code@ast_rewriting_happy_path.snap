@@ -28,6 +28,7 @@ class _Cribo():
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
+_cribo_captured = {}
 class _CriboPreservedLoader:
     _pristine = {}
 
@@ -36,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -51,7 +52,7 @@ class _CriboPreservedLoader:
             return module
         module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
-            _setattr(module, export, _globals()[binding])
+            _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
 
     def exec_module(self, module, *, _BaseException=BaseException, _dict=dict, _globals=globals, _id=id, _type=type):
@@ -221,6 +222,12 @@ class DatabaseService:
 DatabaseService.__module__ = 'services.database'
 services_database.DatabaseConnection = DatabaseConnection
 services_database.DatabaseService = DatabaseService
+_cribo_captured['format_message'] = format_message
+_cribo_captured['calculate_total'] = calculate_total
+_cribo_captured['UserRole'] = UserRole
+_cribo_captured['User'] = User
+_cribo_captured['DatabaseConnection'] = DatabaseConnection
+_cribo_captured['DatabaseService'] = DatabaseService
 """\nHappy path main module that uses multiple nested modules without name collisions.\nThis should bundle cleanly without any AST rewriting for conflicts.\n"""
 def main():
     user = User("Alice", "alice@example.com", UserRole.ADMIN)

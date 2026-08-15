@@ -41,6 +41,14 @@ pub(crate) fn create_module_initialization_for_import(
             )],
             vec![],
         );
+        // Static imports of modules whose sys.modules entries consumer code
+        // observably manipulates must honor a preloaded replacement, exactly
+        // like CPython's import statement
+        let init_call = if resolver.is_sys_modules_observed_target(&module_name) {
+            ast_builder::module_wrapper::sys_modules_consult_or(&module_name, init_call)
+        } else {
+            init_call
+        };
 
         // Create assignment to possibly dotted path: <pkg.subpkg.module> = init_call(...)
         stmts.push(ast_builder::statements::assign_attribute_path(
@@ -100,6 +108,7 @@ pub(crate) fn sanitize_module_name_for_identifier(name: &str) -> String {
         "_cribo",
         "_cribo_finder",
         "_cribo_finder_local",
+        "_cribo_captured",
         "_sys",
         "_importlib",
         "_Cribo",

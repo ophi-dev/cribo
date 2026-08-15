@@ -297,6 +297,12 @@ impl Bundler<'_> {
                         Self::resolve_import_aliases_in_stmt(body_stmt, &ctx.import_aliases);
                     }
 
+                    // Inner definitions created when this function RUNS read the
+                    // bundle entry's __name__: stamp them with the provider module
+                    // before user decorators observe them (the function itself gets
+                    // a guarded post-definition stamp below)
+                    statements::stamp_nested_definitions(&mut func_def_clone.body, module_name);
+
                     // Create a temporary statement to rewrite the entire function properly
                     let mut temp_stmt = Stmt::FunctionDef(func_def_clone);
 
@@ -685,7 +691,7 @@ impl Bundler<'_> {
         // Definitions executed INSIDE the class body read the bundle entry's
         // __name__ at creation: stamp methods and nested classes with the
         // provider module before any decorator or introspection observes them
-        statements::stamp_class_body_definitions(&mut class_def_clone.body, module_name);
+        statements::stamp_nested_definitions(&mut class_def_clone.body, module_name);
 
         ctx.inlined_stmts.push(Stmt::ClassDef(class_def_clone));
 

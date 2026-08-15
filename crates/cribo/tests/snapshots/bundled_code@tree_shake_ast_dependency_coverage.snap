@@ -28,6 +28,7 @@ class _Cribo():
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
+_cribo_captured = {}
 class _CriboPreservedLoader:
     _pristine = {}
 
@@ -36,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -51,7 +52,7 @@ class _CriboPreservedLoader:
             return module
         module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
-            _setattr(module, export, _globals()[binding])
+            _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
 
     def exec_module(self, module, *, _BaseException=BaseException, _dict=dict, _globals=globals, _id=id, _type=type):
@@ -157,12 +158,15 @@ nested_method_annotation.__module__ = 'operations'
 def annotation_scope_value() -> str:
     local: function_local_annotation
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'operations'), _cribo_f)[1])
     def nested(value: nested_function_annotation()) -> str:
         return value
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'operations'), _cribo_f)[1])
     class Annotated:
         retained: class_annotation_value
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'operations'), _cribo_f)[1])
         def read(self, value: nested_method_annotation()) -> str:
             local: method_local_annotation
             return f"{self.__annotations__['retained']()}-{value}"
@@ -221,5 +225,26 @@ operations.starred_values = starred_values
 operations.type_alias_value = type_alias_value
 operations.yield_from_values = yield_from_values
 operations.yield_value = yield_value
+_cribo_captured['await_value'] = await_value
+_cribo_captured['named_value'] = named_value
+_cribo_captured['lambda_value'] = lambda_value
+_cribo_captured['yield_value'] = yield_value
+_cribo_captured['yield_from_values'] = yield_from_values
+_cribo_captured['starred_values'] = starred_values
+_cribo_captured['sequence_values'] = sequence_values
+_cribo_captured['slice_lower'] = slice_lower
+_cribo_captured['slice_upper'] = slice_upper
+_cribo_captured['slice_step'] = slice_step
+_cribo_captured['annotated_value'] = annotated_value
+_cribo_captured['class_annotation_value'] = class_annotation_value
+_cribo_captured['nested_function_annotation'] = nested_function_annotation
+_cribo_captured['nested_method_annotation'] = nested_method_annotation
+_cribo_captured['annotation_scope_value'] = annotation_scope_value
+_cribo_captured['augmented_value'] = augmented_value
+_cribo_captured['delete_index'] = delete_index
+_cribo_captured['type_alias_value'] = type_alias_value
+_cribo_captured['generated_value'] = generated_value
+_cribo_captured['delegated_values'] = delegated_values
+_cribo_captured['exercise'] = exercise
 asyncio = _cribo.asyncio
 print(_cribo.asyncio.run(exercise()))

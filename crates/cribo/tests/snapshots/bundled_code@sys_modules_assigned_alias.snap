@@ -28,6 +28,7 @@ class _Cribo():
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
+_cribo_captured = {}
 class _CriboPreservedLoader:
     _pristine = {}
 
@@ -36,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -51,7 +52,7 @@ class _CriboPreservedLoader:
             return module
         module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
-            _setattr(module, export, _globals()[binding])
+            _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
 
     def exec_module(self, module, *, _BaseException=BaseException, _dict=dict, _globals=globals, _id=id, _type=type):
@@ -139,5 +140,5 @@ provider.__init__ = _cribo_init___cribo_a39979_provider
 """sys.modules observations through assignment-derived aliases register targets.\n\n`loaded = sys.modules` rebinds the mapping: the lookup observes the same\nentries that a normal Python import inserts.\n"""
 sys = _cribo.sys
 loaded = _cribo.sys.modules
-provider = _cribo_init___cribo_a39979_provider(provider)
+provider = _cribo.importlib.import_module('provider') if 'provider' in _cribo.sys.modules else _cribo_init___cribo_a39979_provider(provider)
 print("registered:", loaded[provider.__name__] is provider)

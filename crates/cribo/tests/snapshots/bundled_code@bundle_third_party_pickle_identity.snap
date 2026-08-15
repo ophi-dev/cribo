@@ -28,6 +28,7 @@ class _Cribo():
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
+_cribo_captured = {}
 class _CriboPreservedLoader:
     _pristine = {}
 
@@ -36,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -51,7 +52,7 @@ class _CriboPreservedLoader:
             return module
         module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
-            _setattr(module, export, _globals()[binding])
+            _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
 
     def exec_module(self, module, *, _BaseException=BaseException, _dict=dict, _globals=globals, _id=id, _type=type):
@@ -121,6 +122,7 @@ class Token:
         self.value = value
 Token.__module__ = 'pickled_pkg'
 pickled_pkg.Token = Token
+_cribo_captured['Token'] = Token
 """Unpickling by original module name must yield the BUNDLED class identity.\n\npickle resolves a class through __import__(cls.__module__): the bundled\nnamespace registered under the original name must win over a same-named\ninstalled distribution (simulated by a decoy package prepended to sys.path\nAFTER the bundled import ran), because only the bundled namespace holds the\nvery same class object the pickled instance was created from.\n"""
 os = _cribo.os
 pickle = _cribo.pickle

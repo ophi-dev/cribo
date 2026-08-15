@@ -6,7 +6,7 @@ RuffLintResults {
     f401: [],
     f404: [],
     other: [
-        "Line 148: unused-import - `dropped_pkg` imported but unused; consider using `importlib.util.find_spec` to test for availability",
+        "Line 149: unused-import - `dropped_pkg` imported but unused; consider using `importlib.util.find_spec` to test for availability",
     ],
     total: 1,
 }

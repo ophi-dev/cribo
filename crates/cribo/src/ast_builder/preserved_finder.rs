@@ -37,6 +37,13 @@ use super::CRIBO_SYS_ALIAS;
 ///
 /// `{sys}` is replaced with the bundle's private `sys` alias.
 const PRESERVED_FINDER_SOURCE: &str = r#"
+# Export VALUES captured at the end of the module-definition section, BEFORE
+# entry statements run: entry code may legally delete or rebind the bundle
+# globals that inlined-module registrations refer to, while a real module's
+# namespace would retain the original objects
+_cribo_captured = {}
+
+
 class _CriboPreservedLoader:
     # Pre-initialization namespace snapshots, keyed by namespace object id:
     # after sys.modules eviction, CPython executes a FRESH module, so the
@@ -55,7 +62,7 @@ class _CriboPreservedLoader:
     def create_module(
         self, spec, *,
         _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type,
-        _SimpleNamespace=_cribo.types.SimpleNamespace,
+        _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured,
     ):
         # Builtins, globals() and the namespace CONSTRUCTOR are captured as
         # parameter DEFAULTS at definition time (in the bundle prelude): these
@@ -82,7 +89,14 @@ class _CriboPreservedLoader:
             return module
         module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
-            _setattr(module, export, _globals()[binding])
+            # Prefer the value captured before entry code could delete or
+            # rebind the bundle global; fall back to the live global for
+            # imports that run during the module-definition section
+            _setattr(
+                module,
+                export,
+                _captured[binding] if binding in _captured else _globals()[binding],
+            )
         return module
 
     def exec_module(
@@ -288,4 +302,24 @@ pub(crate) fn generate_inlined_module_registration(
         ],
         vec![],
     ))
+}
+
+/// Generate `_cribo_captured['binding'] = binding` — an export-value capture
+/// emitted at the module/entry boundary (after all module definitions, before
+/// entry statements): the lazy loader prefers these captured objects, so entry
+/// code deleting or rebinding a bundle global cannot break later runtime
+/// imports of the inlined module.
+pub(crate) fn generate_export_capture(binding: &str) -> Stmt {
+    use ruff_python_ast::ExprContext;
+
+    use super::{expressions, statements};
+
+    statements::assign(
+        vec![expressions::subscript(
+            expressions::name("_cribo_captured", ExprContext::Load),
+            expressions::string_literal(binding),
+            ExprContext::Store,
+        )],
+        expressions::name(binding, ExprContext::Load),
+    )
 }

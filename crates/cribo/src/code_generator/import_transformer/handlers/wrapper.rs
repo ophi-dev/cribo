@@ -508,9 +508,25 @@ impl WrapperHandler {
                         // to declare the module variable as global to avoid UnboundLocalError.
                         // However, skip if it conflicts with a local variable (like function
                         // parameters).
+                        // Static imports of modules whose sys.modules entries
+                        // consumer code observably manipulates must honor a
+                        // preloaded replacement, exactly like CPython's import
+                        let observed = transformer
+                            .state
+                            .bundler
+                            .resolver
+                            .is_sys_modules_observed_target(resolved);
+                        let init_call_for = |module_var: &str| {
+                            if observed {
+                                module_wrapper::create_wrapper_module_init_call_honoring_sys_modules(
+                                    module_var, resolved,
+                                )
+                            } else {
+                                module_wrapper::create_wrapper_module_init_call(module_var)
+                            }
+                        };
                         if transformer.state.at_module_level {
-                            init_stmts
-                                .push(module_wrapper::create_wrapper_module_init_call(&module_var));
+                            init_stmts.push(init_call_for(&module_var));
                         } else if !transformer.state.local_variables.contains(&module_var) {
                             // Only initialize if no conflict with local variable
                             log::debug!(
@@ -518,8 +534,7 @@ impl WrapperHandler {
                                  scope)"
                             );
                             init_stmts.push(statements::global(vec![module_var.as_str()]));
-                            init_stmts
-                                .push(module_wrapper::create_wrapper_module_init_call(&module_var));
+                            init_stmts.push(init_call_for(&module_var));
                         } else {
                             log::debug!(
                                 "  Initializing wrapper via globals() to avoid local shadow: \

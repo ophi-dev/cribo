@@ -28,6 +28,7 @@ class _Cribo():
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
+_cribo_captured = {}
 class _CriboPreservedLoader:
     _pristine = {}
 
@@ -36,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -51,7 +52,7 @@ class _CriboPreservedLoader:
             return module
         module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
-            _setattr(module, export, _globals()[binding])
+            _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
 
     def exec_module(self, module, *, _BaseException=BaseException, _dict=dict, _globals=globals, _id=id, _type=type):
@@ -153,6 +154,9 @@ get_result.__module__ = 'pkg'
 pkg.base_value = base_value
 pkg.get_base = get_base
 pkg.get_result = get_result
+_cribo_captured['get_base'] = get_base
+_cribo_captured['get_result'] = get_result
+_cribo_captured['base_value'] = base_value
 """Test where submodule imports function from parent package.\n\nThis test works in Python but fails when bundled because:\n1. pkg.submodule imports get_base from parent at module level\n2. pkg.submodule uses the imported function at module level\n3. The bundler fails to properly initialize pkg.submodule\n4. When get_result() tries to access pkg.submodule.process(), it fails\n"""
 print(pkg.get_result())
 submodule = pkg.submodule

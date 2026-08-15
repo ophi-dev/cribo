@@ -551,10 +551,7 @@ fn emit_class_def_for_init(
         };
         rewriter.rewrite_class(&mut class_def_clone);
     }
-    ast_builder::statements::stamp_class_body_definitions(
-        &mut class_def_clone.body,
-        ctx.module_name,
-    );
+    ast_builder::statements::stamp_nested_definitions(&mut class_def_clone.body, ctx.module_name);
     body.push(Stmt::ClassDef(class_def_clone));
 
     let symbol_name = class_def.name.to_string();
@@ -797,6 +794,15 @@ pub(crate) fn process_statements_for_init_function(
                         SELF_PARAM,
                     );
                 }
+
+                // Inner definitions created when this function RUNS read the
+                // bundle entry's __name__: stamp them with the provider module
+                // before user decorators observe them (the function itself gets
+                // a guarded post-definition stamp below)
+                ast_builder::statements::stamp_nested_definitions(
+                    &mut func_def_clone.body,
+                    ctx.module_name,
+                );
 
                 // Add transformed function definition
                 body.push(Stmt::FunctionDef(func_def_clone));

@@ -28,6 +28,7 @@ class _Cribo():
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
+_cribo_captured = {}
 class _CriboPreservedLoader:
     _pristine = {}
 
@@ -36,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -51,7 +52,7 @@ class _CriboPreservedLoader:
             return module
         module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
-            _setattr(module, export, _globals()[binding])
+            _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
 
     def exec_module(self, module, *, _BaseException=BaseException, _dict=dict, _globals=globals, _id=id, _type=type):
@@ -116,6 +117,7 @@ helpers = _cribo.types.SimpleNamespace(__name__='helpers', __doc__='\nHelper mod
 def make_tag_2(func):
     """Decorator that tags a function's return value."""
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'helpers'), _cribo_f)[1])
     def wrapper(*args, **kwargs):
         return f"[helpers.tagged] {func(*args, **kwargs)}"
     return wrapper
@@ -136,6 +138,9 @@ Schema_2.__qualname__ = 'Schema'
 helpers.DEFAULT_MODE = DEFAULT_MODE_2
 helpers.Schema = Schema_2
 helpers.make_tag = make_tag_2
+_cribo_captured['make_tag_2'] = make_tag_2
+_cribo_captured['Schema_2'] = Schema_2
+_cribo_captured['DEFAULT_MODE_2'] = DEFAULT_MODE_2
 """\nTest that entry module function definition-time expressions are rewritten\nwhen symbols are renamed due to collisions with submodule symbols.\n\nThe entry module defines make_tag, DEFAULT_MODE, and Schema which collide\nwith helpers.make_tag, helpers.DEFAULT_MODE, and helpers.Schema. The conflict\nresolver renames the entry copies. This fixture verifies that:\n  1. Decorators referencing renamed symbols are rewritten\n  2. Default parameter values referencing renamed symbols are rewritten\n  3. Type annotations referencing renamed symbols are rewritten\n  4. Function bodies are NOT rewritten (Python resolves at call time)\n"""
 DEFAULT_MODE_1 = helpers.DEFAULT_MODE
 DEFAULT_MODE = DEFAULT_MODE_1

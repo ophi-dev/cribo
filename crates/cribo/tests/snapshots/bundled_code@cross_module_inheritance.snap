@@ -28,6 +28,7 @@ class _Cribo():
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
+_cribo_captured = {}
 class _CriboPreservedLoader:
     _pristine = {}
 
@@ -36,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -51,7 +52,7 @@ class _CriboPreservedLoader:
             return module
         module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
-            _setattr(module, export, _globals()[binding])
+            _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
 
     def exec_module(self, module, *, _BaseException=BaseException, _dict=dict, _globals=globals, _id=id, _type=type):
@@ -162,6 +163,10 @@ class HTTPProxyAuth(HTTPBasicAuth):
         return f"<HTTPProxyAuth user={self.username}>"
 HTTPProxyAuth.__module__ = 'proxy'
 proxy.HTTPProxyAuth = HTTPProxyAuth
+_cribo_captured['HTTPBasicAuth_2'] = HTTPBasicAuth_2
+_cribo_captured['HTTPBasicAuth_1'] = HTTPBasicAuth_1
+_cribo_captured['HTTPProxyAuth'] = HTTPProxyAuth
+_cribo_captured['HTTPBasicAuth'] = HTTPBasicAuth
 """Test cross-module inheritance with symbol collision.\n\nThis reproduces the exact error from requests where HTTPBasicAuth\nis renamed to HTTPBasicAuth_1 in one module but another module\ntries to inherit from HTTPBasicAuth.\n"""
 proxy = HTTPProxyAuth("user", "pass")
 print(f"Created proxy auth: {proxy}")

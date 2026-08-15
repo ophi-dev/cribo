@@ -84,4 +84,9 @@ pub(crate) struct PostProcessingResult {
     pub alias_statements: Vec<Stmt>,
     /// Namespace attachment statements for entry module
     pub namespace_attachments: Vec<Stmt>,
+    /// Export-value capture statements, inserted at the module/entry boundary
+    /// (after all module definitions, before entry statements): entry code may
+    /// legally delete or rebind the bundle globals that inlined-module
+    /// registrations refer to
+    pub capture_statements: Vec<Stmt>,
 }

@@ -862,10 +862,22 @@ pub(crate) fn imported_module_dunder_read_targets(
             if let Expr::Attribute(attribute) = expr
                 && matches!(
                     attribute.attr.as_str(),
-                    "__file__" | "__spec__" | "__loader__" | "__cached__" | "__path__"
+                    "__file__" | "__spec__" | "__loader__" | "__cached__" | "__path__" | "__dict__"
                 )
                 && let Expr::Name(base) = &*attribute.value
                 && let Some(module_name) = self.bindings.get(base.id.as_str())
+            {
+                // __dict__ (and vars() below) exposes the COMPLETE module
+                // dictionary including private bindings; generated namespaces
+                // hold only referenced exports, so the provider must stay real
+                self.observed.insert(module_name.clone());
+            }
+            // vars(provider) reads the module dictionary exactly like
+            // provider.__dict__
+            if let Expr::Call(call) = expr
+                && matches!(&*call.func, Expr::Name(callee) if callee.id.as_str() == "vars")
+                && let Some(Expr::Name(argument)) = call.arguments.args.first()
+                && let Some(module_name) = self.bindings.get(argument.id.as_str())
             {
                 self.observed.insert(module_name.clone());
             }

@@ -947,6 +947,14 @@ impl Bundler<'_> {
                 vec![self_arg],
                 vec![],
             );
+            // Static imports of modules whose sys.modules entries consumer
+            // code observably manipulates must honor a preloaded replacement,
+            // exactly like CPython's import statement
+            let init_call = if self.resolver.is_sys_modules_observed_target(&module_name) {
+                crate::ast_builder::module_wrapper::sys_modules_consult_or(&module_name, init_call)
+            } else {
+                init_call
+            };
 
             // Generate the appropriate assignment based on module type and scope
             stmts.extend(self.generate_module_assignment_from_init(

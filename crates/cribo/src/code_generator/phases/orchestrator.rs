@@ -107,11 +107,20 @@ impl PhaseOrchestrator {
         let entry_result =
             entry_phase.execute(bundler, params, &mut modules, &symbol_renames, &final_body);
 
-        let (entry_symbols, entry_renames) = if let Some(result) = entry_result {
+        let (entry_symbols, entry_renames, module_section_end) = if let Some(result) = entry_result
+        {
+            // Record the module/entry boundary BEFORE entry statements: export
+            // captures must run after all module definitions but before entry
+            // code can delete or rebind bundle globals
+            let boundary = final_body.len();
             final_body.extend(result.statements);
-            (result.entry_symbols, result.entry_renames)
+            (result.entry_symbols, result.entry_renames, boundary)
         } else {
-            (FxIndexSet::default(), FxIndexMap::default())
+            (
+                FxIndexSet::default(),
+                FxIndexMap::default(),
+                final_body.len(),
+            )
         };
 
         // Phase 8: Post-Processing
@@ -123,7 +132,16 @@ impl PhaseOrchestrator {
             &entry_renames,
             &symbol_renames,
             &final_body,
+            module_section_end,
         );
+
+        // Insert export-value captures at the module/entry boundary
+        if !post_processing_output.capture_statements.is_empty() {
+            final_body.splice(
+                module_section_end..module_section_end,
+                post_processing_output.capture_statements,
+            );
+        }
 
         // Insert proxy statements after __future__ imports
         PostProcessingPhase::insert_proxy_statements(

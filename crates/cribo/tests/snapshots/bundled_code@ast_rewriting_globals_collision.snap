@@ -28,6 +28,7 @@ class _Cribo():
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
+_cribo_captured = {}
 class _CriboPreservedLoader:
     _pristine = {}
 
@@ -36,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -51,7 +52,7 @@ class _CriboPreservedLoader:
             return module
         module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
-            _setattr(module, export, _globals()[binding])
+            _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
 
     def exec_module(self, module, *, _BaseException=BaseException, _dict=dict, _globals=globals, _id=id, _type=type):
@@ -120,7 +121,7 @@ _cribo_finder.register('core.utils', '_cribo_init___cribo_e52b1d_core_utils', 'c
 _cribo_finder.register('core.database', '_cribo_init___cribo_b7b3e3_core_database', 'core_database', True)
 _cribo_finder_local.register('core', '_cribo_init___cribo_0ac752_core', 'core', True)
 _cribo_finder.register('core.database.connection', '_cribo_init___cribo_df9c8d_core_database_connection', 'core_database_connection', False)
-_cribo_finder.register('core.utils.helpers', None, None, False, {'process': 'process_7', 'validate': 'validate_6', 'Logger': 'Logger_6', 'sanitize': 'sanitize', 'format_result': 'format_result', 'process_count': 'process_count', 'Connection': 'Connection', 'validate_cache': 'validate_cache'})
+_cribo_finder.register('core.utils.helpers', None, None, False, {'process': 'process_7', 'validate': 'validate_6', 'Logger': 'Logger_6', 'sanitize': 'sanitize', 'format_result': 'format_result', 'process_count': 'process_count', 'validate_cache': 'validate_cache'})
 core_utils_helpers = _cribo.types.SimpleNamespace(__name__='core.utils.helpers', __doc__='Core utility helpers module - NO external dependencies to avoid circular imports')
 core = _cribo.types.SimpleNamespace(__name__='core', __initializing__=False, __initialized__=False, __path__=[])
 core_utils = _cribo.types.SimpleNamespace(__name__='core.utils', __initializing__=False, __initialized__=False, __path__=[])
@@ -720,6 +721,13 @@ def _cribo_init___cribo_84bf42_services_auth(_cribo_self, *, _cribo_getattr=geta
     _cribo_self.__initializing__ = False
     return _cribo_self
 services_auth.__init__ = _cribo_init___cribo_84bf42_services_auth
+_cribo_captured['process_7'] = process_7
+_cribo_captured['validate_6'] = validate_6
+_cribo_captured['Logger_6'] = Logger_6
+_cribo_captured['sanitize'] = sanitize
+_cribo_captured['format_result'] = format_result
+_cribo_captured['process_count'] = process_count
+_cribo_captured['validate_cache'] = validate_cache
 """\nComprehensive AST rewriter test fixture - Main entry point\nThis module demonstrates complex naming conflicts and import scenarios\nWITHOUT circular dependencies\n"""
 __cribo_init_result = _cribo_init___cribo_0ac752_core(core)
 for attr in dir(__cribo_init_result):

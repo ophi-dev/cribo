@@ -28,6 +28,7 @@ class _Cribo():
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
+_cribo_captured = {}
 class _CriboPreservedLoader:
     _pristine = {}
 
@@ -36,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -51,7 +52,7 @@ class _CriboPreservedLoader:
             return module
         module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
-            _setattr(module, export, _globals()[binding])
+            _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
 
     def exec_module(self, module, *, _BaseException=BaseException, _dict=dict, _globals=globals, _id=id, _type=type):
@@ -117,9 +118,9 @@ _cribo_finder.register('core.utils', None, 'core_utils', True)
 _cribo_finder_local.register('core', None, 'core', True)
 _cribo_finder_local.register('models', None, 'models', True)
 _cribo_finder.register('core.database', None, 'core_database', True)
-_cribo_finder.register('core.utils.helpers', None, None, False, {'Logger': 'Logger_3', 'process': 'process_5', 'validate': 'validate_5', 'result': 'result_5', 'Connection': 'Connection', 'User': 'User_4'})
-_cribo_finder.register('models.user', None, None, False, {'Logger': 'Logger_2', 'User': 'User_2', 'process_user': 'process_user', 'result': 'result_3', 'util_process': 'util_process', 'process': 'process', 'validate': 'validate', 'Connection': 'Connection', 'connection': 'connection', 'UtilLogger': 'UtilLogger'})
-_cribo_finder.register('core.database.connection', None, None, False, {'Connection': 'Connection_5', 'process': 'process_6', 'result': 'result_6', 'process_user': 'process_user', 'helper_validate': 'helper_validate', 'validate': 'validate', 'connection': 'connection'})
+_cribo_finder.register('core.utils.helpers', None, None, False, {'Logger': 'Logger_3', 'process': 'process_5', 'validate': 'validate_5', 'result': 'result_5', 'User': 'User_4'})
+_cribo_finder.register('models.user', None, None, False, {'Logger': 'Logger_2', 'User': 'User_2', 'process_user': 'process_user', 'result': 'result_3', 'util_process': 'util_process', 'UtilLogger': 'UtilLogger'})
+_cribo_finder.register('core.database.connection', None, None, False, {'Connection': 'Connection_5', 'process': 'process_6', 'result': 'result_6', 'process_user': 'process_user', 'helper_validate': 'helper_validate'})
 _cribo_finder.register('models.base', None, None, False, {'BaseModel': 'BaseModel', 'initialize': 'initialize', 'validate': 'validate_2', 'process': 'process_2', 'Logger': 'Logger_1', 'connect': 'connect_1', 'shadow_test': 'shadow_test', 'result': 'result_2', 'UserLogger': 'UserLogger', 'core_validate': 'core_validate'})
 core = _cribo.types.SimpleNamespace(__name__='core')
 core_database = _cribo.types.SimpleNamespace(__name__='core.database')
@@ -616,6 +617,31 @@ def _cribo_init___cribo_6ccb3a_services_auth_manager(_cribo_self, *, _cribo_geta
     return _cribo_self
 services_auth_manager.__init__ = _cribo_init___cribo_6ccb3a_services_auth_manager
 services_auth.manager = services_auth_manager
+_cribo_captured['Logger_3'] = Logger_3
+_cribo_captured['process_5'] = process_5
+_cribo_captured['validate_5'] = validate_5
+_cribo_captured['result_5'] = result_5
+_cribo_captured['User_4'] = User_4
+_cribo_captured['Logger_2'] = Logger_2
+_cribo_captured['User_2'] = User_2
+_cribo_captured['process_user'] = process_user
+_cribo_captured['result_3'] = result_3
+_cribo_captured['util_process'] = util_process
+_cribo_captured['UtilLogger'] = UtilLogger
+_cribo_captured['Connection_5'] = Connection_5
+_cribo_captured['process_6'] = process_6
+_cribo_captured['result_6'] = result_6
+_cribo_captured['helper_validate'] = helper_validate
+_cribo_captured['BaseModel'] = BaseModel
+_cribo_captured['initialize'] = initialize
+_cribo_captured['validate_2'] = validate_2
+_cribo_captured['process_2'] = process_2
+_cribo_captured['Logger_1'] = Logger_1
+_cribo_captured['connect_1'] = connect_1
+_cribo_captured['shadow_test'] = shadow_test
+_cribo_captured['result_2'] = result_2
+_cribo_captured['UserLogger'] = UserLogger
+_cribo_captured['core_validate'] = core_validate
 """\nComprehensive AST rewriter test fixture - Main entry point\nThis module demonstrates complex naming conflicts and import scenarios\n"""
 db_process = core_database_connection.process
 services_auth_manager = _cribo_init___cribo_6ccb3a_services_auth_manager(services_auth_manager)

@@ -30,6 +30,7 @@ impl PostProcessingPhase {
     /// 3. Generates package child alias statements
     ///
     /// Returns statements to be inserted at appropriate positions in the final bundle.
+    #[expect(clippy::too_many_arguments)] // Post-processing consumes the full bundle context
     pub(crate) fn execute(
         &self,
         bundler: &mut Bundler<'_>,
@@ -37,6 +38,7 @@ impl PostProcessingPhase {
         entry_renames: &FxIndexMap<String, String>,
         symbol_renames: &FxIndexMap<crate::resolver::ModuleId, FxIndexMap<String, String>>,
         final_body: &[Stmt],
+        module_section_end: usize,
     ) -> PostProcessingResult {
         // Generate namespace attachments for entry module exports
         let namespace_attachments =
@@ -48,11 +50,13 @@ impl PostProcessingPhase {
         // Generate the meta-path finder serving bundled modules to REAL runtime
         // imports; it resolves registrations lazily through globals(), so it can
         // ride along right after the proxy prelude (which binds the `_sys` alias)
-        proxy_statements.extend(Self::generate_module_finder_statements(
+        let (finder_statements, capture_statements) = Self::generate_module_finder_statements(
             bundler,
             symbol_renames,
             final_body,
-        ));
+            module_section_end,
+        );
+        proxy_statements.extend(finder_statements);
 
         // Generate package child aliases
         let alias_statements = Self::generate_package_child_aliases(bundler, final_body);
@@ -61,6 +65,7 @@ impl PostProcessingPhase {
             proxy_statements,
             alias_statements,
             namespace_attachments,
+            capture_statements,
         }
     }
 
@@ -134,7 +139,8 @@ impl PostProcessingPhase {
         bundler: &Bundler<'_>,
         symbol_renames: &FxIndexMap<crate::resolver::ModuleId, FxIndexMap<String, String>>,
         final_body: &[Stmt],
-    ) -> Vec<Stmt> {
+        module_section_end: usize,
+    ) -> (Vec<Stmt>, Vec<Stmt>) {
         use crate::code_generator::module_registry::sanitize_module_name_for_identifier;
 
         let external_submodule_roots = Self::collect_external_submodule_roots(bundler, final_body);
@@ -160,7 +166,10 @@ impl PostProcessingPhase {
         let inlined_exports = Self::extend_with_retained_exports(
             bundler,
             symbol_renames,
-            final_body,
+            // Bindings must exist in the MODULE-DEFINITION section: entry
+            // statements run after the boundary captures, so their globals
+            // cannot back a registration (and may collide by name)
+            &final_body[..module_section_end.min(final_body.len())],
             inlined_exports,
         );
         // Plus every bundled ancestor package: the machinery imports parents
@@ -179,7 +188,7 @@ impl PostProcessingPhase {
             }
         }
         if names.is_empty() && inlined_exports.is_empty() && bundler.created_namespaces.is_empty() {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
 
         let mut statements =
@@ -231,7 +240,23 @@ impl PostProcessingPhase {
                 ),
             );
         }
-        statements
+
+        // Capture the export VALUES at the module/entry boundary: entry code
+        // may legally delete or rebind the bundle globals these registrations
+        // refer to, while a real module's namespace would retain the objects
+        let mut capture_statements = Vec::new();
+        let mut captured_bindings: FxIndexSet<&str> = FxIndexSet::default();
+        for exports in inlined_exports.values() {
+            for (_, binding) in exports {
+                if captured_bindings.insert(binding.as_str()) {
+                    capture_statements.push(
+                        crate::ast_builder::preserved_finder::generate_export_capture(binding),
+                    );
+                }
+            }
+        }
+
+        (statements, capture_statements)
     }
 
     /// Merge every retained module-scope export into the registration maps of
@@ -571,6 +596,7 @@ mod tests {
             proxy_statements: vec![],
             alias_statements: vec![],
             namespace_attachments: vec![],
+            capture_statements: vec![],
         };
 
         assert!(output.proxy_statements.is_empty());
@@ -599,6 +625,7 @@ mod tests {
             proxy_statements: vec![stmt.clone()],
             alias_statements: vec![stmt.clone()],
             namespace_attachments: vec![stmt],
+            capture_statements: vec![],
         };
 
         assert_eq!(output.proxy_statements.len(), 1);
