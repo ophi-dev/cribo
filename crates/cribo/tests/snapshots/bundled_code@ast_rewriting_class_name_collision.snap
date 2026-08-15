@@ -36,7 +36,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -45,11 +45,11 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _cribo.types.SimpleNamespace()
+                fresh = _SimpleNamespace()
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 return fresh
             return module
-        module = _cribo.types.SimpleNamespace(__name__=spec.name)
+        module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _globals()[binding])
         return module
@@ -117,11 +117,13 @@ models = _cribo.types.SimpleNamespace(__name__='models', __doc__='\nModels modul
 class User_2:
     """User model for data persistence."""
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'models'), _cribo_f)[1])
     def __init__(self, name: str, email: str):
         self.name = name
         self.email = email
         self.id = None
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'models'), _cribo_f)[1])
     def __str__(self) -> str:
         return f"Model User(name='{self.name}', email='{self.email}')"
 User_2.__module__ = 'models'
@@ -130,11 +132,13 @@ User_2.__qualname__ = 'User'
 class Product_2:
     """Product model for catalog."""
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'models'), _cribo_f)[1])
     def __init__(self, name: str, price: float):
         self.name = name
         self.price = price
         self.id = None
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'models'), _cribo_f)[1])
     def __str__(self) -> str:
         return f"Model Product(name='{self.name}', price={self.price})"
 Product_2.__module__ = 'models'
@@ -147,11 +151,13 @@ entities = _cribo.types.SimpleNamespace(__name__='entities', __doc__='\nEntities
 class User_1:
     """User entity for business logic."""
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'entities'), _cribo_f)[1])
     def __init__(self, name: str, age: int):
         self.name = name
         self.age = age
         self.active = True
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'entities'), _cribo_f)[1])
     def __str__(self) -> str:
         return f"Entity User(name='{self.name}', age={self.age})"
 User_1.__module__ = 'entities'
@@ -160,11 +166,13 @@ User_1.__qualname__ = 'User'
 class Product_1:
     """Product entity for business logic."""
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'entities'), _cribo_f)[1])
     def __init__(self, sku: str, name: str):
         self.sku = sku
         self.name = name
         self.available = True
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'entities'), _cribo_f)[1])
     def __str__(self) -> str:
         return f"Entity Product(sku='{self.sku}', name='{self.name}')"
 Product_1.__module__ = 'entities'

@@ -36,7 +36,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -45,11 +45,11 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _cribo.types.SimpleNamespace()
+                fresh = _SimpleNamespace()
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 return fresh
             return module
-        module = _cribo.types.SimpleNamespace(__name__=spec.name)
+        module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _globals()[binding])
         return module
@@ -138,10 +138,12 @@ def _cribo_init___cribo_851b00_module_a(_cribo_self, *, _cribo_getattr=getattr, 
 
     class FunctionA:
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'module_a'), _cribo_f)[1])
         def compute(self) -> str:
             helper = HelperB()
             return f"A: {helper.get_value()}"
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'module_a'), _cribo_f)[1])
         def unused_method(self, param: _cribo.typing.Optional["UnusedFromB"]) -> None:
             pass
     FunctionA.__module__ = 'module_a'
@@ -171,6 +173,7 @@ def _cribo_init___cribo_924318_module_b(_cribo_self, *, _cribo_getattr=getattr, 
 
     class HelperB:
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'module_b'), _cribo_f)[1])
         def get_value(self) -> str:
             return "Value from B"
     HelperB.__module__ = 'module_b'
@@ -179,9 +182,11 @@ def _cribo_init___cribo_924318_module_b(_cribo_self, *, _cribo_getattr=getattr, 
 
     class UnusedFromB:
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'module_b'), _cribo_f)[1])
         def __init__(self):
             print("UnusedFromB initialized - this should be dead code!")
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'module_b'), _cribo_f)[1])
         def process(self, func_a: "FunctionA") -> str:
             return func_a.compute()
     UnusedFromB.__module__ = 'module_b'

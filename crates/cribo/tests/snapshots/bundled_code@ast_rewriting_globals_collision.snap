@@ -36,7 +36,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -45,11 +45,11 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _cribo.types.SimpleNamespace()
+                fresh = _SimpleNamespace()
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 return fresh
             return module
-        module = _cribo.types.SimpleNamespace(__name__=spec.name)
+        module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _globals()[binding])
         return module
@@ -151,13 +151,16 @@ validate_6.__qualname__ = 'validate'
 class Logger_6:
     """Logger class in utils module"""
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'core.utils.helpers'), _cribo_f)[1])
     def __init__(self, name):
         self.name = name
         self.messages = []
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'core.utils.helpers'), _cribo_f)[1])
     def log(self, message):
         self.messages.append(f"[{self.name}] {message}")
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'core.utils.helpers'), _cribo_f)[1])
     def get_message(self):
         return f"utils_logger_{self.name}"
 Logger_6.__module__ = 'core.utils.helpers'
@@ -297,14 +300,17 @@ def _cribo_init___cribo_df9c8d_core_database_connection(_cribo_self, *, _cribo_g
     class Connection:
         """Database connection class"""
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'core.database.connection'), _cribo_f)[1])
         def __init__(self, db_name="default"):
             self.db_name = db_name
             self.connected = False
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'core.database.connection'), _cribo_f)[1])
         def connect(self):
             self.connected = True
             return f"db_connection_to_{self.db_name}"
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'core.database.connection'), _cribo_f)[1])
         def execute(self, query):
             if not self.connected:
                 raise RuntimeError("Not connected")
@@ -316,9 +322,11 @@ def _cribo_init___cribo_df9c8d_core_database_connection(_cribo_self, *, _cribo_g
     class Logger:
         """Database logger - different from utils Logger"""
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'core.database.connection'), _cribo_f)[1])
         def __init__(self, context):
             self.context = context
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'core.database.connection'), _cribo_f)[1])
         def log(self, message):
             return f"DB_LOG[{self.context}]: {message}"
     Logger.__module__ = 'core.database.connection'
@@ -385,9 +393,11 @@ def _cribo_init___cribo_0a162a_models_base(_cribo_self, *, _cribo_getattr=getatt
     class Logger:
         """Base logger class"""
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'models.base'), _cribo_f)[1])
         def __init__(self, prefix="BASE"):
             self.prefix = prefix
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'models.base'), _cribo_f)[1])
         def get_message(self):
             return f"base_logger_{self.prefix}"
     Logger.__module__ = 'models.base'
@@ -492,10 +502,12 @@ def _cribo_init___cribo_1f9e6c_models_user(_cribo_self, *, _cribo_getattr=getatt
     class User:
         """User model class"""
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'models.user'), _cribo_f)[1])
         def __init__(self, name):
             self.name = name
             self.logger = Logger("user")
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'models.user'), _cribo_f)[1])
         def process(self):
             return f"User.process: {self.name}"
     User.__module__ = 'models.user'
@@ -505,14 +517,17 @@ def _cribo_init___cribo_1f9e6c_models_user(_cribo_self, *, _cribo_getattr=getatt
     class Logger:
         """User module logger - different from utils and base Logger"""
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'models.user'), _cribo_f)[1])
         def __init__(self, context):
             self.context = context
             self.base_logger = BaseLogger(context)
             self.util_logger = UtilLogger(context)
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'models.user'), _cribo_f)[1])
         def get_message(self):
             return f"user_logger_{self.context}"
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'models.user'), _cribo_f)[1])
         def log_all(self):
             return [self.get_message(), self.base_logger.get_message(), self.util_logger.get_message()]
     Logger.__module__ = 'models.user'
@@ -522,9 +537,11 @@ def _cribo_init___cribo_1f9e6c_models_user(_cribo_self, *, _cribo_getattr=getatt
     class UserValidator:
         """Non-conflicting class name"""
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'models.user'), _cribo_f)[1])
         def __init__(self):
             self.rules = []
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'models.user'), _cribo_f)[1])
         def add_rule(self, rule):
             self.rules.append(rule)
     UserValidator.__module__ = 'models.user'
@@ -599,10 +616,12 @@ def _cribo_init___cribo_0ecebd_services_auth_manager(_cribo_self, *, _cribo_geta
     class User:
         """Auth user class"""
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'services.auth.manager'), _cribo_f)[1])
         def __init__(self, username):
             self.username = username
             self.connection = Connection
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'services.auth.manager'), _cribo_f)[1])
         def authenticate(self):
             return f"auth_user_{self.username}"
     User.__module__ = 'services.auth.manager'
@@ -612,10 +631,12 @@ def _cribo_init___cribo_0ecebd_services_auth_manager(_cribo_self, *, _cribo_geta
     class Connection:
         """Auth connection - overrides the global dict"""
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'services.auth.manager'), _cribo_f)[1])
         def __init__(self):
             self.db_conn = DBConnection("auth_db")
             self.status = "auth_connection"
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'services.auth.manager'), _cribo_f)[1])
         def connect(self):
             db_result = self.db_conn.connect()
             return f"auth_wrapped_{db_result}"
@@ -626,13 +647,16 @@ def _cribo_init___cribo_0ecebd_services_auth_manager(_cribo_self, *, _cribo_geta
     class AuthManager:
         """Non-conflicting class name"""
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'services.auth.manager'), _cribo_f)[1])
         def __init__(self):
             self.users = {}
             self.base_initialized = base_init()
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'services.auth.manager'), _cribo_f)[1])
         def add_user(self, user):
             self.users[user.username] = user
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'services.auth.manager'), _cribo_f)[1])
         def process_auth(self, username, data):
             return process(f"{username}:{data}")
     AuthManager.__module__ = 'services.auth.manager'

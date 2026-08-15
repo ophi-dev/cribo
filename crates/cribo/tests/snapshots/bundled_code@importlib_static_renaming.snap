@@ -36,7 +36,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -45,11 +45,11 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _cribo.types.SimpleNamespace()
+                fresh = _SimpleNamespace()
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 return fresh
             return module
-        module = _cribo.types.SimpleNamespace(__name__=spec.name)
+        module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _globals()[binding])
         return module
@@ -129,9 +129,11 @@ def process(data):
 process.__module__ = 'bar'
 class Calculator:
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'bar'), _cribo_f)[1])
     def add(self, a, b):
         return a + b
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'bar'), _cribo_f)[1])
     def multiply(self, a, b):
         return a * b
 Calculator.__module__ = 'bar'
@@ -140,11 +142,11 @@ bar.Calculator = Calculator
 bar.VERSION = VERSION
 bar.process = process
 il = _cribo.importlib
-foo = _cribo.types.SimpleNamespace(greet=greet, get_value=get_value, MESSAGE=MESSAGE)
-bar_module = _cribo.types.SimpleNamespace(process=process, Calculator=Calculator, VERSION=VERSION)
+foo = _cribo.sys.modules['foo'] if 'foo' in _cribo.sys.modules else _cribo.types.SimpleNamespace(greet=greet, get_value=get_value, MESSAGE=MESSAGE)
+bar_module = _cribo.sys.modules['bar'] if 'bar' in _cribo.sys.modules else _cribo.types.SimpleNamespace(process=process, Calculator=Calculator, VERSION=VERSION)
 im = _cribo.importlib.import_module
-also_foo = _cribo.types.SimpleNamespace(greet=greet, get_value=get_value, MESSAGE=MESSAGE)
-also_bar = _cribo.types.SimpleNamespace(process=process, Calculator=Calculator, VERSION=VERSION)
+also_foo = _cribo.sys.modules['foo'] if 'foo' in _cribo.sys.modules else _cribo.types.SimpleNamespace(greet=greet, get_value=get_value, MESSAGE=MESSAGE)
+also_bar = _cribo.sys.modules['bar'] if 'bar' in _cribo.sys.modules else _cribo.types.SimpleNamespace(process=process, Calculator=Calculator, VERSION=VERSION)
 print(f"foo.greet('World'): {greet('World')}")
 print(f"foo.get_value(): {get_value()}")
 print(f"foo.MESSAGE: {MESSAGE}")

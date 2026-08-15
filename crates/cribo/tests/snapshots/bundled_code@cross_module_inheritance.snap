@@ -36,7 +36,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -45,11 +45,11 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _cribo.types.SimpleNamespace()
+                fresh = _SimpleNamespace()
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 return fresh
             return module
-        module = _cribo.types.SimpleNamespace(__name__=spec.name)
+        module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _globals()[binding])
         return module
@@ -118,10 +118,12 @@ auth = _cribo.types.SimpleNamespace(__name__='auth', __doc__='First auth module 
 class HTTPBasicAuth_2:
     """Basic HTTP authentication."""
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'auth'), _cribo_f)[1])
     def __init__(self, username, password):
         self.username = username
         self.password = password
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'auth'), _cribo_f)[1])
     def __repr__(self):
         return f"<HTTPBasicAuth user={self.username}>"
 HTTPBasicAuth_2.__module__ = 'auth'
@@ -133,9 +135,11 @@ another_auth = _cribo.types.SimpleNamespace(__name__='another_auth', __doc__='An
 class HTTPBasicAuth_1:
     """Different HTTPBasicAuth implementation."""
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'another_auth'), _cribo_f)[1])
     def __init__(self, token):
         self.token = token
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'another_auth'), _cribo_f)[1])
     def __repr__(self):
         return f"<TokenAuth token={self.token[:4]}...>"
 HTTPBasicAuth_1.__module__ = 'another_auth'
@@ -148,10 +152,12 @@ HTTPBasicAuth = auth.HTTPBasicAuth
 class HTTPProxyAuth(HTTPBasicAuth):
     """Proxy authentication that inherits from HTTPBasicAuth."""
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'proxy'), _cribo_f)[1])
     def __init__(self, username, password):
         super().__init__(username, password)
         self.proxy_info = "proxy"
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'proxy'), _cribo_f)[1])
     def __repr__(self):
         return f"<HTTPProxyAuth user={self.username}>"
 HTTPProxyAuth.__module__ = 'proxy'

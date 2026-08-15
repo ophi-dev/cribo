@@ -36,7 +36,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -45,11 +45,11 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _cribo.types.SimpleNamespace()
+                fresh = _SimpleNamespace()
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 return fresh
             return module
-        module = _cribo.types.SimpleNamespace(__name__=spec.name)
+        module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _globals()[binding])
         return module
@@ -123,12 +123,14 @@ __all__ = ["AsyncStream", "SyncStream"]
 class AsyncStream:
     """Async stream implementation."""
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg._types'), _cribo_f)[1])
     def read(self):
         return "async data"
 AsyncStream.__module__ = 'pkg._types'
 class SyncStream:
     """Sync stream implementation."""
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg._types'), _cribo_f)[1])
     def read(self):
         return "sync data"
 SyncStream.__module__ = 'pkg._types'
@@ -140,12 +142,14 @@ pkg._models = pkg__models
 class Request:
     """Request model."""
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg._models'), _cribo_f)[1])
     def __init__(self):
         self.stream = pkg.SyncStream()
 Request.__module__ = 'pkg._models'
 class Response:
     """Response model."""
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg._models'), _cribo_f)[1])
     def __init__(self):
         self.stream = pkg.AsyncStream()
 Response.__module__ = 'pkg._models'
@@ -219,10 +223,12 @@ def _cribo_init___cribo_7e63ae_pkg__client(_cribo_self, *, _cribo_getattr=getatt
     class Client:
         """Client that uses streams."""
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg._client'), _cribo_f)[1])
         def __init__(self):
             self.async_stream = AsyncStream()
             self.sync_stream = SyncStream()
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg._client'), _cribo_f)[1])
         def make_request(self):
             req = Request()
             return Response()

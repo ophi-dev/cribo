@@ -36,7 +36,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -45,11 +45,11 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _cribo.types.SimpleNamespace()
+                fresh = _SimpleNamespace()
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 return fresh
             return module
-        module = _cribo.types.SimpleNamespace(__name__=spec.name)
+        module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _globals()[binding])
         return module
@@ -237,28 +237,36 @@ def _cribo_init___cribo_135ee1_myrequests_cookies(_cribo_self, *, _cribo_getattr
     class CookieJar(cookielib.CookieJar, MutableMapping):
         """A cookie jar that also implements the MutableMapping interface."""
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'myrequests.cookies'), _cribo_f)[1])
         def __init__(self):
             super().__init__()
             self._cookies = {}
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'myrequests.cookies'), _cribo_f)[1])
         def __getitem__(self, name):
             return self._cookies[name]
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'myrequests.cookies'), _cribo_f)[1])
         def __setitem__(self, name, value):
             self._cookies[name] = value
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'myrequests.cookies'), _cribo_f)[1])
         def __delitem__(self, name):
             del self._cookies[name]
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'myrequests.cookies'), _cribo_f)[1])
         def __iter__(self):
             return iter(self._cookies)
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'myrequests.cookies'), _cribo_f)[1])
         def __len__(self):
             return len(self._cookies)
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'myrequests.cookies'), _cribo_f)[1])
         def get(self, name, default=None):
             return self._cookies.get(name, default)
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'myrequests.cookies'), _cribo_f)[1])
         def set(self, name, value):
             self._cookies[name] = value
     CookieJar.__module__ = 'myrequests.cookies'

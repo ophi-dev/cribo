@@ -36,7 +36,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -45,11 +45,11 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _cribo.types.SimpleNamespace()
+                fresh = _SimpleNamespace()
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 return fresh
             return module
-        module = _cribo.types.SimpleNamespace(__name__=spec.name)
+        module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _globals()[binding])
         return module
@@ -130,10 +130,12 @@ def _cribo_init___cribo_a3a28c_partial_observer(_cribo_self, *, _cribo_getattr=g
 
     class FailingTarget:
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'partial_observer'), _cribo_f)[1])
         def __setattr__(self, name, value):
             object.__setattr__(self, "assignment_visible", partial_source.ASSIGNED == value)
             raise RuntimeError
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'partial_observer'), _cribo_f)[1])
         def __delattr__(self, name):
             object.__setattr__(self, "deletion_applied", not hasattr(partial_source, "DELETED"))
             raise RuntimeError
@@ -143,9 +145,11 @@ def _cribo_init___cribo_a3a28c_partial_observer(_cribo_self, *, _cribo_getattr=g
 
     class FailingUnpackTarget:
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'partial_observer'), _cribo_f)[1])
         def __init__(self, expected_bindings):
             object.__setattr__(self, "expected_bindings", expected_bindings)
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'partial_observer'), _cribo_f)[1])
         def __setattr__(self, name, value):
             object.__setattr__(self, "unpacking_visible", all(getattr(partial_source, binding) == expected for binding, expected in self.expected_bindings))
             raise RuntimeError

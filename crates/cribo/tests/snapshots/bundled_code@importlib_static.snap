@@ -36,7 +36,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -45,11 +45,11 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _cribo.types.SimpleNamespace()
+                fresh = _SimpleNamespace()
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 return fresh
             return module
-        module = _cribo.types.SimpleNamespace(__name__=spec.name)
+        module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _globals()[binding])
         return module
@@ -130,9 +130,11 @@ def _cribo_init___cribo_d8297b_data_processor(_cribo_self, *, _cribo_getattr=get
 
     class DataProcessor:
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'data-processor'), _cribo_f)[1])
         def __init__(self):
             self.name = "Data Processor with Hyphen"
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'data-processor'), _cribo_f)[1])
         def process(self, data):
             return f"Processing {data} with hyphenated module"
     DataProcessor.__module__ = 'data-processor'
@@ -164,10 +166,12 @@ def _cribo_init___cribo_64c186_api_client(_cribo_self, *, _cribo_getattr=getattr
 
     class APIClient:
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'api-client'), _cribo_f)[1])
         def __init__(self, base_url="https://api.example.com"):
             self.base_url = base_url
             self.headers = {"User-Agent": "Hyphenated-Module-Client/1.0"}
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'api-client'), _cribo_f)[1])
         def make_request(self, endpoint):
             return f"Making request to {self.base_url}/{endpoint}"
     APIClient.__module__ = 'api-client'
@@ -201,10 +205,12 @@ def _cribo_init___cribo_004e55_class_(_cribo_self, *, _cribo_getattr=getattr, _c
 
     class MetaClass:
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'class'), _cribo_f)[1])
         def __init__(self, name):
             self.name = name
             self.type = "metaclass"
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'class'), _cribo_f)[1])
         def describe(self):
             return f"This is a {self.type} named {self.name}"
     MetaClass.__module__ = 'class'
@@ -238,10 +244,12 @@ def _cribo_init___cribo_944eb6_def_(_cribo_self, *, _cribo_getattr=getattr, _cri
 
     class FunctionDefinition:
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'def'), _cribo_f)[1])
         def __init__(self, func_name, params=None):
             self.name = func_name
             self.params = params or []
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'def'), _cribo_f)[1])
         def __str__(self):
             params_str = ", ".join(self.params)
             return f"def {self.name}({params_str})"
@@ -276,10 +284,12 @@ def _cribo_init___cribo_ec6681_for_(_cribo_self, *, _cribo_getattr=getattr, _cri
 
     class ForLoop:
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'for'), _cribo_f)[1])
         def __init__(self, iterable):
             self.iterable = iterable
             self.index = 0
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'for'), _cribo_f)[1])
         def iterate(self):
             results = []
             for item in self.iterable:
@@ -320,6 +330,7 @@ def _cribo_init___cribo_5687a6__2024_config(_cribo_self, *, _cribo_getattr=getat
         FEATURES = ["new-ui", "dark-mode", "api-v3"]
 
         @classmethod
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', '2024-config'), _cribo_f)[1])
         def get_config(cls):
             return {"year": cls.YEAR, "version": cls.VERSION, "features": cls.FEATURES}
     Config2024.__module__ = '2024-config'
@@ -341,12 +352,12 @@ def _cribo_init___cribo_5687a6__2024_config(_cribo_self, *, _cribo_getattr=getat
 _2024_config.__init__ = _cribo_init___cribo_5687a6__2024_config
 """Main module demonstrating importlib usage with static string literals."""
 importlib = _cribo.importlib
-data_processor = _cribo_init___cribo_d8297b_data_processor(data_processor)
-api_client = _cribo_init___cribo_64c186_api_client(api_client)
-class_module = _cribo_init___cribo_004e55_class_(class_)
-def_module = _cribo_init___cribo_944eb6_def_(def_)
-for_module = _cribo_init___cribo_ec6681_for_(for_)
-config_2024 = _cribo_init___cribo_5687a6__2024_config(_2024_config)
+data_processor = _cribo.sys.modules['data-processor'] if 'data-processor' in _cribo.sys.modules else _cribo_init___cribo_d8297b_data_processor(data_processor)
+api_client = _cribo.sys.modules['api-client'] if 'api-client' in _cribo.sys.modules else _cribo_init___cribo_64c186_api_client(api_client)
+class_module = _cribo.sys.modules['class'] if 'class' in _cribo.sys.modules else _cribo_init___cribo_004e55_class_(class_)
+def_module = _cribo.sys.modules['def'] if 'def' in _cribo.sys.modules else _cribo_init___cribo_944eb6_def_(def_)
+for_module = _cribo.sys.modules['for'] if 'for' in _cribo.sys.modules else _cribo_init___cribo_ec6681_for_(for_)
+config_2024 = _cribo.sys.modules['2024-config'] if '2024-config' in _cribo.sys.modules else _cribo_init___cribo_5687a6__2024_config(_2024_config)
 def main():
     processor = data_processor.DataProcessor()
     print(f"Processor: {processor.name}")

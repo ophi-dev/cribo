@@ -36,7 +36,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -45,11 +45,11 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _cribo.types.SimpleNamespace()
+                fresh = _SimpleNamespace()
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 return fresh
             return module
-        module = _cribo.types.SimpleNamespace(__name__=spec.name)
+        module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _globals()[binding])
         return module
@@ -151,6 +151,7 @@ def _cribo_init___cribo_f96d2c_config(_cribo_self, *, _cribo_getattr=getattr, _c
 
     class Config:
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'config'), _cribo_f)[1])
         def __init__(self):
             self.debug_mode = True
             self.app_name = "CircularImportDemo"
@@ -159,6 +160,7 @@ def _cribo_init___cribo_f96d2c_config(_cribo_self, *, _cribo_getattr=getattr, _c
             logger = get_logger()
             logger.log("Initializing configuration system")
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'config'), _cribo_f)[1])
         def ensure_logger_configured(self):
             """Configure logger after config is ready"""
             if not self._logger_configured:
@@ -167,6 +169,7 @@ def _cribo_init___cribo_f96d2c_config(_cribo_self, *, _cribo_getattr=getattr, _c
                 logger.log("Configuration system initialized", "INFO")
                 self._logger_configured = True
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'config'), _cribo_f)[1])
         def get_setting(self, key):
             return getattr(self, key, None)
     Config.__module__ = 'config'
@@ -215,20 +218,24 @@ def _cribo_init___cribo_0639af_logger(_cribo_self, *, _cribo_getattr=getattr, _c
 
     class Logger:
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'logger'), _cribo_f)[1])
         def __init__(self):
             self.log_level = "INFO"
             print(format_message("[Logger] Initializing logger system"))
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'logger'), _cribo_f)[1])
         def configure(self):
             """Configure logger with settings from config module"""
             get_log_level = _cribo_init___cribo_f96d2c_config(globals()['config']).get_log_level
             self.log_level = get_log_level()
             self.log(f"Logger configured with level: {self.log_level}")
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'logger'), _cribo_f)[1])
         def log(self, message, level="INFO"):
             if self._should_log(level):
                 print(f"[{level}] {message}")
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'logger'), _cribo_f)[1])
         def _should_log(self, level):
             levels = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3}
             return levels.get(level, 1) >= levels.get(self.log_level, 1)
@@ -259,11 +266,13 @@ logger = logger.__init__(logger)
 get_logger = logger.get_logger
 class Application:
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'app'), _cribo_f)[1])
     def __init__(self):
         self.config = config.get_config()
         self.logger = logger.get_logger()
         self.logger.log(f"Creating {self.config.app_name} v{self.config.version} application instance")
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'app'), _cribo_f)[1])
     def run(self):
         """Run the application with various logging examples"""
         self.logger.log("Application.run() called", "DEBUG")
@@ -271,6 +280,7 @@ class Application:
         self.demonstrate_import_patterns()
         self.logger.log("Application tasks completed", "INFO")
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'app'), _cribo_f)[1])
     def demonstrate_import_patterns(self):
         """Show how the same module can be imported different ways"""
         global logger

@@ -36,7 +36,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -45,11 +45,11 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _cribo.types.SimpleNamespace()
+                fresh = _SimpleNamespace()
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 return fresh
             return module
-        module = _cribo.types.SimpleNamespace(__name__=spec.name)
+        module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _globals()[binding])
         return module
@@ -123,6 +123,7 @@ safe_function.__module__ = 'explicit_all'
 class SafeClass:
     """A class that will be exported via __all__."""
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'explicit_all'), _cribo_f)[1])
     def method(self):
         return "SafeClass.method_result"
 SafeClass.__module__ = 'explicit_all'
@@ -157,9 +158,11 @@ def _cribo_init___cribo_9a9871_with_side_effects(_cribo_self, *, _cribo_getattr=
         """Class from module with side-effects."""
         instances = []
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'with_side_effects'), _cribo_f)[1])
         def __init__(self):
             self.instances.append(self)
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'with_side_effects'), _cribo_f)[1])
         def method(self):
             return "EffectClass.method_result"
     EffectClass.__module__ = 'with_side_effects'
@@ -209,6 +212,7 @@ shared_function_2.__qualname__ = 'shared_function'
 class SharedClass_2:
     """Class with same name in multiple modules."""
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'clash_module_a'), _cribo_f)[1])
     def method(self):
         return "SharedClass_from_module_a"
 SharedClass_2.__module__ = 'clash_module_a'
@@ -234,6 +238,7 @@ shared_function_1.__qualname__ = 'shared_function'
 class SharedClass_1:
     """Class with same name in multiple modules."""
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'clash_module_b'), _cribo_f)[1])
     def method(self):
         return "SharedClass_from_module_b"
 SharedClass_1.__module__ = 'clash_module_b'

@@ -36,7 +36,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -45,11 +45,11 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _cribo.types.SimpleNamespace()
+                fresh = _SimpleNamespace()
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 return fresh
             return module
-        module = _cribo.types.SimpleNamespace(__name__=spec.name)
+        module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _globals()[binding])
         return module
@@ -143,22 +143,27 @@ UserRole.__module__ = 'models.user'
 class User:
     """Simple user model."""
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'models.user'), _cribo_f)[1])
     def __init__(self, name: str, email: str, role: UserRole=UserRole.USER):
         self.name = name
         self.email = email
         self.role = role
         self.active = True
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'models.user'), _cribo_f)[1])
     def __str__(self) -> str:
         return f"User(name='{self.name}', email='{self.email}', role={self.role.value})"
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'models.user'), _cribo_f)[1])
     def __repr__(self) -> str:
         return self.__str__()
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'models.user'), _cribo_f)[1])
     def activate(self) -> None:
         """Activate the user."""
         self.active = True
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'models.user'), _cribo_f)[1])
     def deactivate(self) -> None:
         """Deactivate the user."""
         self.active = False
@@ -172,15 +177,18 @@ services.database = services_database
 class DatabaseConnection:
     """Represents a database connection."""
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'services.database'), _cribo_f)[1])
     def __init__(self, connection_string: str):
         self.connection_string = connection_string
         self.is_connected = False
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'services.database'), _cribo_f)[1])
     def connect(self) -> bool:
         """Connect to the database."""
         self.is_connected = True
         return True
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'services.database'), _cribo_f)[1])
     def disconnect(self) -> None:
         """Disconnect from the database."""
         self.is_connected = False
@@ -188,21 +196,25 @@ DatabaseConnection.__module__ = 'services.database'
 class DatabaseService:
     """Service for database operations."""
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'services.database'), _cribo_f)[1])
     def __init__(self, database_path: str):
         self.connection_string = f"sqlite://{database_path}"
         self.connection = DatabaseConnection(self.connection_string)
         self.cache: _cribo.typing.Dict[str, _cribo.typing.Any] = {}
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'services.database'), _cribo_f)[1])
     def connect(self) -> bool:
         """Connect to the database."""
         return self.connection.connect()
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'services.database'), _cribo_f)[1])
     def query(self, sql: str) -> _cribo.typing.Optional[_cribo.typing.Dict[str, _cribo.typing.Any]]:
         """Execute a query."""
         if not self.connection.is_connected:
             self.connect()
         return {"result": f"Executed: {sql}"}
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'services.database'), _cribo_f)[1])
     def close(self) -> None:
         """Close the database connection."""
         self.connection.disconnect()

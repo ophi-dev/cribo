@@ -36,7 +36,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -45,11 +45,11 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _cribo.types.SimpleNamespace()
+                fresh = _SimpleNamespace()
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 return fresh
             return module
-        module = _cribo.types.SimpleNamespace(__name__=spec.name)
+        module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _globals()[binding])
         return module
@@ -130,5 +130,5 @@ def _cribo_init___cribo_d07f3b_helper(_cribo_self, *, _cribo_getattr=getattr, _c
 helper.__init__ = _cribo_init___cribo_d07f3b_helper
 '''Module-scope rebinding evaluates the RHS through the OLD import binding.\n\n`importlib = importlib.import_module("helper")` resolves the call through the\nreal importlib import before rebinding the name, so `helper` must be\ndiscovered and bundled.\n'''
 importlib = _cribo.importlib
-importlib = _cribo_init___cribo_d07f3b_helper(helper)
+importlib = _cribo.sys.modules['helper'] if 'helper' in _cribo.sys.modules else _cribo_init___cribo_d07f3b_helper(helper)
 print("VALUE:", importlib.VALUE)

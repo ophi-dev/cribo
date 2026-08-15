@@ -36,7 +36,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -45,11 +45,11 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _cribo.types.SimpleNamespace()
+                fresh = _SimpleNamespace()
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 return fresh
             return module
-        module = _cribo.types.SimpleNamespace(__name__=spec.name)
+        module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _globals()[binding])
         return module
@@ -134,7 +134,7 @@ def _cribo_init___cribo_332fbf_my_module(_cribo_self, *, _cribo_getattr=getattr,
     return _cribo_self
 my_module.__init__ = _cribo_init___cribo_332fbf_my_module
 importlib = _cribo.importlib
-mod = _cribo_init___cribo_332fbf_my_module(my_module)
+mod = _cribo.sys.modules['my-module'] if 'my-module' in _cribo.sys.modules else _cribo_init___cribo_332fbf_my_module(my_module)
 print(f"Value: {mod.value}")
 print(f"Function result: {mod.get_value()}")
 assert mod.value == 42

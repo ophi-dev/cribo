@@ -36,7 +36,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -45,11 +45,11 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _cribo.types.SimpleNamespace()
+                fresh = _SimpleNamespace()
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 return fresh
             return module
-        module = _cribo.types.SimpleNamespace(__name__=spec.name)
+        module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _globals()[binding])
         return module
@@ -221,12 +221,14 @@ models.base = models_base
 class BaseModel:
     """Base model class."""
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'models.base'), _cribo_f)[1])
     def __init__(self, name: str):
         if not name or name.startswith("_"):
             raise ValueError(f"Invalid model name: {name}")
         self.name = name
         self.version = "1.0.0"
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'models.base'), _cribo_f)[1])
     def get_info(self):
         """Get model information."""
         return {"name": self.name, "type": "base", "model_version": self.version}
@@ -345,6 +347,7 @@ def _cribo_init___cribo_1f0c3d_core_database_connection(_cribo_self, *, _cribo_g
     class Connection:
         """Connection class using mixed imports."""
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'core.database.connection'), _cribo_f)[1])
         def __init__(self, database_name: str):
             if not helper_validate(database_name) or any(char in database_name for char in ["/", "\\", ":"]):
                 raise ValueError(f"Invalid database name: {database_name}")
@@ -355,6 +358,7 @@ def _cribo_init___cribo_1f0c3d_core_database_connection(_cribo_self, *, _cribo_g
                 self.model = BaseModel(database_name)
                 self.metadata["model_info"] = self.model.get_info()
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'core.database.connection'), _cribo_f)[1])
         def __str__(self):
             return f"Connection to {self.name}"
     Connection.__module__ = 'core.database.connection'

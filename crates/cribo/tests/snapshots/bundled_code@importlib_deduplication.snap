@@ -36,7 +36,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -45,11 +45,11 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _cribo.types.SimpleNamespace()
+                fresh = _SimpleNamespace()
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 return fresh
             return module
-        module = _cribo.types.SimpleNamespace(__name__=spec.name)
+        module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _globals()[binding])
         return module
@@ -170,7 +170,7 @@ sys = _cribo.sys
 importlib = _cribo.importlib
 print("=== Testing importlib.import_module deduplication ===\n")
 mymodule = _cribo_init___cribo_26ef78_mymodule(mymodule)
-mymodule2 = _cribo_init___cribo_26ef78_mymodule(mymodule)
+mymodule2 = _cribo.sys.modules['mymodule'] if 'mymodule' in _cribo.sys.modules else _cribo_init___cribo_26ef78_mymodule(mymodule)
 print(f"   Are they the same object? {mymodule is mymodule2}")
 __cribo_init_result = _cribo_init___cribo_20ca72_package(package)
 for attr in dir(__cribo_init_result):
@@ -178,15 +178,15 @@ for attr in dir(__cribo_init_result):
         setattr(package, attr, getattr(__cribo_init_result, attr))
 package.submodule = _cribo_init___cribo_75ebb7_package_submodule(package_submodule)
 submodule = package.submodule
-submodule2 = _cribo_init___cribo_75ebb7_package_submodule(package_submodule)
+submodule2 = _cribo.sys.modules['package.submodule'] if 'package.submodule' in _cribo.sys.modules else _cribo_init___cribo_75ebb7_package_submodule(package_submodule)
 print(f"   Are they the same object? {submodule is submodule2}")
-submodule3 = _cribo_init___cribo_75ebb7_package_submodule(package_submodule)
+submodule3 = _cribo.sys.modules['package.submodule'] if 'package.submodule' in _cribo.sys.modules else _cribo_init___cribo_75ebb7_package_submodule(package_submodule)
 print(f"   Are they the same object? {submodule is submodule3}")
 print("\n=== Testing modification propagation ===")
 mymodule.test_value = "Modified!"
 print(f"Set mymodule.test_value = 'Modified!'")
 print(f"mymodule2.test_value = {mymodule2.test_value}")
-mymodule_new = _cribo_init___cribo_26ef78_mymodule(mymodule)
+mymodule_new = _cribo.sys.modules['mymodule'] if 'mymodule' in _cribo.sys.modules else _cribo_init___cribo_26ef78_mymodule(mymodule)
 print(f"After reimport mymodule_new.counter = {mymodule_new.counter}")
 print(f"Are they the same object? {mymodule is mymodule_new}")
 print(f"Original mymodule still has counter = {mymodule.counter}")

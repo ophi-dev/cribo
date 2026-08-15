@@ -55,11 +55,13 @@ class _CriboPreservedLoader:
     def create_module(
         self, spec, *,
         _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type,
+        _SimpleNamespace=_cribo.types.SimpleNamespace,
     ):
-        # Builtins and globals() are captured as parameter DEFAULTS at
-        # definition time (in the bundle prelude): these methods run lazily,
-        # after user code may have legally rebound any of those names in the
-        # bundle's global namespace
+        # Builtins, globals() and the namespace CONSTRUCTOR are captured as
+        # parameter DEFAULTS at definition time (in the bundle prelude): these
+        # methods run lazily, after user code may have legally rebound any of
+        # those names — including `_cribo` itself — in the bundle's global
+        # namespace
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -72,13 +74,13 @@ class _CriboPreservedLoader:
                 # namespace; rebuild from the pre-initialization snapshot so
                 # the two lives are distinct objects
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _cribo.types.SimpleNamespace()
+                fresh = _SimpleNamespace()
                 fresh.__dict__.update(
                     saved if saved is not None else {'__name__': spec.name}
                 )
                 return fresh
             return module
-        module = _cribo.types.SimpleNamespace(__name__=spec.name)
+        module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _globals()[binding])
         return module

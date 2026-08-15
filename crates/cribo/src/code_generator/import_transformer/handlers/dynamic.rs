@@ -86,6 +86,43 @@ impl DynamicHandler {
         Some(resolved_name)
     }
 
+    /// Wrap a bundled-module access expression with a `sys.modules` consult:
+    ///
+    /// ```python
+    /// _cribo.sys.modules["name"] if "name" in _cribo.sys.modules else <access>
+    /// ```
+    ///
+    /// CPython's `_find_and_load` returns an existing `sys.modules` entry
+    /// before invoking any finder or loader, so a rewritten static
+    /// `import_module` call must observe deliberate entry replacements. The
+    /// conditional (rather than `or`) also honors falsy replacement objects.
+    fn sys_modules_entry_or(module_name: &str, access: Expr) -> Expr {
+        use ruff_python_ast::ExprContext;
+
+        use crate::ast_builder::expressions;
+
+        let sys_modules = || {
+            expressions::attribute(
+                expressions::attribute(
+                    expressions::name(crate::ast_builder::CRIBO_PREFIX, ExprContext::Load),
+                    "sys",
+                    ExprContext::Load,
+                ),
+                "modules",
+                ExprContext::Load,
+            )
+        };
+        expressions::if_exp(
+            expressions::in_op(expressions::string_literal(module_name), sys_modules()),
+            expressions::subscript(
+                sys_modules(),
+                expressions::string_literal(module_name),
+                ExprContext::Load,
+            ),
+            access,
+        )
+    }
+
     /// Transform importlib.import_module("module-name") to direct module reference.
     ///
     /// For the evaluable-package form (`import_module("pkg", package=touch())`), the
@@ -116,8 +153,15 @@ impl DynamicHandler {
                     *created_namespace_objects = true;
                 }
 
-                // Use common logic for module access
-                let access = create_module_access_expr(&resolved_name);
+                // Use common logic for module access, but honor a PRELOADED
+                // sys.modules entry first: Python consults sys.modules before
+                // any loading, so `sys.modules["provider"] = replacement`
+                // installed ahead of the call must yield the replacement
+                // rather than (re)initializing the bundled module
+                let access = Self::sys_modules_entry_or(
+                    &resolved_name,
+                    create_module_access_expr(&resolved_name),
+                );
                 // Preserve the evaluation of a non-literal package expression:
                 // Python evaluates it before importing, so its side effects and
                 // exceptions must survive the rewrite

@@ -36,7 +36,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -45,11 +45,11 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _cribo.types.SimpleNamespace()
+                fresh = _SimpleNamespace()
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 return fresh
             return module
-        module = _cribo.types.SimpleNamespace(__name__=spec.name)
+        module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _globals()[binding])
         return module
@@ -177,21 +177,25 @@ indented_docstring.__module__ = 'docstring_module'
 class DocumentedClass:
     """A class with comprehensive documentation.\n\n    This class demonstrates various docstring patterns:\n        - Class-level documentation\n        - Method documentation\n        - Special method documentation\n\n    Attributes:\n        value: An integer value\n        name: A string identifier\n    """
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'docstring_module'), _cribo_f)[1])
     def __init__(self, value: int, name: str):
         """Initialize the DocumentedClass.\n\n        Args:\n            value: The initial value\n            name: The name identifier\n        """
         self.value = value
         self.name = name
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'docstring_module'), _cribo_f)[1])
     def get_info(self) -> str:
         """Return formatted information about this instance.\n\n        Returns:\n            A multiline string containing:\n                - The instance name\n                - The instance value\n                - Additional metadata\n        """
         return f"""Instance Info:\n    name={self.name}\n    value={self.value}\n    type={type(self).__name__}\n"""
 
     @staticmethod
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'docstring_module'), _cribo_f)[1])
     def static_method():
         """Static method with docstring.\n\n        This method doesn't access instance state.\n        It exists to demonstrate static method docstrings.\n        """
         return "static"
 
     @classmethod
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'docstring_module'), _cribo_f)[1])
     def class_method(cls):
         """Class method with docstring.\n\n        Returns:\n            The class name as a string.\n        """
         return cls.__name__

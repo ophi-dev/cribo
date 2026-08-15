@@ -3312,26 +3312,22 @@ impl ModuleResolver {
                 return false;
             }
             let keyword = line.split([' ', '(', ':']).next().unwrap_or("");
-            !keyword.is_empty()
-                && !matches!(
-                    keyword,
-                    "def"
-                        | "class"
-                        | "if"
-                        | "elif"
-                        | "else"
-                        | "for"
-                        | "while"
-                        | "with"
-                        | "try"
-                        | "except"
-                        | "finally"
-                        | "match"
-                        | "case"
-                        | "import"
-                        | "from"
-                )
-                && !keyword.starts_with(['#', '"', '\''])
+            if keyword.is_empty() || keyword.starts_with(['#', '"', '\'']) {
+                return false;
+            }
+            match keyword {
+                "import" | "from" => false,
+                // Compound statements exclude only their own suite colon: a
+                // one-line suite (`if enabled: TOKEN: str = "x"`) may still
+                // carry an annotated assignment after it, so a second ':'
+                // keeps the line a candidate (over-inclusive — slices or
+                // parameter annotations merely trigger the AST analysis)
+                "def" | "class" | "if" | "elif" | "else" | "for" | "while" | "with" | "try"
+                | "except" | "finally" | "match" | "case" => line
+                    .split_once(':')
+                    .is_some_and(|(_, rest)| rest.contains(':')),
+                _ => true,
+            }
         })
     }
 

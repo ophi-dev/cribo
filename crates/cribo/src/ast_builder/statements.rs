@@ -431,3 +431,99 @@ pub(crate) fn try_stmt(
         node_index: AtomicNodeIndex::NONE,
     })
 }
+
+/// Stamp the provider module's identity onto every definition executed inside
+/// a bundled class body, by appending an INNERMOST decorator to each direct
+/// method and nested class (recursively):
+///
+/// ```python
+/// @lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'records'), _cribo_f)[1]
+/// def __init__(self): ...
+/// ```
+///
+/// Functions and classes created while a class body executes read the BUNDLE
+/// entry's `__name__` for their `__module__`; the post-definition stamps can
+/// only correct the class object itself. The innermost decorator runs FIRST
+/// (before any user decorator observes the object), so decorator-time reads of
+/// `f.__module__` and later introspection (`records.Entry.__init__.__module__`)
+/// both see the provider module. `setattr` is captured as a parameter default
+/// when the lambda is created.
+pub(crate) fn stamp_class_body_definitions(class_body: &mut [Stmt], module_name: &str) {
+    for stmt in class_body {
+        match stmt {
+            Stmt::FunctionDef(func_def) => {
+                func_def
+                    .decorator_list
+                    .push(module_stamp_decorator(module_name));
+            }
+            Stmt::ClassDef(nested) => {
+                stamp_class_body_definitions(&mut nested.body, module_name);
+                nested
+                    .decorator_list
+                    .push(module_stamp_decorator(module_name));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Build the innermost `__module__`-stamping decorator used by
+/// [`stamp_class_body_definitions`].
+fn module_stamp_decorator(module_name: &str) -> Decorator {
+    use ruff_python_ast::{ExprLambda, Parameter, ParameterWithDefault};
+
+    let parameter = |name: &str, default: Option<Expr>| ParameterWithDefault {
+        range: TextRange::default(),
+        node_index: AtomicNodeIndex::NONE,
+        parameter: Parameter {
+            range: TextRange::default(),
+            node_index: AtomicNodeIndex::NONE,
+            name: Identifier::new(name, TextRange::default()),
+            annotation: None,
+        },
+        default: default.map(Box::new),
+    };
+    let parameters = Parameters {
+        range: TextRange::default(),
+        node_index: AtomicNodeIndex::NONE,
+        posonlyargs: vec![].into(),
+        args: vec![
+            parameter("_cribo_f", None),
+            parameter(
+                "_cribo_setattr",
+                Some(expressions::name("setattr", ExprContext::Load)),
+            ),
+        ]
+        .into(),
+        vararg: None,
+        kwonlyargs: vec![].into(),
+        kwarg: None,
+    };
+    let stamp_call = expressions::call(
+        expressions::name("_cribo_setattr", ExprContext::Load),
+        vec![
+            expressions::name("_cribo_f", ExprContext::Load),
+            expressions::string_literal("__module__"),
+            expressions::string_literal(module_name),
+        ],
+        vec![],
+    );
+    let body = expressions::subscript(
+        expressions::tuple(vec![
+            stamp_call,
+            expressions::name("_cribo_f", ExprContext::Load),
+        ]),
+        expressions::integer_literal(1),
+        ExprContext::Load,
+    );
+    Decorator {
+        range: TextRange::default(),
+        node_index: AtomicNodeIndex::NONE,
+        expression: Expr::Lambda(ExprLambda {
+            range: TextRange::default(),
+            node_index: AtomicNodeIndex::NONE,
+            parameters: Some(Box::new(parameters)),
+            body: Box::new(body),
+        }),
+    }
+}

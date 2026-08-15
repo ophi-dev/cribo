@@ -36,7 +36,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -45,11 +45,11 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _cribo.types.SimpleNamespace()
+                fresh = _SimpleNamespace()
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 return fresh
             return module
-        module = _cribo.types.SimpleNamespace(__name__=spec.name)
+        module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _globals()[binding])
         return module
@@ -178,11 +178,13 @@ def _cribo_init___cribo_5f60be_pkg_abc(_cribo_self, *, _cribo_getattr=getattr, _
         """Abstract base class for renderables."""
 
         @_cribo.abc.abstractmethod
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.abc'), _cribo_f)[1])
         def render(self, console):
             """Render this object to the console."""
             pass
 
         @classmethod
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.abc'), _cribo_f)[1])
         def __subclasshook__(cls, other):
             """Check if a class implements the render protocol."""
             return hasattr(other, "render")
@@ -197,9 +199,11 @@ def _cribo_init___cribo_5f60be_pkg_abc(_cribo_self, *, _cribo_getattr=getattr, _
     class RenderableWithConsole(RichRenderable):
         """A renderable that needs a console reference."""
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.abc'), _cribo_f)[1])
         def __init__(self, console: ConsoleBase):
             self.console = console
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.abc'), _cribo_f)[1])
         def render(self, console):
             return f"Rendering with {console}"
     RenderableWithConsole.__module__ = 'pkg.abc'
@@ -231,15 +235,18 @@ def _cribo_init___cribo_02808e_pkg_color(_cribo_self, *, _cribo_getattr=getattr,
     class Color:
         """Color representation for console output."""
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.color'), _cribo_f)[1])
         def __init__(self, r: int=0, g: int=0, b: int=0):
             self.r = r
             self.g = g
             self.b = b
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.color'), _cribo_f)[1])
         def to_rgb(self) -> _cribo.typing.Tuple[int, int, int]:
             """Convert to RGB tuple."""
             return self.r, self.g, self.b
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.color'), _cribo_f)[1])
         def to_hex(self) -> str:
             """Convert to hex string."""
             return f"#{self.r:02x}{self.g:02x}{self.b:02x}"
@@ -314,11 +321,13 @@ def _cribo_init___cribo_f0224b_pkg_console(_cribo_self, *, _cribo_getattr=getatt
     class Console(ConsoleBase):
         """Main console class with complex dependencies."""
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.console'), _cribo_f)[1])
         def __init__(self, force_terminal: _cribo.typing.Optional[bool]=None):
             self.force_terminal = force_terminal
             self._style = Style()
             self._color = Color()
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.console'), _cribo_f)[1])
         def print(self, *objects: _cribo.typing.Any, **kwargs) -> None:
             """Print objects to console."""
             for obj in objects:
@@ -328,6 +337,7 @@ def _cribo_init___cribo_f0224b_pkg_console(_cribo_self, *, _cribo_getattr=getatt
                     output = str(obj)
                 print(output, **kwargs)
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.console'), _cribo_f)[1])
         def is_renderable(self, obj: _cribo.typing.Any) -> bool:
             """Check if object is renderable."""
             return isinstance(obj, RichRenderable)
@@ -375,13 +385,16 @@ def _cribo_init___cribo_2353ad_pkg_pretty(_cribo_self, *, _cribo_getattr=getattr
     class PrettyPrinter(RichRenderable):
         """Pretty printer that implements RichRenderable."""
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.pretty'), _cribo_f)[1])
         def __init__(self):
             self._indent = 2
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.pretty'), _cribo_f)[1])
         def render(self, console: Console) -> str:
             """Render for console output."""
             return f"PrettyPrinter(indent={self._indent})"
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.pretty'), _cribo_f)[1])
         def pretty_print(self, obj: _cribo.typing.Any) -> None:
             """Pretty print an object."""
             console = Console()
@@ -424,14 +437,17 @@ def _cribo_init___cribo_4c91ba_pkg_style(_cribo_self, *, _cribo_getattr=getattr,
     class Style:
         """Style configuration for console output."""
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.style'), _cribo_f)[1])
         def __init__(self, color: _cribo.typing.Optional[str]=None):
             self.color = color or "default"
             self._color_obj = Color()
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.style'), _cribo_f)[1])
         def apply(self, text: str) -> str:
             """Apply style to text."""
             return f"[{self.color}]{text}[/{self.color}]"
 
+        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.style'), _cribo_f)[1])
         def get_color(self) -> Color:
             """Get associated color object."""
             return self._color_obj

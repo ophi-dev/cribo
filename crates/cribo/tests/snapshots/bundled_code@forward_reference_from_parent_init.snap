@@ -36,7 +36,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -45,11 +45,11 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _cribo.types.SimpleNamespace()
+                fresh = _SimpleNamespace()
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 return fresh
             return module
-        module = _cribo.types.SimpleNamespace(__name__=spec.name)
+        module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _globals()[binding])
         return module
@@ -123,6 +123,7 @@ parent.base = parent_base
 class BaseClass:
     """A base class."""
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'parent.base'), _cribo_f)[1])
     def __init__(self):
         self.base_value = "base"
 BaseClass.__module__ = 'parent.base'
@@ -133,6 +134,7 @@ parent.another = parent_another
 class AnotherClass:
     """Another class."""
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'parent.another'), _cribo_f)[1])
     def __init__(self):
         self.another_value = "another"
 AnotherClass.__module__ = 'parent.another'
@@ -143,9 +145,11 @@ parent.child = parent_child
 class MyClass:
     """A simple class to test forward references."""
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'parent.child'), _cribo_f)[1])
     def __init__(self):
         self.value = 42
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'parent.child'), _cribo_f)[1])
     def __repr__(self):
         return f"MyClass(value={self.value})"
 MyClass.__module__ = 'parent.child'
@@ -163,6 +167,7 @@ parent_subpkg.submodule = parent_subpkg_submodule
 class SubpkgClass:
     """A class from subpackage."""
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'parent.subpkg.submodule'), _cribo_f)[1])
     def __init__(self):
         self.subpkg_value = "subpkg"
 SubpkgClass.__module__ = 'parent.subpkg.submodule'

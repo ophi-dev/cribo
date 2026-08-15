@@ -36,7 +36,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -45,11 +45,11 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _cribo.types.SimpleNamespace()
+                fresh = _SimpleNamespace()
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 return fresh
             return module
-        module = _cribo.types.SimpleNamespace(__name__=spec.name)
+        module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _globals()[binding])
         return module
@@ -115,5 +115,5 @@ KIND = "bundled helper"
 helper.KIND = KIND
 """A for-loop iterable evaluates BEFORE the target rebinds the name.\n\nThe import_module call inside the iterable still dispatches through the\nimported importlib module, so its literal target must be discovered and\nrewritten; only the loop BODY observes the rebound name.\n"""
 importlib = _cribo.importlib
-for importlib in [_cribo.types.SimpleNamespace(KIND=KIND)]:
+for importlib in [_cribo.sys.modules['helper'] if 'helper' in _cribo.sys.modules else _cribo.types.SimpleNamespace(KIND=KIND)]:
     print(importlib.KIND)

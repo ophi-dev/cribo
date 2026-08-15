@@ -525,6 +525,62 @@ fn emit_identity_stamps(
     ));
 }
 
+/// Emit a class definition (with identity stamps and module-attribute
+/// assignment) into an init function body.
+///
+/// Import globals (`__name__`, `__package__`) in the class body are rewritten
+/// to namespace attributes (scope-aware: class-body bindings keep their own
+/// resolution). Definitions executed INSIDE the class body read the bundle
+/// entry's `__name__` at creation, so methods and nested classes are stamped
+/// with the provider module before any decorator or introspection observes
+/// them. The post-definition stamps restore the class object's serializable
+/// identity: pickle and multiprocessing resolve classes through
+/// `__import__(cls.__module__)` + getattr by `__qualname__`.
+fn emit_class_def_for_init(
+    bundler: &Bundler<'_>,
+    ctx: &ModuleTransformContext<'_>,
+    class_def: &ruff_python_ast::StmtClassDef,
+    body: &mut Vec<Stmt>,
+    module_scope_symbols: Option<&FxIndexSet<String>>,
+) {
+    let mut class_def_clone = class_def.clone();
+    {
+        let rewriter = ImportGlobalRewriter {
+            replacement: ImportGlobalReplacement::NamespaceAttribute(SELF_PARAM),
+            names: IMPORT_GLOBALS.to_vec(),
+        };
+        rewriter.rewrite_class(&mut class_def_clone);
+    }
+    ast_builder::statements::stamp_class_body_definitions(
+        &mut class_def_clone.body,
+        ctx.module_name,
+    );
+    body.push(Stmt::ClassDef(class_def_clone));
+
+    let symbol_name = class_def.name.to_string();
+
+    // Note: We set __module__ for the class, but Python still shows the full
+    // scope path in the class repr when it's defined inside a function; setting
+    // __module__ helps introspection but doesn't change the repr.
+    emit_identity_stamps(
+        body,
+        &symbol_name,
+        ctx.module_name,
+        class_def.name.as_str(),
+        !class_def.decorator_list.is_empty(),
+    );
+
+    // Set as module attribute via centralized helper
+    emit_module_attr_if_exportable(
+        bundler,
+        &symbol_name,
+        ctx.module_name,
+        body,
+        module_scope_symbols,
+        None, // not a lifted var
+    );
+}
+
 /// Process each statement from the transformed module body
 /// and add appropriate module attributes for exported symbols
 ///
@@ -712,44 +768,7 @@ pub(crate) fn process_statements_for_init_function(
                 // process_body_recursive in the bundler, so we don't need to add them here
             }
             Stmt::ClassDef(class_def) => {
-                // Add class definition, with import globals (__name__, __package__)
-                // in the class body rewritten to namespace attributes (scope-aware:
-                // class-body bindings keep their own resolution)
-                let mut class_def_clone = class_def.clone();
-                {
-                    let rewriter = ImportGlobalRewriter {
-                        replacement: ImportGlobalReplacement::NamespaceAttribute(SELF_PARAM),
-                        names: IMPORT_GLOBALS.to_vec(),
-                    };
-                    rewriter.rewrite_class(&mut class_def_clone);
-                }
-                body.push(Stmt::ClassDef(class_def_clone));
-
-                let symbol_name = class_def.name.to_string();
-
-                // Note: We set __module__ for the class, but Python still shows the full scope path
-                // in the class repr when it's defined inside a function. This is expected behavior.
-                // Setting __module__ helps with introspection but doesn't change the repr.
-                // __qualname__ is restored to the original module-level name so external
-                // consumers resolving classes by identity (pickle, multiprocessing) find
-                // them through __import__(cls.__module__) + getattr(module, __qualname__).
-                emit_identity_stamps(
-                    body,
-                    &symbol_name,
-                    ctx.module_name,
-                    class_def.name.as_str(),
-                    !class_def.decorator_list.is_empty(),
-                );
-
-                // Set as module attribute via centralized helper
-                emit_module_attr_if_exportable(
-                    bundler,
-                    &symbol_name,
-                    ctx.module_name,
-                    body,
-                    module_scope_symbols,
-                    None, // not a lifted var
-                );
+                emit_class_def_for_init(bundler, ctx, class_def, body, module_scope_symbols);
             }
             Stmt::FunctionDef(func_def) => {
                 // Clone the function for transformation

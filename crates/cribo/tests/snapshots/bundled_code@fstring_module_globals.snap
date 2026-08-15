@@ -36,7 +36,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -45,11 +45,11 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _cribo.types.SimpleNamespace()
+                fresh = _SimpleNamespace()
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 return fresh
             return module
-        module = _cribo.types.SimpleNamespace(__name__=spec.name)
+        module = _SimpleNamespace(__name__=spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _globals()[binding])
         return module
@@ -119,9 +119,11 @@ tasks = []
 class Worker:
     """Worker class that uses global variables in f-strings"""
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'worker'), _cribo_f)[1])
     def __init__(self):
         self.name = "Worker1"
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'worker'), _cribo_f)[1])
     def process(self, data):
         """Process data and update global state"""
         global status, counter
@@ -129,11 +131,13 @@ class Worker:
         counter += 1
         return f"Processing {data}: status={status}, count={counter}"
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'worker'), _cribo_f)[1])
     def get_status(self):
         """Get current status using f-string with globals"""
         global status, counter, tasks
         return f"Worker {self.name}: status='{status}', processed={counter}, pending={len(tasks)}"
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'worker'), _cribo_f)[1])
     def do_work(self):
         """Do some work and update globals"""
         global status, counter, tasks

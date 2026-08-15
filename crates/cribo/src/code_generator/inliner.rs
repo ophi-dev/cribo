@@ -682,6 +682,11 @@ impl Bundler<'_> {
             }
         }
 
+        // Definitions executed INSIDE the class body read the bundle entry's
+        // __name__ at creation: stamp methods and nested classes with the
+        // provider module before any decorator or introspection observes them
+        statements::stamp_class_body_definitions(&mut class_def_clone.body, module_name);
+
         ctx.inlined_stmts.push(Stmt::ClassDef(class_def_clone));
 
         // Preserve the class's serializable identity: __module__ names the
