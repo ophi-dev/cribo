@@ -408,6 +408,72 @@ pub(crate) fn bool_op(op: BoolOp, values: Vec<Expr>) -> Expr {
     })
 }
 
+/// Creates the runtime identity guard for stamping a DECORATED definition:
+///
+/// ```python
+/// getattr(<binding>, '__name__', None) == '<expected_name>' and
+///     getattr(<binding>, '__module__', None) == (lambda: None).__module__
+/// ```
+///
+/// A decorator may return an unrelated object — in particular an IMPORTED
+/// shared callable whose `__name__` happens to equal the decorated binding.
+/// Such an object must keep its defining module's attribution, so the guard
+/// requires BOTH the definition's `__name__` AND creation provenance: a
+/// locally created result (the original `def`, or a `functools.wraps`-style
+/// copy of it) carries the creating scope's module name, which the inline
+/// lambda probe reproduces exactly (both draw it from the enclosing
+/// `globals()['__name__']` at execution time), while an imported callable
+/// carries its own module's name (bundled modules stamp it right after the
+/// definition, before any importer can observe the object).
+pub(crate) fn decorated_identity_guard(binding: &str, expected_name: &str) -> Expr {
+    use ruff_python_ast::ExprLambda;
+
+    let name_check = compare(
+        call(
+            name("getattr", ExprContext::Load),
+            vec![
+                name(binding, ExprContext::Load),
+                string_literal("__name__"),
+                none_literal(),
+            ],
+            vec![],
+        ),
+        CmpOp::Eq,
+        string_literal(expected_name),
+    );
+    let probe = Expr::Lambda(ExprLambda {
+        node_index: AtomicNodeIndex::NONE,
+        range: TextRange::default(),
+        parameters: None,
+        body: Box::new(none_literal()),
+    });
+    let provenance_check = compare(
+        call(
+            name("getattr", ExprContext::Load),
+            vec![
+                name(binding, ExprContext::Load),
+                string_literal("__module__"),
+                none_literal(),
+            ],
+            vec![],
+        ),
+        CmpOp::Eq,
+        attribute(probe, "__module__", ExprContext::Load),
+    );
+    bool_op(BoolOp::And, vec![name_check, provenance_check])
+}
+
+/// Creates a comparison expression node with a single operator.
+fn compare(left: Expr, op: CmpOp, right: Expr) -> Expr {
+    Expr::Compare(ExprCompare {
+        node_index: AtomicNodeIndex::NONE,
+        range: TextRange::default(),
+        left: Box::new(left),
+        ops: Box::new([op]),
+        comparators: Box::new([right]),
+    })
+}
+
 /// Creates an if-expression (ternary conditional) node.
 ///
 /// # Arguments

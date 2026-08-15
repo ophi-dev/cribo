@@ -1035,7 +1035,7 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
 }
 
 /// Ownership and policy facts for one installed distribution (a `.dist-info` entry).
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 struct DistributionInfo {
     /// Distribution name from `METADATA` (e.g. "pure-helper")
     name: String,
@@ -3497,9 +3497,10 @@ impl ModuleResolver {
         // below remains as additional, lower-priority coverage.
         if virtualenv_override.is_none()
             && let Some(python) = &self.config.requirements.python
-            && let Some(purelib) = Self::interpreter_site_packages(python)
         {
-            site_packages_dirs.insert(self.canonicalize_path(purelib));
+            for directory in Self::interpreter_site_packages(python) {
+                site_packages_dirs.insert(self.canonicalize_path(directory));
+            }
         }
         for virtualenv_path in self.resolve_virtualenv_paths(virtualenv_override) {
             for directory in self.get_virtualenv_site_packages_directories(&virtualenv_path) {
@@ -3516,25 +3517,40 @@ impl ModuleResolver {
         directories
     }
 
-    /// Ask an interpreter for its `purelib` (site-packages) path via `sysconfig`.
-    fn interpreter_site_packages(python: &Path) -> Option<PathBuf> {
+    /// Ask an interpreter for its `purelib` AND `platlib` (site-packages)
+    /// paths via `sysconfig`. Most layouts unify them, but custom schemes and
+    /// multiarch installations split pure-Python and platform-specific
+    /// packages across two directories — mixed Python/native distributions
+    /// living in `platlib` need the same externalization checks.
+    fn interpreter_site_packages(python: &Path) -> Vec<PathBuf> {
         let output = std::process::Command::new(python)
             .args([
                 "-c",
-                "import sysconfig; print(sysconfig.get_path('purelib'))",
+                "import sysconfig; print(sysconfig.get_path('purelib')); \
+                 print(sysconfig.get_path('platlib'))",
             ])
-            .output()
-            .ok()?;
+            .output();
+        let Ok(output) = output else {
+            return Vec::new();
+        };
         if !output.status.success() {
-            return None;
+            return Vec::new();
         }
-        let purelib = String::from_utf8(output.stdout).ok()?;
-        let purelib = purelib.trim();
-        if purelib.is_empty() {
-            return None;
+        let Ok(stdout) = String::from_utf8(output.stdout) else {
+            return Vec::new();
+        };
+        let mut directories = Vec::new();
+        for line in stdout.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let path = PathBuf::from(line);
+            if path.is_dir() && !directories.contains(&path) {
+                directories.push(path);
+            }
         }
-        let path = PathBuf::from(purelib);
-        path.is_dir().then_some(path)
+        directories
     }
 
     fn resolve_virtualenv_paths(&self, virtualenv_override: Option<&str>) -> Vec<PathBuf> {
@@ -4069,84 +4085,103 @@ impl ModuleResolver {
         import_name: &str,
     ) -> bool {
         use std::str::FromStr;
-        self.with_distribution_ownership_index(site_packages_dir, |index| {
-            let owner_names: Vec<String> = index
-                .owning_distributions(import_name)
-                .iter()
-                .filter(|owner| !owner.name.is_empty())
-                .map(|owner| Self::normalize_distribution_name(&owner.name))
-                .collect();
-            if owner_names.is_empty() {
-                return false;
-            }
-            // Parse every extras-independent Requires-Dist edge up front;
-            // only distributions with outgoing edges can propagate
-            // externality, so direct dispositions are computed for those only
-            let mut edges: Vec<(usize, String)> = Vec::new();
-            for (declarer_index, declarer) in index.distributions.iter().enumerate() {
-                let declarer_name = Self::normalize_distribution_name(&declarer.name);
-                for entry in &declarer.requires_dist {
-                    let Ok(parsed) =
-                        pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(entry)
-                    else {
-                        continue;
-                    };
-                    // Edges that can only apply with extras enabled are not
-                    // active for a plain installation
-                    if !parsed.marker.evaluate_extras(&[]) {
-                        continue;
-                    }
-                    let target = Self::normalize_distribution_name(parsed.name.as_ref());
-                    // Self-edges cannot split identity
-                    if target != declarer_name {
-                        edges.push((declarer_index, target));
-                    }
+
+        // Build one graph over EVERY searched metadata root. The declarer and
+        // its target need not live in the same root (configured interpreter,
+        // PYTHONPATH, and fallback virtualenv roots can all differ).
+        let mut search_roots: IndexSet<PathBuf> = self
+            .get_distribution_metadata_search_directories()
+            .into_iter()
+            .map(|root| self.canonicalize_path(root))
+            .collect();
+        search_roots.insert(self.canonicalize_path(site_packages_dir.to_path_buf()));
+
+        let mut distributions: Vec<(PathBuf, DistributionInfo)> = Vec::new();
+        let mut owner_names: FxIndexSet<String> = FxIndexSet::default();
+        for search_root in search_roots {
+            self.with_distribution_ownership_index(&search_root, |index| {
+                owner_names.extend(
+                    index
+                        .owning_distributions(import_name)
+                        .iter()
+                        .filter(|owner| !owner.name.is_empty())
+                        .map(|owner| Self::normalize_distribution_name(&owner.name)),
+                );
+                distributions.extend(
+                    index
+                        .distributions
+                        .iter()
+                        .cloned()
+                        .map(|distribution| (search_root.clone(), distribution)),
+                );
+            });
+        }
+        if owner_names.is_empty() {
+            return false;
+        }
+
+        // Parse every extras-independent Requires-Dist edge up front; only
+        // distributions with outgoing edges can propagate externality.
+        let mut edges: Vec<(usize, String)> = Vec::new();
+        for (declarer_index, (_, declarer)) in distributions.iter().enumerate() {
+            let declarer_name = Self::normalize_distribution_name(&declarer.name);
+            for entry in &declarer.requires_dist {
+                let Ok(parsed) = pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(entry)
+                else {
+                    continue;
+                };
+                // Edges gated purely on extras are inactive for a plain install.
+                if !parsed.marker.evaluate_extras(&[]) {
+                    continue;
+                }
+                let target = Self::normalize_distribution_name(parsed.name.as_ref());
+                // Self-edges cannot split identity.
+                if target != declarer_name {
+                    edges.push((declarer_index, target));
                 }
             }
-            if edges.is_empty() {
-                return false;
-            }
-            let mut external: Vec<bool> = index
-                .distributions
-                .iter()
-                .enumerate()
-                .map(|(declarer_index, declarer)| {
-                    edges.iter().any(|(from, _)| *from == declarer_index)
-                        && self.distribution_stays_external_directly(declarer, site_packages_dir)
-                })
-                .collect();
-            // Externality flows along dependency edges: installing an external
-            // declarer installs its targets transitively, so a target that
-            // itself declares edges keeps propagating (fixpoint)
-            let name_to_index: FxIndexMap<String, Vec<usize>> = {
-                let mut map: FxIndexMap<String, Vec<usize>> = FxIndexMap::default();
-                for (distribution_index, distribution) in index.distributions.iter().enumerate() {
-                    map.entry(Self::normalize_distribution_name(&distribution.name))
-                        .or_default()
-                        .push(distribution_index);
-                }
-                map
-            };
-            loop {
-                let mut changed = false;
-                for (declarer_index, target) in &edges {
-                    if !external[*declarer_index] {
-                        continue;
-                    }
-                    for &target_index in name_to_index.get(target).into_iter().flatten() {
-                        if !external[target_index] {
-                            external[target_index] = true;
-                            changed = true;
-                        }
-                    }
-                }
-                if !changed {
-                    break;
-                }
-            }
-            edges.iter().any(|(declarer_index, target)| {
-                external[*declarer_index] && owner_names.contains(target)
+        }
+        if edges.is_empty() {
+            return false;
+        }
+
+        let mut external: Vec<bool> = distributions
+            .iter()
+            .enumerate()
+            .map(|(declarer_index, (search_root, declarer))| {
+                edges.iter().any(|(from, _)| *from == declarer_index)
+                    && self.distribution_stays_external_directly(declarer, search_root)
             })
+            .collect();
+        let mut name_to_index: FxIndexMap<String, Vec<usize>> = FxIndexMap::default();
+        for (distribution_index, (_, distribution)) in distributions.iter().enumerate() {
+            name_to_index
+                .entry(Self::normalize_distribution_name(&distribution.name))
+                .or_default()
+                .push(distribution_index);
+        }
+
+        // Installing an external declarer installs its targets transitively;
+        // propagate across the union graph to a fixpoint.
+        loop {
+            let mut changed = false;
+            for (declarer_index, target) in &edges {
+                if !external[*declarer_index] {
+                    continue;
+                }
+                for &target_index in name_to_index.get(target).into_iter().flatten() {
+                    if !external[target_index] {
+                        external[target_index] = true;
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        edges.iter().any(|(declarer_index, target)| {
+            external[*declarer_index] && owner_names.contains(target)
         })
     }
 
@@ -9098,19 +9133,20 @@ def read(package):
         Ok(())
     }
 
-    /// A configured interpreter is asked for its `purelib` when its path has no
-    /// recognizable environment layout, so PATH-resolved commands still work.
+    /// A configured interpreter is asked for its `purelib`/`platlib` when its
+    /// path has no recognizable environment layout, so PATH-resolved commands
+    /// still work.
     #[test]
     fn test_interpreter_site_packages_query() {
         let python = test_python_executable();
-        let purelib = ModuleResolver::interpreter_site_packages(&python);
+        let directories = ModuleResolver::interpreter_site_packages(&python);
         assert!(
-            purelib.is_some_and(|path| path.is_dir()),
-            "a real interpreter must report an existing purelib directory"
+            !directories.is_empty() && directories.iter().all(|path| path.is_dir()),
+            "a real interpreter must report existing purelib/platlib directories"
         );
         assert_eq!(
             ModuleResolver::interpreter_site_packages(Path::new("/nonexistent/interpreter/python")),
-            None
+            Vec::<PathBuf>::new()
         );
     }
 

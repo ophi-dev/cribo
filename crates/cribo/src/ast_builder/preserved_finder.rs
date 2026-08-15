@@ -43,9 +43,14 @@ class _CriboPreservedLoader:
     # re-import must not observe globals left over from the previous life
     _pristine = {}
 
-    def __init__(self, entry, namespace=None):
+    def __init__(self, entry, namespace=None, reload_target=None):
         self._entry = entry
         self._namespace = namespace
+        # PEP 451: find_spec receives the existing module as `target` during
+        # importlib.reload (plain imports pass None) — the one reliable signal
+        # separating "re-execute over the RETAINED dictionary" (reload) from
+        # "first machinery load" and "fresh life after eviction"
+        self._reload_target = reload_target
 
     def create_module(self, spec):
         module = None
@@ -79,14 +84,13 @@ class _CriboPreservedLoader:
         # reach the shared snapshot store through the instance's own type
         pristine = type(self)._pristine
         key = id(module)
-        if getattr(module, '_cribo_machinery_loaded', False):
-            # Eviction re-import: restore the pre-initialization namespace so
-            # the body re-executes against fresh state, like CPython's fresh
-            # module object
-            saved = pristine.get(key)
-            if saved is not None:
-                module.__dict__.clear()
-                module.__dict__.update(saved)
+        is_reload = self._reload_target is module
+        if is_reload:
+            # RELOAD: Python re-executes the body over the RETAINED module
+            # dictionary (state such as counters guarded by try/except
+            # survives), so only the init guards are reset — the eviction
+            # re-import path never reaches here, because create_module already
+            # produced a fresh namespace for it
             module.__initialized__ = False
             module.__initializing__ = False
         state = dict(module.__dict__)
@@ -96,11 +100,18 @@ class _CriboPreservedLoader:
             globals()[init](module)
             module._cribo_machinery_loaded = True
         except BaseException:
-            # Python discards a failed module entirely; a retried import must
-            # observe a FRESH namespace, not the partial mutations
-            module.__dict__.clear()
-            module.__dict__.update(state)
-            module.__initializing__ = False
+            if is_reload:
+                # A failed reload leaves partial mutations in place, exactly
+                # like CPython's exec(code, module.__dict__); only unwind the
+                # guard so a later attempt can run
+                module.__initializing__ = False
+            else:
+                # Python discards a failed FIRST import entirely; a retried
+                # import must observe a fresh namespace, not the partial
+                # mutations
+                module.__dict__.clear()
+                module.__dict__.update(state)
+                module.__initializing__ = False
             raise
 
 
@@ -127,19 +138,21 @@ class _CriboPreservedFinder:
         from importlib.machinery import ModuleSpec
         return ModuleSpec(
             name,
-            self._loader(entry, self._namespaces.get(name)),
+            self._loader(entry, self._namespaces.get(name), target),
             is_package=entry[2],
         )
 
 
 _cribo_finder = _CriboPreservedFinder()
 {sys}.meta_path.append(_cribo_finder)
-# First-party bundled TOP-LEVEL modules and packages keep their original
-# precedence: the entry directory beat installed distributions before
-# bundling, so their finder sits in FRONT of PathFinder (behind the
-# builtin/frozen importers). Dotted submodules and third-party modules stay
-# in the APPENDED finder, where installed distributions win (native
-# submodules resolve through installed parents).
+# BUNDLED top-level modules and packages take precedence over installed
+# distributions: the bundle stamps their original names on the objects it
+# carries (`__module__` on classes and functions), so `pickle`/`multiprocessing`
+# resolving those names MUST receive the bundled namespaces holding the very
+# same objects — an installed copy would yield different identities. Their
+# finder sits in FRONT of PathFinder (behind the builtin/frozen importers).
+# Dotted submodules stay in the APPENDED finder, where installed distributions
+# win (native submodules resolve through installed parents).
 _cribo_finder_local = _CriboPreservedFinder()
 _cribo_finder_local._namespaces = _cribo_finder._namespaces
 for _cribo_index, _cribo_meta_finder in enumerate({sys}.meta_path):
@@ -170,18 +183,18 @@ pub(crate) fn generate_preserved_import_finder() -> Vec<Stmt> {
 /// bundle load, so the loader only needs to hand their namespace to the
 /// machinery.
 ///
-/// `first_party` selects the finder: first-party TOP-LEVEL PLAIN MODULES
-/// register with the finder in front of `PathFinder` (the entry directory
-/// beat installed distributions before bundling, and such modules neither
-/// have submodules nor resolve through an installed parent); packages, dotted
-/// submodules, and third-party modules register with the appended one
-/// (installed distributions win).
+/// `local_precedence` selects the finder: bundled TOP-LEVEL modules and
+/// packages register with the finder in front of `PathFinder` (bundled
+/// objects are stamped with these names, so identity lookups by
+/// `pickle`/`multiprocessing` must resolve the bundled namespaces even when
+/// an installed copy exists); dotted submodules and roots with external
+/// submodules register with the appended one (installed distributions win).
 pub(crate) fn generate_preserved_target_registration(
     module_name: &str,
     init_function_name: Option<&str>,
     namespace_variable: &str,
     is_package: bool,
-    first_party: bool,
+    local_precedence: bool,
 ) -> Stmt {
     use ruff_python_ast::ExprContext;
 
@@ -189,7 +202,7 @@ pub(crate) fn generate_preserved_target_registration(
 
     statements::expr(expressions::call(
         expressions::attribute(
-            expressions::name(finder_variable(first_party), ExprContext::Load),
+            expressions::name(finder_variable(local_precedence), ExprContext::Load),
             "register",
             ExprContext::Load,
         ),
@@ -204,8 +217,8 @@ pub(crate) fn generate_preserved_target_registration(
 }
 
 /// The bundle-global name of the finder serving a registration.
-const fn finder_variable(first_party: bool) -> &'static str {
-    if first_party {
+const fn finder_variable(local_precedence: bool) -> &'static str {
+    if local_precedence {
         "_cribo_finder_local"
     } else {
         "_cribo_finder"
@@ -221,7 +234,7 @@ pub(crate) fn generate_inlined_module_registration(
     module_name: &str,
     exports: &[(String, String)],
     is_package: bool,
-    first_party: bool,
+    local_precedence: bool,
 ) -> Stmt {
     use ruff_python_ast::{AtomicNodeIndex, DictItem, Expr, ExprContext, ExprDict};
     use ruff_text_size::TextRange;
@@ -243,7 +256,7 @@ pub(crate) fn generate_inlined_module_registration(
 
     statements::expr(expressions::call(
         expressions::attribute(
-            expressions::name(finder_variable(first_party), ExprContext::Load),
+            expressions::name(finder_variable(local_precedence), ExprContext::Load),
             "register",
             ExprContext::Load,
         ),

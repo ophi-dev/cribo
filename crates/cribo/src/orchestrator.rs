@@ -858,9 +858,24 @@ impl BundleOrchestrator {
                 &module_path,
                 Some(params.resolver),
             );
+            // Reachability pruning consumes these edges as ABSOLUTE module names:
+            // normalize relative importlib targets (".backend" with package="pkg")
+            // the same way discovery queueing does, so the pruning pass sees
+            // "pkg.backend" rather than a raw relative string it can never match
             let imports: Vec<String> = imports_with_context
                 .iter()
-                .map(|(m, _, _, _)| m.clone())
+                .map(|(m, _, import_type, package_context)| {
+                    if *import_type == Some(crate::visitors::ImportType::ImportlibStatic)
+                        && m.starts_with('.')
+                        && let Some((resolved_name, _)) = params
+                            .resolver
+                            .resolve_importlib_static_with_context(m, package_context.as_deref())
+                    {
+                        resolved_name
+                    } else {
+                        m.clone()
+                    }
+                })
                 .collect();
             debug!("Extracted imports from {module_name}: {imports:?}");
 

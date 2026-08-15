@@ -1,0 +1,9 @@
+---
+source: crates/cribo/tests/test_bundling_snapshots.rs
+input_file: crates/cribo/tests/fixtures/wrapper_decorator_same_name_import/main.py
+---
+ExecutionResults {
+    status: Success,
+    stdout: "shared loaded\nprovider loaded\nsame object: True\nmodule: shared\nqualname: exported\ncall: canonical result",
+    stderr: "",
+}

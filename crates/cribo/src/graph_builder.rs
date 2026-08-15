@@ -2115,8 +2115,19 @@ impl<'a> GraphBuilder<'a> {
             {
                 // Extract the module name if it's a static string, from either the
                 // first positional argument or the `name=` keyword argument
-                return crate::python::importlib_call::literal_module_name(call)
-                    .map(ToOwned::to_owned);
+                let module_name = crate::python::importlib_call::literal_module_name(call)?;
+                // A relative name anchors at the literal package context, exactly
+                // like CPython's `_resolve_name`: record the ABSOLUTE name so
+                // tree-shaking connects the alias to the bundled module (a raw
+                // ".backend" string matches nothing in the module graph)
+                if module_name.starts_with('.') {
+                    let package = crate::python::importlib_call::literal_package_context(call)?;
+                    return crate::python::importlib_call::resolve_relative_name(
+                        module_name,
+                        package,
+                    );
+                }
+                return Some(module_name.to_owned());
             }
         }
         None

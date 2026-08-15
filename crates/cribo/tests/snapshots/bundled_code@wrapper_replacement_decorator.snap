@@ -31,9 +31,10 @@ _cribo = _Cribo()
 class _CriboPreservedLoader:
     _pristine = {}
 
-    def __init__(self, entry, namespace=None):
+    def __init__(self, entry, namespace=None, reload_target=None):
         self._entry = entry
         self._namespace = namespace
+        self._reload_target = reload_target
 
     def create_module(self, spec):
         module = None
@@ -59,11 +60,8 @@ class _CriboPreservedLoader:
             return
         pristine = type(self)._pristine
         key = id(module)
-        if getattr(module, '_cribo_machinery_loaded', False):
-            saved = pristine.get(key)
-            if saved is not None:
-                module.__dict__.clear()
-                module.__dict__.update(saved)
+        is_reload = self._reload_target is module
+        if is_reload:
             module.__initialized__ = False
             module.__initializing__ = False
         state = dict(module.__dict__)
@@ -73,9 +71,12 @@ class _CriboPreservedLoader:
             globals()[init](module)
             module._cribo_machinery_loaded = True
         except BaseException:
-            module.__dict__.clear()
-            module.__dict__.update(state)
-            module.__initializing__ = False
+            if is_reload:
+                module.__initializing__ = False
+            else:
+                module.__dict__.clear()
+                module.__dict__.update(state)
+                module.__initializing__ = False
             raise
 class _CriboPreservedFinder:
 
@@ -95,7 +96,7 @@ class _CriboPreservedFinder:
         if entry is None:
             return None
         from importlib.machinery import ModuleSpec
-        return ModuleSpec(name, self._loader(entry, self._namespaces.get(name)), is_package=entry[2])
+        return ModuleSpec(name, self._loader(entry, self._namespaces.get(name), target), is_package=entry[2])
 _cribo_finder = _CriboPreservedFinder()
 _sys.meta_path.append(_cribo_finder)
 _cribo_finder_local = _CriboPreservedFinder()
@@ -129,7 +130,7 @@ def _cribo_init___cribo_5ac990_provider(_cribo_self):
     def wrapped():
         return "never seen"
     try:
-        if getattr(wrapped, '__name__', None) == 'wrapped':
+        if getattr(wrapped, '__name__', None) == 'wrapped' and getattr(wrapped, '__module__', None) == (lambda: None).__module__:
             wrapped.__module__ = 'provider'
             wrapped.__qualname__ = 'wrapped'
     except (AttributeError, TypeError):

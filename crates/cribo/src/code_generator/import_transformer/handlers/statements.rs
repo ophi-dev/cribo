@@ -235,8 +235,19 @@ impl StatementsHandler {
         // Transform base classes
         t.transform_class_bases(s);
 
+        // Class-body bindings shadow names only for expressions evaluated IN
+        // the class body: save the enclosing scope's state and restore it
+        // after, so a class attribute `importlib = custom` (or a method named
+        // `importlib`) does not kill the MODULE-level import alias for
+        // subsequent module-level statements
+        let saved_locals = t.state.local_variables.clone();
+        let saved_shadowed_bindings = t.state.shadowed_bindings.clone();
+
         // Transform class body
         t.transform_statements(&mut s.body);
+
+        t.state.local_variables = saved_locals;
+        t.state.shadowed_bindings = saved_shadowed_bindings;
 
         // The definition's NAME rebinds in the enclosing scope from here on: a
         // later `class importlib: ...` kills an earlier import alias

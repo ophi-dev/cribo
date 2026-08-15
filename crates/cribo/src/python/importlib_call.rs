@@ -96,11 +96,17 @@ pub(crate) fn arguments_safely_discardable(call: &ExprCall) -> bool {
 /// import target is nevertheless statically known and WILL be imported at runtime.
 ///
 /// This is the "evaluable extra argument" form, e.g.
-/// `import_module("pkg", package=touch())`: the name is an absolute string literal,
+/// `import_module("pkg", package=CONTEXT)`: the name is an absolute string literal,
 /// only the supported arguments are present (no unpacking, no unknown keywords, no
 /// double binding), and the package expression — which CPython evaluates but ignores
 /// for absolute names — is not a discardable literal. Rewrites must evaluate the
 /// returned expression before yielding the bundled module.
+///
+/// Only provably INERT expressions qualify: Python evaluates the package argument
+/// BEFORE consulting `sys.modules`, so an expression that can run arbitrary code
+/// (`package=replace_sys_modules_entry()`) may change what the import returns —
+/// such calls must stay on the real import path, where the meta-path finder serves
+/// the bundled target with exact machinery semantics.
 pub(crate) fn evaluable_package_argument(call: &ExprCall) -> Option<&Expr> {
     if arguments_safely_discardable(call) || statically_raises_type_error(call) {
         return None;
@@ -117,7 +123,32 @@ pub(crate) fn evaluable_package_argument(call: &ExprCall) -> Option<&Expr> {
     if name.starts_with('.') {
         return None;
     }
-    positional_or_keyword_argument(call, 1, "package")
+    let package = positional_or_keyword_argument(call, 1, "package")?;
+    expression_is_inert(package).then_some(package)
+}
+
+/// Return whether evaluating an expression provably cannot execute user code (and
+/// therefore cannot mutate import state such as `sys.modules`).
+///
+/// Plain name loads may raise `NameError` but never dispatch to user hooks;
+/// literals evaluate to constants; tuple/list displays of inert elements build
+/// containers without invoking any dunder. Everything else — calls, attribute
+/// access (properties, module `__getattr__`), subscripts (`__getitem__`),
+/// operators and boolean contexts (arbitrary dunders), f-strings (`__format__`) —
+/// can run arbitrary code and is treated as potentially effectful.
+fn expression_is_inert(expr: &Expr) -> bool {
+    match expr {
+        Expr::Name(_)
+        | Expr::StringLiteral(_)
+        | Expr::BytesLiteral(_)
+        | Expr::NumberLiteral(_)
+        | Expr::BooleanLiteral(_)
+        | Expr::NoneLiteral(_)
+        | Expr::EllipsisLiteral(_) => true,
+        Expr::Tuple(tuple) => tuple.elts.iter().all(expression_is_inert),
+        Expr::List(list) => list.elts.iter().all(expression_is_inert),
+        _ => false,
+    }
 }
 
 /// Return whether an `import_module` call's arguments are opaque (`*args`/`**kwargs`

@@ -138,16 +138,81 @@ impl SideEffectDetector {
     /// namespace: `globals()` inside their functions would read or mutate the
     /// ENTRY module's state, so such modules take the wrapper path, which
     /// rewrites `globals()` to the module's own namespace dictionary.
+    ///
+    /// Scope-aware: a function or lambda that BINDS `globals` (parameter or
+    /// local) resolves the name to its own binding for its whole body,
+    /// including nested scopes, so references inside it are not the builtin.
     fn body_references_globals(body: &[Stmt]) -> bool {
-        use ruff_python_ast::visitor::{Visitor, walk_expr};
+        use ruff_python_ast::visitor::{Visitor, walk_expr, walk_stmt};
+
+        fn scope_binds_globals(
+            parameters: Option<&ruff_python_ast::Parameters>,
+            body: &[Stmt],
+        ) -> bool {
+            if let Some(parameters) = parameters
+                && parameters
+                    .iter()
+                    .any(|param| param.name().as_str() == "globals")
+            {
+                return true;
+            }
+            let mut bound = crate::types::FxIndexSet::default();
+            let scope_globals = crate::visitors::collect_scope_global_declarations(body);
+            crate::visitors::LocalVarCollector::new(&mut bound, &scope_globals)
+                .collect_from_stmts(body);
+            bound.contains("globals")
+        }
 
         struct GlobalsFinder {
             found: bool,
         }
 
         impl<'a> Visitor<'a> for GlobalsFinder {
+            fn visit_stmt(&mut self, stmt: &'a Stmt) {
+                if self.found {
+                    return;
+                }
+                if let Stmt::FunctionDef(func) = stmt
+                    && scope_binds_globals(Some(&func.parameters), &func.body)
+                {
+                    // Definition-time expressions still evaluate in the
+                    // enclosing scope
+                    for decorator in &func.decorator_list {
+                        self.visit_expr(&decorator.expression);
+                    }
+                    for param in &func.parameters {
+                        if let Some(annotation) = param.annotation() {
+                            self.visit_expr(annotation);
+                        }
+                        if let Some(default) = param.default() {
+                            self.visit_expr(default);
+                        }
+                    }
+                    if let Some(returns) = &func.returns {
+                        self.visit_expr(returns);
+                    }
+                    return;
+                }
+                walk_stmt(self, stmt);
+            }
+
             fn visit_expr(&mut self, expr: &'a Expr) {
                 if self.found {
+                    return;
+                }
+                if let Expr::Lambda(lambda) = expr
+                    && lambda
+                        .parameters
+                        .as_deref()
+                        .is_some_and(|parameters| scope_binds_globals(Some(parameters), &[]))
+                {
+                    if let Some(parameters) = &lambda.parameters {
+                        for param in parameters {
+                            if let Some(default) = param.default() {
+                                self.visit_expr(default);
+                            }
+                        }
+                    }
                     return;
                 }
                 if matches!(expr, Expr::Name(name) if name.id.as_str() == "globals") {

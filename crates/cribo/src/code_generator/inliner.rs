@@ -58,30 +58,19 @@ fn emit_inlined_identity_stamps(
         return;
     }
     use ruff_python_ast::{
-        AtomicNodeIndex, CmpOp, ExceptHandler, ExceptHandlerExceptHandler, ExprCompare, ExprContext,
+        AtomicNodeIndex, ExceptHandler, ExceptHandlerExceptHandler, ExprContext,
     };
     // Only stamp a decorator RESULT that still carries the inlined
     // definition's identity (the original object, or a functools.wraps-style
-    // replacement copying __name__): normal Python leaves unrelated
+    // replacement copying its attributes): normal Python leaves unrelated
     // replacement objects untouched, and stamping a shared imported object
     // would corrupt its introspection for every other reference. The inlined
     // `def` statement itself uses the (possibly renamed) binding name, so that
-    // is the runtime __name__ the decorator observed.
-    let carries_identity = Expr::Compare(ExprCompare {
-        node_index: AtomicNodeIndex::NONE,
-        range: TextRange::default(),
-        left: Box::new(crate::ast_builder::expressions::call(
-            crate::ast_builder::expressions::name("getattr", ExprContext::Load),
-            vec![
-                crate::ast_builder::expressions::name(binding, ExprContext::Load),
-                crate::ast_builder::expressions::string_literal("__name__"),
-                crate::ast_builder::expressions::none_literal(),
-            ],
-            vec![],
-        )),
-        ops: Box::new([CmpOp::Eq]),
-        comparators: Box::new([crate::ast_builder::expressions::string_literal(binding)]),
-    });
+    // is the runtime __name__ the decorator observed; the __module__ probe
+    // rejects same-named IMPORTED callables, which carry their defining
+    // module's attribution rather than the creating scope's.
+    let carries_identity =
+        crate::ast_builder::expressions::decorated_identity_guard(binding, binding);
     let guarded = vec![statements::if_stmt(carries_identity, stamps, vec![])];
     let handler = ExceptHandler::ExceptHandler(ExceptHandlerExceptHandler {
         node_index: AtomicNodeIndex::NONE,

@@ -173,14 +173,12 @@ impl PostProcessingPhase {
             let namespace_variable = sanitize_module_name_for_identifier(name);
             let is_package = bundler.resolver.is_package_init(module_id)
                 || bundler.resolver.is_namespace_package(module_id);
-            let first_party = !name.contains('.')
-                && !external_submodule_roots.contains(name.as_str())
-                && bundler.resolver.classify_import(name).origin
-                    == crate::resolver::ImportOrigin::FirstParty;
+            let local_precedence =
+                !name.contains('.') && !external_submodule_roots.contains(name.as_str());
             log::debug!(
                 "Registering bundled module '{name}' with the meta-path finder \
                  (init={init_function:?}, namespace='{namespace_variable}', \
-                 is_package={is_package}, first_party={first_party})"
+                 is_package={is_package}, local_precedence={local_precedence})"
             );
             statements.push(
                 crate::ast_builder::preserved_finder::generate_preserved_target_registration(
@@ -188,7 +186,7 @@ impl PostProcessingPhase {
                     init_function.map(String::as_str),
                     &namespace_variable,
                     is_package,
-                    first_party,
+                    local_precedence,
                 ),
             );
         }
@@ -198,20 +196,18 @@ impl PostProcessingPhase {
             };
             let is_package = bundler.resolver.is_package_init(module_id)
                 || bundler.resolver.is_namespace_package(module_id);
-            let first_party = !name.contains('.')
-                && !external_submodule_roots.contains(name.as_str())
-                && bundler.resolver.classify_import(name).origin
-                    == crate::resolver::ImportOrigin::FirstParty;
+            let local_precedence =
+                !name.contains('.') && !external_submodule_roots.contains(name.as_str());
             log::debug!(
                 "Registering inlined class module '{name}' with the meta-path finder \
-                 (exports={exports:?}, is_package={is_package}, first_party={first_party})"
+                 (exports={exports:?}, is_package={is_package}, local_precedence={local_precedence})"
             );
             statements.push(
                 crate::ast_builder::preserved_finder::generate_inlined_module_registration(
                     name,
                     exports,
                     is_package,
-                    first_party,
+                    local_precedence,
                 ),
             );
         }

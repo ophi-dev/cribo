@@ -92,6 +92,25 @@ pub(crate) fn sanitize_module_name_for_identifier(name: &str) -> String {
         result.push('_');
     }
 
+    // Bundle-generated globals must never be shadowed by a user module's
+    // sanitized identifier: a wrapper module named `_cribo_finder.py` would
+    // otherwise overwrite the generated finder object (or the stdlib aliases)
+    // with its namespace binding
+    const RESERVED_BUNDLE_GLOBALS: &[&str] = &[
+        "_cribo",
+        "_cribo_finder",
+        "_cribo_finder_local",
+        "_sys",
+        "_importlib",
+        "_Cribo",
+        "_CriboModule",
+        "_CriboPreservedFinder",
+        "_CriboPreservedLoader",
+    ];
+    if RESERVED_BUNDLE_GLOBALS.contains(&result.as_str()) {
+        result.push('_');
+    }
+
     result
 }
 

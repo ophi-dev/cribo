@@ -490,29 +490,18 @@ fn emit_identity_stamps(
         return;
     }
     use ruff_python_ast::{
-        AtomicNodeIndex, CmpOp, ExceptHandler, ExceptHandlerExceptHandler, ExprCompare, ExprContext,
+        AtomicNodeIndex, ExceptHandler, ExceptHandlerExceptHandler, ExprContext,
     };
     use ruff_text_size::TextRange;
     // Only stamp a decorator RESULT that still carries the original
     // definition's identity (the original object, or a functools.wraps-style
-    // replacement copying __name__): normal Python leaves unrelated
+    // replacement copying its attributes): normal Python leaves unrelated
     // replacement objects untouched, and stamping a shared imported object
-    // would corrupt its introspection for every other reference
-    let carries_identity = Expr::Compare(ExprCompare {
-        node_index: AtomicNodeIndex::NONE,
-        range: TextRange::default(),
-        left: Box::new(ast_builder::expressions::call(
-            ast_builder::expressions::name("getattr", ExprContext::Load),
-            vec![
-                ast_builder::expressions::name(symbol_name, ExprContext::Load),
-                ast_builder::expressions::string_literal("__name__"),
-                ast_builder::expressions::none_literal(),
-            ],
-            vec![],
-        )),
-        ops: Box::new([CmpOp::Eq]),
-        comparators: Box::new([ast_builder::expressions::string_literal(original_name)]),
-    });
+    // would corrupt its introspection for every other reference. The
+    // __module__ probe rejects same-named IMPORTED callables, which carry
+    // their defining module's attribution rather than the creating scope's.
+    let carries_identity =
+        ast_builder::expressions::decorated_identity_guard(symbol_name, original_name);
     let guarded = vec![ast_builder::statements::if_stmt(
         carries_identity,
         stamps,
