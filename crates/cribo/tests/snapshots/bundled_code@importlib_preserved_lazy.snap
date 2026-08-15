@@ -114,7 +114,7 @@ _cribo_finder_local.register('untouched_helper', '_cribo_init___cribo_5af165_unt
 _cribo_finder_local.register('lazy_helper', '_cribo_init___cribo_5e52f3_lazy_helper', 'lazy_helper', False)
 lazy_helper = _cribo.types.SimpleNamespace(__name__='lazy_helper', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('lazy_helper', lazy_helper)
-def _cribo_init___cribo_5e52f3_lazy_helper(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_5e52f3_lazy_helper(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -131,7 +131,7 @@ def _cribo_init___cribo_5e52f3_lazy_helper(_cribo_self, *, _cribo_getattr=getatt
 lazy_helper.__init__ = _cribo_init___cribo_5e52f3_lazy_helper
 untouched_helper = _cribo.types.SimpleNamespace(__name__='untouched_helper', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('untouched_helper', untouched_helper)
-def _cribo_init___cribo_5af165_untouched_helper(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_5af165_untouched_helper(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

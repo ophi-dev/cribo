@@ -111,7 +111,7 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
 _cribo_finder_local.register('mypackage', None, 'mypackage', True)
-_cribo_finder.register('mypackage.abc', None, None, False, {'MyClass': 'MyClass'})
+_cribo_finder.register('mypackage.abc', None, None, False, {'MyClass': 'MyClass', 'ABC': 'ABC'})
 mypackage_abc = _cribo.types.SimpleNamespace(__name__='mypackage.abc')
 mypackage = _cribo.types.SimpleNamespace(__name__='mypackage', __initializing__=False, __initialized__=False, __path__=[])
 mypackage.abc = mypackage_abc

@@ -116,7 +116,7 @@ module_a = _cribo.types.SimpleNamespace(__name__='module_a', __initializing__=Fa
 _cribo_finder.bind('module_a', module_a)
 module_b = _cribo.types.SimpleNamespace(__name__='module_b', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('module_b', module_b)
-def _cribo_init___cribo_851b00_module_a(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_851b00_module_a(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -154,7 +154,7 @@ def _cribo_init___cribo_851b00_module_a(_cribo_self, *, _cribo_getattr=getattr, 
     _cribo_self.__initializing__ = False
     return _cribo_self
 module_a.__init__ = _cribo_init___cribo_851b00_module_a
-def _cribo_init___cribo_924318_module_b(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_924318_module_b(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

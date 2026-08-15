@@ -111,7 +111,7 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
 _cribo_finder_local.register('package', None, 'package', True)
-_cribo_finder.register('package.helper', None, None, False, {'helper': 'helper'})
+_cribo_finder.register('package.helper', None, None, False, {'helper': 'helper', 'MESSAGE': 'MESSAGE'})
 package_helper = _cribo.types.SimpleNamespace(__name__='package.helper', __doc__='Simple helper module used through a module-object alias.')
 package = _cribo.types.SimpleNamespace(__name__='package', __initializing__=False, __initialized__=False, __path__=[])
 package.helper = package_helper

@@ -113,7 +113,7 @@ else:
 _cribo_finder_local.register('helper', '_cribo_init___cribo_d07f3b_helper', 'helper', False)
 helper = _cribo.types.SimpleNamespace(__name__='helper', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('helper', helper)
-def _cribo_init___cribo_d07f3b_helper(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_d07f3b_helper(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -130,5 +130,5 @@ def _cribo_init___cribo_d07f3b_helper(_cribo_self, *, _cribo_getattr=getattr, _c
 helper.__init__ = _cribo_init___cribo_d07f3b_helper
 '''Module-scope rebinding evaluates the RHS through the OLD import binding.\n\n`importlib = importlib.import_module("helper")` resolves the call through the\nreal importlib import before rebinding the name, so `helper` must be\ndiscovered and bundled.\n'''
 importlib = _cribo.importlib
-importlib = _cribo.sys.modules['helper'] if 'helper' in _cribo.sys.modules else _cribo_init___cribo_d07f3b_helper(helper)
+importlib = _cribo.importlib.import_module('helper') if 'helper' in _cribo.sys.modules else _cribo_init___cribo_d07f3b_helper(helper)
 print("VALUE:", importlib.VALUE)

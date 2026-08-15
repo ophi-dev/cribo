@@ -111,8 +111,8 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
 _cribo_finder_local.register('wrapped_matcher', '_cribo_init___cribo_52189b_wrapped_matcher', 'wrapped_matcher', False)
-_cribo_finder_local.register('inline_first', None, None, False, {'Status': 'Status_2', 'Event': 'Event_2', 'match_class': 'match_class_2', 'match_mapping': 'match_mapping_2', 'match_sequence': 'match_sequence_2', 'record_result': 'record_result_2', 'get_last_result': 'get_last_result_2'})
-_cribo_finder_local.register('inline_second', None, None, False, {'Status': 'Status_1', 'Event': 'Event_1', 'match_class': 'match_class_1', 'match_mapping': 'match_mapping_1', 'match_sequence': 'match_sequence_1', 'record_result': 'record_result_1', 'get_last_result': 'get_last_result_1'})
+_cribo_finder_local.register('inline_first', None, None, False, {'Status': 'Status_2', 'Event': 'Event_2', 'match_class': 'match_class_2', 'match_mapping': 'match_mapping_2', 'match_sequence': 'match_sequence_2', 'record_result': 'record_result_2', 'get_last_result': 'get_last_result_2', 'LAST_RESULT': 'LAST_RESULT_2'})
+_cribo_finder_local.register('inline_second', None, None, False, {'Status': 'Status_1', 'Event': 'Event_1', 'match_class': 'match_class_1', 'match_mapping': 'match_mapping_1', 'match_sequence': 'match_sequence_1', 'record_result': 'record_result_1', 'get_last_result': 'get_last_result_1', 'LAST_RESULT': 'LAST_RESULT_1'})
 inline_first = _cribo.types.SimpleNamespace(__name__='inline_first')
 class Status_2:
     READY = "first-ready"
@@ -250,7 +250,7 @@ _cribo_wrapped_matcher_EVENT_PATTERN = None
 _cribo_wrapped_matcher_STATUS_PATTERN = None
 _cribo_wrapped_matcher_global_capture = None
 _cribo_finder.bind('wrapped_matcher', wrapped_matcher)
-def _cribo_init___cribo_52189b_wrapped_matcher(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_52189b_wrapped_matcher(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

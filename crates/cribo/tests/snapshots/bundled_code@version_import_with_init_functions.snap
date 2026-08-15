@@ -111,7 +111,7 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
 _cribo_finder_local.register('mypackage', None, 'mypackage', True)
-_cribo_finder.register('mypackage.utils', None, None, False, {'get_user_agent': 'get_user_agent'})
+_cribo_finder.register('mypackage.utils', None, None, False, {'get_user_agent': 'get_user_agent', '__version__': '__version__'})
 mypackage___version__ = _cribo.types.SimpleNamespace(__name__='mypackage.__version__', __doc__='Version information for the package.')
 mypackage = _cribo.types.SimpleNamespace(__name__='mypackage', __initializing__=False, __initialized__=False, __path__=[])
 mypackage.__version__ = mypackage___version__

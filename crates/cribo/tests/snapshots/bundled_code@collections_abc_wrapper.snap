@@ -111,10 +111,10 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
 _cribo_finder_local.register('compat', '_cribo_init___cribo_f0aa89_compat', 'compat', False)
-_cribo_finder_local.register('structures', None, None, False, {'CaseInsensitiveDict': 'CaseInsensitiveDict'})
+_cribo_finder_local.register('structures', None, None, False, {'CaseInsensitiveDict': 'CaseInsensitiveDict', 'MutableMapping': 'MutableMapping'})
 compat = _cribo.types.SimpleNamespace(__name__='compat', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('compat', compat)
-def _cribo_init___cribo_f0aa89_compat(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_f0aa89_compat(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

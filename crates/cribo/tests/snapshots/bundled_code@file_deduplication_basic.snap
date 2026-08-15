@@ -125,7 +125,7 @@ app_utils.get_name = get_name
 app_utils.helper = helper
 importlib = _cribo.importlib
 app_utils = app_utils
-mod = _cribo.sys.modules['app.utils'] if 'app.utils' in _cribo.sys.modules else _cribo.types.SimpleNamespace(get_name=get_name, helper=helper)
+mod = _cribo.importlib.import_module('app.utils') if 'app' in _cribo.sys.modules or 'app.utils' in _cribo.sys.modules else _cribo.types.SimpleNamespace(get_name=get_name, helper=helper)
 print(f"Direct import: {app.utils.get_name()}")
 print(f"From import: {app_utils.get_name()}")
 print(f"Importlib: {get_name()}")

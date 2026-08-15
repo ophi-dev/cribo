@@ -115,7 +115,7 @@ _cribo_finder_local.register('package', '_cribo_init___cribo_20ca72_package', 'p
 _cribo_finder_local.register('mymodule', '_cribo_init___cribo_26ef78_mymodule', 'mymodule', False)
 mymodule = _cribo.types.SimpleNamespace(__name__='mymodule', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('mymodule', mymodule)
-def _cribo_init___cribo_26ef78_mymodule(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_26ef78_mymodule(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -134,7 +134,7 @@ def _cribo_init___cribo_26ef78_mymodule(_cribo_self, *, _cribo_getattr=getattr, 
 mymodule.__init__ = _cribo_init___cribo_26ef78_mymodule
 package = _cribo.types.SimpleNamespace(__name__='package', __initializing__=False, __initialized__=False, __path__=[])
 _cribo_finder.bind('package', package)
-def _cribo_init___cribo_20ca72_package(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_20ca72_package(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -149,7 +149,7 @@ def _cribo_init___cribo_20ca72_package(_cribo_self, *, _cribo_getattr=getattr, _
 package.__init__ = _cribo_init___cribo_20ca72_package
 package_submodule = _cribo.types.SimpleNamespace(__name__='package.submodule', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('package.submodule', package_submodule)
-def _cribo_init___cribo_75ebb7_package_submodule(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_75ebb7_package_submodule(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -170,7 +170,7 @@ sys = _cribo.sys
 importlib = _cribo.importlib
 print("=== Testing importlib.import_module deduplication ===\n")
 mymodule = _cribo_init___cribo_26ef78_mymodule(mymodule)
-mymodule2 = _cribo.sys.modules['mymodule'] if 'mymodule' in _cribo.sys.modules else _cribo_init___cribo_26ef78_mymodule(mymodule)
+mymodule2 = _cribo.importlib.import_module('mymodule') if 'mymodule' in _cribo.sys.modules else _cribo_init___cribo_26ef78_mymodule(mymodule)
 print(f"   Are they the same object? {mymodule is mymodule2}")
 __cribo_init_result = _cribo_init___cribo_20ca72_package(package)
 for attr in dir(__cribo_init_result):
@@ -178,15 +178,15 @@ for attr in dir(__cribo_init_result):
         setattr(package, attr, getattr(__cribo_init_result, attr))
 package.submodule = _cribo_init___cribo_75ebb7_package_submodule(package_submodule)
 submodule = package.submodule
-submodule2 = _cribo.sys.modules['package.submodule'] if 'package.submodule' in _cribo.sys.modules else _cribo_init___cribo_75ebb7_package_submodule(package_submodule)
+submodule2 = _cribo.importlib.import_module('package.submodule') if 'package' in _cribo.sys.modules or 'package.submodule' in _cribo.sys.modules else _cribo_init___cribo_75ebb7_package_submodule(package_submodule)
 print(f"   Are they the same object? {submodule is submodule2}")
-submodule3 = _cribo.sys.modules['package.submodule'] if 'package.submodule' in _cribo.sys.modules else _cribo_init___cribo_75ebb7_package_submodule(package_submodule)
+submodule3 = _cribo.importlib.import_module('package.submodule') if 'package' in _cribo.sys.modules or 'package.submodule' in _cribo.sys.modules else _cribo_init___cribo_75ebb7_package_submodule(package_submodule)
 print(f"   Are they the same object? {submodule is submodule3}")
 print("\n=== Testing modification propagation ===")
 mymodule.test_value = "Modified!"
 print(f"Set mymodule.test_value = 'Modified!'")
 print(f"mymodule2.test_value = {mymodule2.test_value}")
-mymodule_new = _cribo.sys.modules['mymodule'] if 'mymodule' in _cribo.sys.modules else _cribo_init___cribo_26ef78_mymodule(mymodule)
+mymodule_new = _cribo.importlib.import_module('mymodule') if 'mymodule' in _cribo.sys.modules else _cribo_init___cribo_26ef78_mymodule(mymodule)
 print(f"After reimport mymodule_new.counter = {mymodule_new.counter}")
 print(f"Are they the same object? {mymodule is mymodule_new}")
 print(f"Original mymodule still has counter = {mymodule.counter}")

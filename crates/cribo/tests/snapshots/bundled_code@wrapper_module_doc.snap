@@ -114,7 +114,7 @@ _cribo_finder_local.register('undocumented', '_cribo_init___cribo_67da87_undocum
 _cribo_finder_local.register('documented', '_cribo_init___cribo_1743f3_documented', 'documented', False)
 documented = _cribo.types.SimpleNamespace(__name__='documented', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('documented', documented)
-def _cribo_init___cribo_1743f3_documented(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_1743f3_documented(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -132,7 +132,7 @@ def _cribo_init___cribo_1743f3_documented(_cribo_self, *, _cribo_getattr=getattr
 documented.__init__ = _cribo_init___cribo_1743f3_documented
 undocumented = _cribo.types.SimpleNamespace(__name__='undocumented', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('undocumented', undocumented)
-def _cribo_init___cribo_67da87_undocumented(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_67da87_undocumented(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

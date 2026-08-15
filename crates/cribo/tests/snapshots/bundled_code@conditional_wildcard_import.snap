@@ -121,7 +121,7 @@ defaults.DEFAULT_TIMEOUT = DEFAULT_TIMEOUT_2
 defaults.MAX_RETRIES = MAX_RETRIES_2
 config = _cribo.types.SimpleNamespace(__name__='config', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('config', config)
-def _cribo_init___cribo_33ed77_config(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_33ed77_config(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

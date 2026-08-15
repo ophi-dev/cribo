@@ -111,7 +111,7 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
 _cribo_finder_local.register('myrequests', None, 'myrequests', True)
-_cribo_finder.register('myrequests.compat', None, None, False, {'is_str': 'is_str'})
+_cribo_finder.register('myrequests.compat', None, None, False, {'is_str': 'is_str', 'builtin_str': 'builtin_str', 'MutableMapping': 'MutableMapping_2', 'JSONDecodeError': 'JSONDecodeError_2'})
 myrequests_compat = _cribo.types.SimpleNamespace(__name__='myrequests.compat', __doc__='Compatibility module similar to requests.compat')
 myrequests = _cribo.types.SimpleNamespace(__name__='myrequests', __initializing__=False, __initialized__=False, __path__=[])
 myrequests.compat = myrequests_compat

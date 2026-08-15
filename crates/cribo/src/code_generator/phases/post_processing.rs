@@ -35,6 +35,7 @@ impl PostProcessingPhase {
         bundler: &mut Bundler<'_>,
         entry_symbols: &FxIndexSet<String>,
         entry_renames: &FxIndexMap<String, String>,
+        symbol_renames: &FxIndexMap<crate::resolver::ModuleId, FxIndexMap<String, String>>,
         final_body: &[Stmt],
     ) -> PostProcessingResult {
         // Generate namespace attachments for entry module exports
@@ -47,7 +48,11 @@ impl PostProcessingPhase {
         // Generate the meta-path finder serving bundled modules to REAL runtime
         // imports; it resolves registrations lazily through globals(), so it can
         // ride along right after the proxy prelude (which binds the `_sys` alias)
-        proxy_statements.extend(Self::generate_module_finder_statements(bundler, final_body));
+        proxy_statements.extend(Self::generate_module_finder_statements(
+            bundler,
+            symbol_renames,
+            final_body,
+        ));
 
         // Generate package child aliases
         let alias_statements = Self::generate_package_child_aliases(bundler, final_body);
@@ -125,7 +130,11 @@ impl PostProcessingPhase {
     /// Registration is lazy (`find_spec` consults it per import), so unlike eager
     /// `sys.modules` registration it cannot shadow installed distributions that
     /// are never imported under a bundled name.
-    fn generate_module_finder_statements(bundler: &Bundler<'_>, final_body: &[Stmt]) -> Vec<Stmt> {
+    fn generate_module_finder_statements(
+        bundler: &Bundler<'_>,
+        symbol_renames: &FxIndexMap<crate::resolver::ModuleId, FxIndexMap<String, String>>,
+        final_body: &[Stmt],
+    ) -> Vec<Stmt> {
         use crate::code_generator::module_registry::sanitize_module_name_for_identifier;
 
         let external_submodule_roots = Self::collect_external_submodule_roots(bundler, final_body);
@@ -143,6 +152,17 @@ impl PostProcessingPhase {
         // (pickle) import that original name — harvest the stamps to expose the
         // same class objects through an on-demand namespace
         let inlined_exports = Self::harvest_inlined_class_exports(bundler, final_body, &names);
+        // The harvested stamps cover classes and functions, but a REAL module
+        // namespace exposes every module-scope binding: merge in all retained
+        // exports (constants like VERSION included), resolving renamed bindings
+        // and skipping symbols dropped by tree-shaking (their bundle globals do
+        // not exist)
+        let inlined_exports = Self::extend_with_retained_exports(
+            bundler,
+            symbol_renames,
+            final_body,
+            inlined_exports,
+        );
         // Plus every bundled ancestor package: the machinery imports parents
         // before dotted targets (inlined ancestors register without an init)
         let mut ancestor_names: FxIndexSet<String> = FxIndexSet::default();
@@ -212,6 +232,70 @@ impl PostProcessingPhase {
             );
         }
         statements
+    }
+
+    /// Merge every retained module-scope export into the registration maps of
+    /// inlined modules: a runtime import must observe the COMPLETE namespace
+    /// (constants alongside classes), not only the definitions that carry
+    /// identity stamps. Renamed bindings resolve through the module's rename
+    /// map, and symbols whose bundle globals were tree-shaken are skipped.
+    fn extend_with_retained_exports(
+        bundler: &Bundler<'_>,
+        symbol_renames: &FxIndexMap<crate::resolver::ModuleId, FxIndexMap<String, String>>,
+        final_body: &[Stmt],
+        mut inlined_exports: FxIndexMap<String, Vec<(String, String)>>,
+    ) -> FxIndexMap<String, Vec<(String, String)>> {
+        use ruff_python_ast::Expr;
+
+        // Bundle globals actually defined in the emitted body (tree-shaken
+        // symbols never appear)
+        let mut defined_globals: FxIndexSet<&str> = FxIndexSet::default();
+        for stmt in final_body {
+            match stmt {
+                Stmt::Assign(assign) => {
+                    for target in &assign.targets {
+                        if let Expr::Name(name) = target {
+                            defined_globals.insert(name.id.as_str());
+                        }
+                    }
+                }
+                Stmt::AnnAssign(ann_assign) => {
+                    if let Expr::Name(name) = &*ann_assign.target {
+                        defined_globals.insert(name.id.as_str());
+                    }
+                }
+                Stmt::FunctionDef(function_def) => {
+                    defined_globals.insert(function_def.name.as_str());
+                }
+                Stmt::ClassDef(class_def) => {
+                    defined_globals.insert(class_def.name.as_str());
+                }
+                _ => {}
+            }
+        }
+
+        for (module_name, exports) in &mut inlined_exports {
+            let Some(module_id) = bundler.get_module_id(module_name) else {
+                continue;
+            };
+            let Some(semantic_exports) = bundler.semantic_exports.get(&module_id) else {
+                continue;
+            };
+            let renames = symbol_renames.get(&module_id);
+            for export in semantic_exports {
+                if exports.iter().any(|(existing, _)| existing == export) {
+                    continue;
+                }
+                let binding = renames
+                    .and_then(|renames| renames.get(export))
+                    .cloned()
+                    .unwrap_or_else(|| export.clone());
+                if defined_globals.contains(binding.as_str()) {
+                    exports.push((export.clone(), binding));
+                }
+            }
+        }
+        inlined_exports
     }
 
     /// Collect top-level roots of dotted import targets that remain EXTERNAL

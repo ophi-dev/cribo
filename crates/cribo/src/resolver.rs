@@ -738,12 +738,56 @@ fn record_assigned_import_module_aliases(
             _ => is_import_callable(value, import_aliases, assigned_aliases),
         };
     if !value_is_import_callable {
+        // Destructuring can smuggle an import callable through a tuple/list
+        // display (`load, = (importlib.import_module,)`): when the VALUE is a
+        // display containing any import callable, every name the target
+        // structure binds is conservatively recorded — the callable may land
+        // on any of them, and over-recording only preserves more real imports
+        let display_elements: Option<&[Expr]> = match value {
+            Expr::Tuple(tuple) => Some(&tuple.elts),
+            Expr::List(list) => Some(&list.elts),
+            _ => None,
+        };
+        let display_holds_import_callable = display_elements.is_some_and(|elements| {
+            elements
+                .iter()
+                .any(|element| is_import_callable(element, import_aliases, assigned_aliases))
+        });
+        if !display_holds_import_callable {
+            return;
+        }
+        for target in targets {
+            record_bound_names(target, assigned_aliases);
+        }
         return;
     }
     for target in targets {
         if let Expr::Name(name) = target {
             assigned_aliases.insert(name.id.to_string());
         }
+    }
+}
+
+/// Record every plain name bound by an assignment target structure
+/// (names, tuple/list destructuring, starred elements).
+fn record_bound_names(target: &ruff_python_ast::Expr, bound: &mut IndexSet<String>) {
+    use ruff_python_ast::Expr;
+    match target {
+        Expr::Name(name) => {
+            bound.insert(name.id.to_string());
+        }
+        Expr::Tuple(tuple) => {
+            for element in &tuple.elts {
+                record_bound_names(element, bound);
+            }
+        }
+        Expr::List(list) => {
+            for element in &list.elts {
+                record_bound_names(element, bound);
+            }
+        }
+        Expr::Starred(starred) => record_bound_names(&starred.value, bound),
+        _ => {}
     }
 }
 
@@ -3386,7 +3430,19 @@ impl ModuleResolver {
             // `class __getattr__:` binds a callable hook at module scope too
             Stmt::ClassDef(class_def) => binds_module_hook(class_def.name.as_str()),
             Stmt::Assign(assign) => assign.targets.iter().any(|target| {
-                matches!(target, Expr::Name(name) if binds_module_hook(name.id.as_str()))
+                // Destructuring binds hooks too: `__getattr__, marker = (resolve, 1)`
+                fn target_binds_hook(target: &Expr) -> bool {
+                    match target {
+                        Expr::Name(name) => {
+                            matches!(name.id.as_str(), "__getattr__" | "__dir__")
+                        }
+                        Expr::Tuple(tuple) => tuple.elts.iter().any(target_binds_hook),
+                        Expr::List(list) => list.elts.iter().any(target_binds_hook),
+                        Expr::Starred(starred) => target_binds_hook(&starred.value),
+                        _ => false,
+                    }
+                }
+                target_binds_hook(target)
             }),
             Stmt::AnnAssign(ann_assign) => {
                 ann_assign.value.is_some()

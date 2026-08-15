@@ -110,8 +110,8 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
         break
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
-_cribo_finder_local.register('foo', None, None, False, {'greet': 'greet', 'get_value': 'get_value'})
-_cribo_finder_local.register('bar', None, None, False, {'process': 'process', 'Calculator': 'Calculator'})
+_cribo_finder_local.register('foo', None, None, False, {'greet': 'greet', 'get_value': 'get_value', 'MESSAGE': 'MESSAGE'})
+_cribo_finder_local.register('bar', None, None, False, {'process': 'process', 'Calculator': 'Calculator', 'VERSION': 'VERSION'})
 foo = _cribo.types.SimpleNamespace(__name__='foo')
 def greet(name):
     return f"Hello, {name}!"
@@ -142,11 +142,11 @@ bar.Calculator = Calculator
 bar.VERSION = VERSION
 bar.process = process
 il = _cribo.importlib
-foo = _cribo.sys.modules['foo'] if 'foo' in _cribo.sys.modules else _cribo.types.SimpleNamespace(greet=greet, get_value=get_value, MESSAGE=MESSAGE)
-bar_module = _cribo.sys.modules['bar'] if 'bar' in _cribo.sys.modules else _cribo.types.SimpleNamespace(process=process, Calculator=Calculator, VERSION=VERSION)
+foo = _cribo.importlib.import_module('foo') if 'foo' in _cribo.sys.modules else _cribo.types.SimpleNamespace(greet=greet, get_value=get_value, MESSAGE=MESSAGE)
+bar_module = _cribo.importlib.import_module('bar') if 'bar' in _cribo.sys.modules else _cribo.types.SimpleNamespace(process=process, Calculator=Calculator, VERSION=VERSION)
 im = _cribo.importlib.import_module
-also_foo = _cribo.sys.modules['foo'] if 'foo' in _cribo.sys.modules else _cribo.types.SimpleNamespace(greet=greet, get_value=get_value, MESSAGE=MESSAGE)
-also_bar = _cribo.sys.modules['bar'] if 'bar' in _cribo.sys.modules else _cribo.types.SimpleNamespace(process=process, Calculator=Calculator, VERSION=VERSION)
+also_foo = _cribo.importlib.import_module('foo') if 'foo' in _cribo.sys.modules else _cribo.types.SimpleNamespace(greet=greet, get_value=get_value, MESSAGE=MESSAGE)
+also_bar = _cribo.importlib.import_module('bar') if 'bar' in _cribo.sys.modules else _cribo.types.SimpleNamespace(process=process, Calculator=Calculator, VERSION=VERSION)
 print(f"foo.greet('World'): {greet('World')}")
 print(f"foo.get_value(): {get_value()}")
 print(f"foo.MESSAGE: {MESSAGE}")

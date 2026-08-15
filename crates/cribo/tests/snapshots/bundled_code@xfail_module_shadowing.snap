@@ -114,7 +114,7 @@ _cribo_finder_local.register('test_import', '_cribo_init___cribo_2a6a8f_test_imp
 _cribo_finder_local.register('pandera', '_cribo_init___cribo_b061eb_pandera', 'pandera', False)
 pandera = _cribo.types.SimpleNamespace(__name__='pandera', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('pandera', pandera)
-def _cribo_init___cribo_b061eb_pandera(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_b061eb_pandera(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -138,7 +138,7 @@ def _cribo_init___cribo_b061eb_pandera(_cribo_self, *, _cribo_getattr=getattr, _
 pandera.__init__ = _cribo_init___cribo_b061eb_pandera
 test_import = _cribo.types.SimpleNamespace(__name__='test_import', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('test_import', test_import)
-def _cribo_init___cribo_2a6a8f_test_import(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_2a6a8f_test_import(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

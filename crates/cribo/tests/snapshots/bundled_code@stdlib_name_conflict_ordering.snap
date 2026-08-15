@@ -133,7 +133,7 @@ complex_pkg_abc.Base = Base
 complex_pkg_console = _cribo.types.SimpleNamespace(__name__='complex_pkg.console', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('complex_pkg.console', complex_pkg_console)
 complex_pkg.console = complex_pkg_console
-def _cribo_init___cribo_937418_complex_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_937418_complex_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -160,7 +160,7 @@ def _cribo_init___cribo_937418_complex_pkg(_cribo_self, *, _cribo_getattr=getatt
     _cribo_self.__initializing__ = False
     return _cribo_self
 complex_pkg.__init__ = _cribo_init___cribo_937418_complex_pkg
-def _cribo_init___cribo_beaba5_complex_pkg_console(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_beaba5_complex_pkg_console(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

@@ -113,7 +113,7 @@ else:
 _cribo_finder_local.register('collision_target', '_cribo_init___cribo_e4b34b_collision_target', 'collision_target', False)
 collision_target = _cribo.types.SimpleNamespace(__name__='collision_target', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('collision_target', collision_target)
-def _cribo_init___cribo_e4b34b_collision_target(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_e4b34b_collision_target(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

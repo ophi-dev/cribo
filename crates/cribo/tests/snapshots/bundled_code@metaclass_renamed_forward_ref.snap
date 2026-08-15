@@ -114,7 +114,7 @@ _cribo_finder_local.register('other', '_cribo_init___cribo_c0fc3d_other', 'other
 _cribo_finder_local.register('base', '_cribo_init___cribo_a6386c_base', 'base', False)
 base = _cribo.types.SimpleNamespace(__name__='base', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('base', base)
-def _cribo_init___cribo_a6386c_base(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_a6386c_base(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -150,7 +150,7 @@ def _cribo_init___cribo_a6386c_base(_cribo_self, *, _cribo_getattr=getattr, _cri
 base.__init__ = _cribo_init___cribo_a6386c_base
 other = _cribo.types.SimpleNamespace(__name__='other', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('other', other)
-def _cribo_init___cribo_c0fc3d_other(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_c0fc3d_other(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

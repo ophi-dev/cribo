@@ -114,7 +114,7 @@ _cribo_finder.register('mixed_package.core', '_cribo_init___cribo_a01816_mixed_p
 _cribo_finder.register('mixed_package', None, 'mixed_package', True)
 mixed_package_core = _cribo.types.SimpleNamespace(__name__='mixed_package.core', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('mixed_package.core', mixed_package_core)
-def _cribo_init___cribo_a01816_mixed_package_core(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_a01816_mixed_package_core(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

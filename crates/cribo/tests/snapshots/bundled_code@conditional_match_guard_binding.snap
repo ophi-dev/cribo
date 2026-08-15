@@ -116,7 +116,7 @@ guard_observer = _cribo.types.SimpleNamespace(__name__='guard_observer', __initi
 _cribo_finder.bind('guard_observer', guard_observer)
 guarded = _cribo.types.SimpleNamespace(__name__='guarded', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('guarded', guarded)
-def _cribo_init___cribo_592ce1_guard_observer(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_592ce1_guard_observer(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -144,7 +144,7 @@ def _cribo_init___cribo_592ce1_guard_observer(_cribo_self, *, _cribo_getattr=get
     _cribo_self.__initializing__ = False
     return _cribo_self
 guard_observer.__init__ = _cribo_init___cribo_592ce1_guard_observer
-def _cribo_init___cribo_962e76_guarded(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_962e76_guarded(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

@@ -110,7 +110,7 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
         break
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
-_cribo_finder_local.register('pure_helper', None, None, True, {'greet': 'greet'})
+_cribo_finder_local.register('pure_helper', None, None, True, {'greet': 'greet', 'GREETING': 'GREETING'})
 pure_helper_messages = _cribo.types.SimpleNamespace(__name__='pure_helper.messages')
 pure_helper = _cribo.types.SimpleNamespace(__name__='pure_helper', __initializing__=False, __initialized__=False, __path__=[])
 pure_helper.messages = pure_helper_messages

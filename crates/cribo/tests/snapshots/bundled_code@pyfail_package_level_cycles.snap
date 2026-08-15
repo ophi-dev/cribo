@@ -116,7 +116,7 @@ pkg1 = _cribo.types.SimpleNamespace(__name__='pkg1', __initializing__=False, __i
 _cribo_finder.bind('pkg1', pkg1)
 pkg2 = _cribo.types.SimpleNamespace(__name__='pkg2', __initializing__=False, __initialized__=False, __path__=[])
 _cribo_finder.bind('pkg2', pkg2)
-def _cribo_init___cribo_176078_pkg1(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_176078_pkg1(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -144,7 +144,7 @@ def _cribo_init___cribo_176078_pkg1(_cribo_self, *, _cribo_getattr=getattr, _cri
     _cribo_self.__initializing__ = False
     return _cribo_self
 pkg1.__init__ = _cribo_init___cribo_176078_pkg1
-def _cribo_init___cribo_a6e036_pkg2(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_a6e036_pkg2(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

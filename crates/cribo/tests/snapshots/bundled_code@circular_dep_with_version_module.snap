@@ -123,7 +123,7 @@ package___version__.__version__ = __version__
 package_module_a = _cribo.types.SimpleNamespace(__name__='package.module_a', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('package.module_a', package_module_a)
 package.module_a = package_module_a
-def _cribo_init___cribo_a4c23d_package(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_a4c23d_package(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -154,7 +154,7 @@ def _cribo_init___cribo_a4c23d_package(_cribo_self, *, _cribo_getattr=getattr, _
     _cribo_self.__initializing__ = False
     return _cribo_self
 package.__init__ = _cribo_init___cribo_a4c23d_package
-def _cribo_init___cribo_cc4906_package_module_a(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_cc4906_package_module_a(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

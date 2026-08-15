@@ -113,7 +113,7 @@ else:
 _cribo_finder_local.register('effectful_helper', '_cribo_init___cribo_911a04_effectful_helper', 'effectful_helper', False)
 effectful_helper = _cribo.types.SimpleNamespace(__name__='effectful_helper', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('effectful_helper', effectful_helper)
-def _cribo_init___cribo_911a04_effectful_helper(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_911a04_effectful_helper(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -130,5 +130,5 @@ def _cribo_init___cribo_911a04_effectful_helper(_cribo_self, *, _cribo_getattr=g
 effectful_helper.__init__ = _cribo_init___cribo_911a04_effectful_helper
 """The first comprehension iterable evaluates in the enclosing scope.\n\nThe import call inside it uses the imported importlib even though the\ncomprehension target rebinds the same name for the rest of the expression.\n"""
 importlib = _cribo.importlib
-values = [importlib.VALUE for importlib in [_cribo.sys.modules['effectful_helper'] if 'effectful_helper' in _cribo.sys.modules else _cribo_init___cribo_911a04_effectful_helper(effectful_helper)]]
+values = [importlib.VALUE for importlib in [_cribo.importlib.import_module('effectful_helper') if 'effectful_helper' in _cribo.sys.modules else _cribo_init___cribo_911a04_effectful_helper(effectful_helper)]]
 print("value:", values[0])

@@ -118,7 +118,7 @@ _cribo_finder_local.register('api-client', '_cribo_init___cribo_64c186_api_clien
 _cribo_finder_local.register('data-processor', '_cribo_init___cribo_d8297b_data_processor', 'data_processor', False)
 data_processor = _cribo.types.SimpleNamespace(__name__='data-processor', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('data-processor', data_processor)
-def _cribo_init___cribo_d8297b_data_processor(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_d8297b_data_processor(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -154,7 +154,7 @@ def _cribo_init___cribo_d8297b_data_processor(_cribo_self, *, _cribo_getattr=get
 data_processor.__init__ = _cribo_init___cribo_d8297b_data_processor
 api_client = _cribo.types.SimpleNamespace(__name__='api-client', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('api-client', api_client)
-def _cribo_init___cribo_64c186_api_client(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_64c186_api_client(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -193,7 +193,7 @@ def _cribo_init___cribo_64c186_api_client(_cribo_self, *, _cribo_getattr=getattr
 api_client.__init__ = _cribo_init___cribo_64c186_api_client
 class_ = _cribo.types.SimpleNamespace(__name__='class', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('class', class_)
-def _cribo_init___cribo_004e55_class_(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_004e55_class_(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -232,7 +232,7 @@ def _cribo_init___cribo_004e55_class_(_cribo_self, *, _cribo_getattr=getattr, _c
 class_.__init__ = _cribo_init___cribo_004e55_class_
 def_ = _cribo.types.SimpleNamespace(__name__='def', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('def', def_)
-def _cribo_init___cribo_944eb6_def_(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_944eb6_def_(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -272,7 +272,7 @@ def _cribo_init___cribo_944eb6_def_(_cribo_self, *, _cribo_getattr=getattr, _cri
 def_.__init__ = _cribo_init___cribo_944eb6_def_
 for_ = _cribo.types.SimpleNamespace(__name__='for', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('for', for_)
-def _cribo_init___cribo_ec6681_for_(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_ec6681_for_(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -314,7 +314,7 @@ def _cribo_init___cribo_ec6681_for_(_cribo_self, *, _cribo_getattr=getattr, _cri
 for_.__init__ = _cribo_init___cribo_ec6681_for_
 _2024_config = _cribo.types.SimpleNamespace(__name__='2024-config', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('2024-config', _2024_config)
-def _cribo_init___cribo_5687a6__2024_config(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_5687a6__2024_config(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -352,12 +352,12 @@ def _cribo_init___cribo_5687a6__2024_config(_cribo_self, *, _cribo_getattr=getat
 _2024_config.__init__ = _cribo_init___cribo_5687a6__2024_config
 """Main module demonstrating importlib usage with static string literals."""
 importlib = _cribo.importlib
-data_processor = _cribo.sys.modules['data-processor'] if 'data-processor' in _cribo.sys.modules else _cribo_init___cribo_d8297b_data_processor(data_processor)
-api_client = _cribo.sys.modules['api-client'] if 'api-client' in _cribo.sys.modules else _cribo_init___cribo_64c186_api_client(api_client)
-class_module = _cribo.sys.modules['class'] if 'class' in _cribo.sys.modules else _cribo_init___cribo_004e55_class_(class_)
-def_module = _cribo.sys.modules['def'] if 'def' in _cribo.sys.modules else _cribo_init___cribo_944eb6_def_(def_)
-for_module = _cribo.sys.modules['for'] if 'for' in _cribo.sys.modules else _cribo_init___cribo_ec6681_for_(for_)
-config_2024 = _cribo.sys.modules['2024-config'] if '2024-config' in _cribo.sys.modules else _cribo_init___cribo_5687a6__2024_config(_2024_config)
+data_processor = _cribo.importlib.import_module('data-processor') if 'data-processor' in _cribo.sys.modules else _cribo_init___cribo_d8297b_data_processor(data_processor)
+api_client = _cribo.importlib.import_module('api-client') if 'api-client' in _cribo.sys.modules else _cribo_init___cribo_64c186_api_client(api_client)
+class_module = _cribo.importlib.import_module('class') if 'class' in _cribo.sys.modules else _cribo_init___cribo_004e55_class_(class_)
+def_module = _cribo.importlib.import_module('def') if 'def' in _cribo.sys.modules else _cribo_init___cribo_944eb6_def_(def_)
+for_module = _cribo.importlib.import_module('for') if 'for' in _cribo.sys.modules else _cribo_init___cribo_ec6681_for_(for_)
+config_2024 = _cribo.importlib.import_module('2024-config') if '2024-config' in _cribo.sys.modules else _cribo_init___cribo_5687a6__2024_config(_2024_config)
 def main():
     processor = data_processor.DataProcessor()
     print(f"Processor: {processor.name}")

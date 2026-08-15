@@ -114,7 +114,7 @@ _cribo_finder_local.register('try_except_module', '_cribo_init___cribo_17f1ec_tr
 _cribo_finder_local.register('conditional_module', '_cribo_init___cribo_e43fad_conditional_module', 'conditional_module', False)
 conditional_module = _cribo.types.SimpleNamespace(__name__='conditional_module', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('conditional_module', conditional_module)
-def _cribo_init___cribo_e43fad_conditional_module(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_e43fad_conditional_module(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -178,7 +178,7 @@ def _cribo_init___cribo_e43fad_conditional_module(_cribo_self, *, _cribo_getattr
 conditional_module.__init__ = _cribo_init___cribo_e43fad_conditional_module
 try_except_module = _cribo.types.SimpleNamespace(__name__='try_except_module', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('try_except_module', try_except_module)
-def _cribo_init___cribo_17f1ec_try_except_module(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_17f1ec_try_except_module(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

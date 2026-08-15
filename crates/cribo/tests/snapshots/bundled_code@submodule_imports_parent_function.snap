@@ -111,10 +111,10 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
 _cribo_finder.register('pkg.submodule', '_cribo_init___cribo_dca395_pkg_submodule', 'pkg_submodule', False)
-_cribo_finder_local.register('pkg', None, None, True, {'get_base': 'get_base', 'get_result': 'get_result'})
+_cribo_finder_local.register('pkg', None, None, True, {'get_base': 'get_base', 'get_result': 'get_result', 'base_value': 'base_value'})
 pkg_submodule = _cribo.types.SimpleNamespace(__name__='pkg.submodule', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('pkg.submodule', pkg_submodule)
-def _cribo_init___cribo_dca395_pkg_submodule(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_dca395_pkg_submodule(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

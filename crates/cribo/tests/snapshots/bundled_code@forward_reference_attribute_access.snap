@@ -120,7 +120,7 @@ mymodule_compat.JSONDecodeError = JSONDecodeError
 mymodule_exceptions = _cribo.types.SimpleNamespace(__name__='mymodule.exceptions', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('mymodule.exceptions', mymodule_exceptions)
 mymodule.exceptions = mymodule_exceptions
-def _cribo_init___cribo_d7bb86_mymodule(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_d7bb86_mymodule(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -138,7 +138,7 @@ def _cribo_init___cribo_d7bb86_mymodule(_cribo_self, *, _cribo_getattr=getattr, 
     _cribo_self.__initializing__ = False
     return _cribo_self
 mymodule.__init__ = _cribo_init___cribo_d7bb86_mymodule
-def _cribo_init___cribo_e5cbf4_mymodule_exceptions(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_e5cbf4_mymodule_exceptions(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

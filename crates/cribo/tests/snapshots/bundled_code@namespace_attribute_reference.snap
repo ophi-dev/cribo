@@ -115,7 +115,7 @@ _cribo_finder.register('mypkg.compat', '_cribo_init___cribo_19d82f_mypkg_compat'
 _cribo_finder.register('mypkg.exceptions', '_cribo_init___cribo_4c6596_mypkg_exceptions', 'mypkg_exceptions', False)
 mypkg_compat = _cribo.types.SimpleNamespace(__name__='mypkg.compat', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('mypkg.compat', mypkg_compat)
-def _cribo_init___cribo_19d82f_mypkg_compat(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_19d82f_mypkg_compat(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -151,7 +151,7 @@ mypkg.compat = mypkg_compat
 mypkg_exceptions = _cribo.types.SimpleNamespace(__name__='mypkg.exceptions', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('mypkg.exceptions', mypkg_exceptions)
 mypkg.exceptions = mypkg_exceptions
-def _cribo_init___cribo_d4de1c_mypkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_d4de1c_mypkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -170,7 +170,7 @@ def _cribo_init___cribo_d4de1c_mypkg(_cribo_self, *, _cribo_getattr=getattr, _cr
     _cribo_self.__initializing__ = False
     return _cribo_self
 mypkg.__init__ = _cribo_init___cribo_d4de1c_mypkg
-def _cribo_init___cribo_4c6596_mypkg_exceptions(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_4c6596_mypkg_exceptions(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

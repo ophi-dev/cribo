@@ -125,7 +125,7 @@ mypackage.core = mypackage_core
 mypackage_utils = _cribo.types.SimpleNamespace(__name__='mypackage.utils', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('mypackage.utils', mypackage_utils)
 mypackage.utils = mypackage_utils
-def _cribo_init___cribo_370515_mypackage(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_370515_mypackage(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -155,7 +155,7 @@ def _cribo_init___cribo_370515_mypackage(_cribo_self, *, _cribo_getattr=getattr,
     _cribo_self.__initializing__ = False
     return _cribo_self
 mypackage.__init__ = _cribo_init___cribo_370515_mypackage
-def _cribo_init___cribo_e49d78_mypackage_core(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_e49d78_mypackage_core(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -181,7 +181,7 @@ def _cribo_init___cribo_e49d78_mypackage_core(_cribo_self, *, _cribo_getattr=get
     _cribo_self.__initializing__ = False
     return _cribo_self
 mypackage_core.__init__ = _cribo_init___cribo_e49d78_mypackage_core
-def _cribo_init___cribo_35f1d1_mypackage_utils(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_35f1d1_mypackage_utils(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

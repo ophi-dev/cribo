@@ -114,7 +114,7 @@ _cribo_finder_local.register('provider', '_cribo_init___cribo_75d811_provider', 
 _cribo_finder.register('provider.worker', '_cribo_init___cribo_397866_provider_worker', 'provider_worker', False)
 provider_worker = _cribo.types.SimpleNamespace(__name__='provider.worker', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('provider.worker', provider_worker)
-def _cribo_init___cribo_397866_provider_worker(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_397866_provider_worker(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -133,7 +133,7 @@ def _cribo_init___cribo_397866_provider_worker(_cribo_self, *, _cribo_getattr=ge
 provider_worker.__init__ = _cribo_init___cribo_397866_provider_worker
 provider = _cribo.types.SimpleNamespace(__name__='provider', __initializing__=False, __initialized__=False, __path__=[])
 provider.worker = provider_worker
-def _cribo_init___cribo_75d811_provider(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_75d811_provider(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

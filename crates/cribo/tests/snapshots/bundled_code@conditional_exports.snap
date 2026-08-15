@@ -114,7 +114,7 @@ _cribo_finder_local.register('compat_module', '_cribo_init___cribo_244765_compat
 _cribo_finder_local.register('exceptions_module', None, None, False, {'BaseError': 'BaseError'})
 compat_module = _cribo.types.SimpleNamespace(__name__='compat_module', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('compat_module', compat_module)
-def _cribo_init___cribo_244765_compat_module(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_244765_compat_module(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

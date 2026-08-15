@@ -116,7 +116,7 @@ admin_class = _cribo.types.SimpleNamespace(__name__='admin_class', __initializin
 _cribo_finder.bind('admin_class', admin_class)
 user_class = _cribo.types.SimpleNamespace(__name__='user_class', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('user_class', user_class)
-def _cribo_init___cribo_7f7c68_admin_class(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_7f7c68_admin_class(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -150,7 +150,7 @@ def _cribo_init___cribo_7f7c68_admin_class(_cribo_self, *, _cribo_getattr=getatt
     _cribo_self.__initializing__ = False
     return _cribo_self
 admin_class.__init__ = _cribo_init___cribo_7f7c68_admin_class
-def _cribo_init___cribo_f4b9e6_user_class(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_f4b9e6_user_class(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

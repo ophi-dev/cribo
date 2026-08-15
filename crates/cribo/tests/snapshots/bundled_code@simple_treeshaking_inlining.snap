@@ -110,7 +110,7 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
         break
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
-_cribo_finder_local.register('speaking', None, None, False, {'PersonTitle': 'PersonTitle', 'Person': 'Person', 'create_ms': 'create_ms', 'Phrase': 'Phrase', 'say': 'say'})
+_cribo_finder_local.register('speaking', None, None, False, {'PersonTitle': 'PersonTitle', 'Person': 'Person', 'create_ms': 'create_ms', 'Phrase': 'Phrase', 'say': 'say', 'ALICE_NAME': 'ALICE_NAME'})
 speaking = _cribo.types.SimpleNamespace(__name__='speaking')
 class PersonTitle(_cribo.enum.Enum):
     MR = "Mr."

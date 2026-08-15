@@ -161,7 +161,7 @@ core_utils_config.is_debug = is_debug
 core_utils_config.set_config_reference = set_config_reference
 _cribo_core__initialized = None
 _cribo_core__config = None
-def _cribo_init___cribo_f00e4b_core(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_f00e4b_core(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -243,7 +243,7 @@ def process_user(name: str) -> str:
 process_user.__module__ = 'models.user'
 models_user.process_user = process_user
 _cribo_models__base_model = None
-def _cribo_init___cribo_563ea2_models(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_563ea2_models(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -314,7 +314,7 @@ def _cribo_init___cribo_563ea2_models(_cribo_self, *, _cribo_getattr=getattr, _c
 models.__init__ = _cribo_init___cribo_563ea2_models
 core_database_connection = _cribo.types.SimpleNamespace(__name__='core.database.connection', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('core.database.connection', core_database_connection)
-def _cribo_init___cribo_1f0c3d_core_database_connection(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_1f0c3d_core_database_connection(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -392,7 +392,7 @@ core_database_connection.__init__ = _cribo_init___cribo_1f0c3d_core_database_con
 core_database = _cribo.types.SimpleNamespace(__name__='core.database', __initializing__=False, __initialized__=False, __path__=[])
 core.database = core_database
 core_database.connection = core_database_connection
-def _cribo_init___cribo_782908_core_database(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_782908_core_database(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

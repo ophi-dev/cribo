@@ -129,7 +129,7 @@ wildcard_pkg_meta.WildcardMetaclass = WildcardMetaclass
 wildcard_pkg_base = _cribo.types.SimpleNamespace(__name__='wildcard_pkg.base', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('wildcard_pkg.base', wildcard_pkg_base)
 wildcard_pkg.base = wildcard_pkg_base
-def _cribo_init___cribo_99f82c_wildcard_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_99f82c_wildcard_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -148,7 +148,7 @@ def _cribo_init___cribo_99f82c_wildcard_pkg(_cribo_self, *, _cribo_getattr=getat
     _cribo_self.__initializing__ = False
     return _cribo_self
 wildcard_pkg.__init__ = _cribo_init___cribo_99f82c_wildcard_pkg
-def _cribo_init___cribo_5d409b_wildcard_pkg_base(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_5d409b_wildcard_pkg_base(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

@@ -133,7 +133,7 @@ pkg.pretty = pkg_pretty
 pkg_style = _cribo.types.SimpleNamespace(__name__='pkg.style', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('pkg.style', pkg_style)
 pkg.style = pkg_style
-def _cribo_init___cribo_6b1af6_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_6b1af6_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -159,7 +159,7 @@ def _cribo_init___cribo_6b1af6_pkg(_cribo_self, *, _cribo_getattr=getattr, _crib
     _cribo_self.__initializing__ = False
     return _cribo_self
 pkg.__init__ = _cribo_init___cribo_6b1af6_pkg
-def _cribo_init___cribo_5f60be_pkg_abc(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_5f60be_pkg_abc(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -215,7 +215,7 @@ def _cribo_init___cribo_5f60be_pkg_abc(_cribo_self, *, _cribo_getattr=getattr, _
     _cribo_self.__initializing__ = False
     return _cribo_self
 pkg_abc.__init__ = _cribo_init___cribo_5f60be_pkg_abc
-def _cribo_init___cribo_02808e_pkg_color(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_02808e_pkg_color(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -281,7 +281,7 @@ def _cribo_init___cribo_02808e_pkg_color(_cribo_self, *, _cribo_getattr=getattr,
     _cribo_self.__initializing__ = False
     return _cribo_self
 pkg_color.__init__ = _cribo_init___cribo_02808e_pkg_color
-def _cribo_init___cribo_f0224b_pkg_console(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_f0224b_pkg_console(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -361,7 +361,7 @@ def _cribo_init___cribo_f0224b_pkg_console(_cribo_self, *, _cribo_getattr=getatt
     _cribo_self.__initializing__ = False
     return _cribo_self
 pkg_console.__init__ = _cribo_init___cribo_f0224b_pkg_console
-def _cribo_init___cribo_2353ad_pkg_pretty(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_2353ad_pkg_pretty(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -417,7 +417,7 @@ def _cribo_init___cribo_2353ad_pkg_pretty(_cribo_self, *, _cribo_getattr=getattr
     _cribo_self.__initializing__ = False
     return _cribo_self
 pkg_pretty.__init__ = _cribo_init___cribo_2353ad_pkg_pretty
-def _cribo_init___cribo_4c91ba_pkg_style(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_4c91ba_pkg_style(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

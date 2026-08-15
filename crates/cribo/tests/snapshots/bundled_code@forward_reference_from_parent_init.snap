@@ -172,7 +172,7 @@ class SubpkgClass:
         self.subpkg_value = "subpkg"
 SubpkgClass.__module__ = 'parent.subpkg.submodule'
 parent_subpkg_submodule.SubpkgClass = SubpkgClass
-def _cribo_init___cribo_710264_parent(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_710264_parent(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -205,7 +205,7 @@ def _cribo_init___cribo_710264_parent(_cribo_self, *, _cribo_getattr=getattr, _c
     _cribo_self.__initializing__ = False
     return _cribo_self
 parent.__init__ = _cribo_init___cribo_710264_parent
-def _cribo_init___cribo_0ac738_parent_subpkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_0ac738_parent_subpkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

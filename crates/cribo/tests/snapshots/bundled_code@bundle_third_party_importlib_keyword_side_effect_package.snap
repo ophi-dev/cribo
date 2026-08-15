@@ -113,7 +113,7 @@ else:
 _cribo_finder_local.register('side_pkg', '_cribo_init___cribo_5ad418_side_pkg', 'side_pkg', True)
 side_pkg = _cribo.types.SimpleNamespace(__name__='side_pkg', __initializing__=False, __initialized__=False, __path__=[])
 _cribo_finder.bind('side_pkg', side_pkg)
-def _cribo_init___cribo_5ad418_side_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_5ad418_side_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

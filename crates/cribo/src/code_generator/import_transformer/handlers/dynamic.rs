@@ -89,35 +89,68 @@ impl DynamicHandler {
     /// Wrap a bundled-module access expression with a `sys.modules` consult:
     ///
     /// ```python
-    /// _cribo.sys.modules["name"] if "name" in _cribo.sys.modules else <access>
+    /// _cribo.importlib.import_module("pkg.sub") \
+    ///     if "pkg" in _cribo.sys.modules or "pkg.sub" in _cribo.sys.modules \
+    ///     else <access>
     /// ```
     ///
     /// CPython's `_find_and_load` returns an existing `sys.modules` entry
-    /// before invoking any finder or loader, so a rewritten static
-    /// `import_module` call must observe deliberate entry replacements. The
-    /// conditional (rather than `or`) also honors falsy replacement objects.
+    /// before invoking any finder or loader, and resolves DOTTED names through
+    /// the parent's `__path__` — so a preloaded replacement of the target OR of
+    /// any ancestor package must route through the real machinery rather than
+    /// the bundled access. When no component is preloaded, the direct bundled
+    /// access is used. The conditional (rather than `or`) also honors falsy
+    /// replacement objects.
     fn sys_modules_entry_or(module_name: &str, access: Expr) -> Expr {
-        use ruff_python_ast::ExprContext;
+        use ruff_python_ast::{BoolOp, ExprContext};
 
         use crate::ast_builder::expressions;
 
-        let sys_modules = || {
+        let cribo_attribute = |attribute: &str| {
             expressions::attribute(
-                expressions::attribute(
-                    expressions::name(crate::ast_builder::CRIBO_PREFIX, ExprContext::Load),
-                    "sys",
-                    ExprContext::Load,
-                ),
-                "modules",
+                expressions::name(crate::ast_builder::CRIBO_PREFIX, ExprContext::Load),
+                attribute,
                 ExprContext::Load,
             )
         };
-        expressions::if_exp(
-            expressions::in_op(expressions::string_literal(module_name), sys_modules()),
-            expressions::subscript(
+        let sys_modules =
+            || expressions::attribute(cribo_attribute("sys"), "modules", ExprContext::Load);
+
+        // "pkg" in _cribo.sys.modules or "pkg.mid" in ... or "pkg.mid.sub" in ...
+        let mut component_tests = Vec::new();
+        let mut boundary = 0_usize;
+        loop {
+            match module_name[boundary..].find('.') {
+                Some(offset) => boundary += offset,
+                None => boundary = module_name.len(),
+            }
+            component_tests.push(expressions::in_op(
+                expressions::string_literal(&module_name[..boundary]),
                 sys_modules(),
-                expressions::string_literal(module_name),
-                ExprContext::Load,
+            ));
+            if boundary == module_name.len() {
+                break;
+            }
+            boundary += 1;
+        }
+        let any_component_preloaded = if component_tests.len() == 1 {
+            component_tests
+                .pop()
+                .expect("one component test must exist")
+        } else {
+            expressions::bool_op(BoolOp::Or, component_tests)
+        };
+
+        expressions::if_exp(
+            any_component_preloaded,
+            expressions::call(
+                expressions::attribute(
+                    cribo_attribute("importlib"),
+                    "import_module",
+                    ExprContext::Load,
+                ),
+                vec![expressions::string_literal(module_name)],
+                vec![],
             ),
             access,
         )

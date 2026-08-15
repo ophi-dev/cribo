@@ -114,7 +114,7 @@ _cribo_finder_local.register('pkg', '_cribo_init___cribo_3779d3_pkg', 'pkg', Tru
 _cribo_finder.register('pkg.sub', '_cribo_init___cribo_7edb2d_pkg_sub', 'pkg_sub', False)
 pkg_sub = _cribo.types.SimpleNamespace(__name__='pkg.sub', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('pkg.sub', pkg_sub)
-def _cribo_init___cribo_7edb2d_pkg_sub(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_7edb2d_pkg_sub(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -138,7 +138,7 @@ def _cribo_init___cribo_7edb2d_pkg_sub(_cribo_self, *, _cribo_getattr=getattr, _
 pkg_sub.__init__ = _cribo_init___cribo_7edb2d_pkg_sub
 pkg = _cribo.types.SimpleNamespace(__name__='pkg', __initializing__=False, __initialized__=False, __path__=[])
 pkg.sub = pkg_sub
-def _cribo_init___cribo_3779d3_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_3779d3_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

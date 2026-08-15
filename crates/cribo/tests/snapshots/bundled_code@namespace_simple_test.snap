@@ -111,7 +111,7 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
 _cribo_finder_local.register('mymodule', None, 'mymodule', True)
-_cribo_finder.register('mymodule.utils', None, None, False, {'greet': 'greet'})
+_cribo_finder.register('mymodule.utils', None, None, False, {'greet': 'greet', 'CONSTANT': 'CONSTANT'})
 mymodule = _cribo.types.SimpleNamespace(__name__='mymodule')
 mymodule_utils = _cribo.types.SimpleNamespace(__name__='mymodule.utils', __doc__='Simple utilities module')
 mymodule.utils = mymodule_utils

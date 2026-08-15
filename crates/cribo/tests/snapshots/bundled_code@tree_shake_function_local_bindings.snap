@@ -112,13 +112,13 @@ else:
     _sys.meta_path.insert(0, _cribo_finder_local)
 _cribo_finder_local.register('class_side_effects', '_cribo_init___cribo_b0c5db_class_side_effects', 'class_side_effects', False)
 _cribo_finder_local.register('scoped_imports', None, None, False, {'nested_value': 'nested_value', 'method_value': 'method_value'})
-_cribo_finder_local.register('scope_cases', None, None, False, {'exercise': 'exercise'})
+_cribo_finder_local.register('scope_cases', None, None, False, {'exercise': 'exercise', 'module_state': 'module_state'})
 registry = _cribo.types.SimpleNamespace(__name__='registry')
 events = []
 registry.events = events
 class_side_effects = _cribo.types.SimpleNamespace(__name__='class_side_effects', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('class_side_effects', class_side_effects)
-def _cribo_init___cribo_b0c5db_class_side_effects(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_b0c5db_class_side_effects(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

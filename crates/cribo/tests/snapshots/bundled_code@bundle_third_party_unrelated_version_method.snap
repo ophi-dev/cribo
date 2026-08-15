@@ -110,7 +110,7 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
         break
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
-_cribo_finder_local.register('provider', None, None, True, {'version': 'version'})
+_cribo_finder_local.register('provider', None, None, True, {'version': 'version', 'KIND': 'KIND'})
 provider = _cribo.types.SimpleNamespace(__name__='provider')
 KIND = "bundled-provider"
 def version(name):
@@ -120,5 +120,5 @@ provider.KIND = KIND
 provider.version = version
 importlib = _cribo.importlib
 print(provider.version("provider"))
-backend = _cribo.sys.modules['provider'] if 'provider' in _cribo.sys.modules else _cribo.types.SimpleNamespace(KIND=KIND, version=version)
+backend = _cribo.importlib.import_module('provider') if 'provider' in _cribo.sys.modules else _cribo.types.SimpleNamespace(KIND=KIND, version=version)
 print(KIND)

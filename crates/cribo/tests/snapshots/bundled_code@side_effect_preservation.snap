@@ -129,7 +129,7 @@ state.add_plugin = add_plugin
 state.get_state = get_state
 external_plugin = _cribo.types.SimpleNamespace(__name__='external_plugin', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('external_plugin', external_plugin)
-def _cribo_init___cribo_f23a44_external_plugin(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_f23a44_external_plugin(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

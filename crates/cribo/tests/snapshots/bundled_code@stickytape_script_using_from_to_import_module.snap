@@ -111,7 +111,7 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
 _cribo_finder_local.register('greetings', None, 'greetings', True)
-_cribo_finder.register('greetings.greeting', None, None, False, {'get_default_greeting': 'get_default_greeting'})
+_cribo_finder.register('greetings.greeting', None, None, False, {'get_default_greeting': 'get_default_greeting', 'message': 'message', 'config': 'config'})
 greetings_config = _cribo.types.SimpleNamespace(__name__='greetings.config')
 greetings = _cribo.types.SimpleNamespace(__name__='greetings', __initializing__=False, __initialized__=False, __path__=[])
 greetings.config = greetings_config

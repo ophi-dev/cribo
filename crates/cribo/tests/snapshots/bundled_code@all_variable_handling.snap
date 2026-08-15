@@ -110,10 +110,10 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
         break
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
-_cribo_finder_local.register('simple_module', None, None, False, {'public_func': 'public_func'})
+_cribo_finder_local.register('simple_module', None, None, False, {'public_func': 'public_func', 'CONSTANT': 'CONSTANT'})
 _cribo_finder.register('nested_package.utils', None, None, False, {'helper_func': 'helper_func'})
-_cribo_finder.register('nested_package.submodule', None, None, False, {'sub_function': 'sub_function'})
-_cribo_finder_local.register('nested_package', None, None, True, {'exported_from_init': 'exported_from_init'})
+_cribo_finder.register('nested_package.submodule', None, None, False, {'sub_function': 'sub_function', 'message': 'message', 'SUB_CONSTANT': 'SUB_CONSTANT'})
+_cribo_finder_local.register('nested_package', None, None, True, {'exported_from_init': 'exported_from_init', 'sub_function': 'sub_function', 'helper_func': 'helper_func'})
 simple_module = _cribo.types.SimpleNamespace(__name__='simple_module')
 def public_func():
     """A public function that should be exported."""

@@ -136,7 +136,7 @@ def my_function():
     return "from module_b"
 my_function.__module__ = 'package._subpackage.module_b'
 package__subpackage_module_b.my_function = my_function
-def _cribo_init___cribo_cca96f_package(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_cca96f_package(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -164,7 +164,7 @@ def _cribo_init___cribo_cca96f_package(_cribo_self, *, _cribo_getattr=getattr, _
     _cribo_self.__initializing__ = False
     return _cribo_self
 package.__init__ = _cribo_init___cribo_cca96f_package
-def _cribo_init___cribo_66c36f_package__subpackage(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_66c36f_package__subpackage(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

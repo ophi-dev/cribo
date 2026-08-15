@@ -114,7 +114,7 @@ _cribo_finder.register('alias_pkg.system', '_cribo_init___cribo_447ffd_alias_pkg
 _cribo_finder_local.register('alias_pkg', '_cribo_init___cribo_da5146_alias_pkg', 'alias_pkg', True)
 alias_pkg = _cribo.types.SimpleNamespace(__name__='alias_pkg', __initializing__=False, __initialized__=False, __path__=[])
 _cribo_finder.bind('alias_pkg', alias_pkg)
-def _cribo_init___cribo_da5146_alias_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_da5146_alias_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -144,7 +144,7 @@ def _cribo_init___cribo_da5146_alias_pkg(_cribo_self, *, _cribo_getattr=getattr,
 alias_pkg.__init__ = _cribo_init___cribo_da5146_alias_pkg
 alias_pkg_system = _cribo.types.SimpleNamespace(__name__='alias_pkg.system', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('alias_pkg.system', alias_pkg_system)
-def _cribo_init___cribo_447ffd_alias_pkg_system(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_447ffd_alias_pkg_system(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

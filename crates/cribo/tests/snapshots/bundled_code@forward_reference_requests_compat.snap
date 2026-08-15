@@ -117,7 +117,7 @@ _cribo_finder.register('myrequests.cookies', '_cribo_init___cribo_135ee1_myreque
 _cribo_finder.register('myrequests.compat', '_cribo_init___cribo_5ad29b_myrequests_compat', 'myrequests_compat', False)
 myrequests_compat = _cribo.types.SimpleNamespace(__name__='myrequests.compat', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('myrequests.compat', myrequests_compat)
-def _cribo_init___cribo_5ad29b_myrequests_compat(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_5ad29b_myrequests_compat(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -175,7 +175,7 @@ myrequests.exceptions = myrequests_exceptions
 myrequests_utils = _cribo.types.SimpleNamespace(__name__='myrequests.utils', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('myrequests.utils', myrequests_utils)
 myrequests.utils = myrequests_utils
-def _cribo_init___cribo_a5ac5e_myrequests(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_a5ac5e_myrequests(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -213,7 +213,7 @@ def _cribo_init___cribo_a5ac5e_myrequests(_cribo_self, *, _cribo_getattr=getattr
     _cribo_self.__initializing__ = False
     return _cribo_self
 myrequests.__init__ = _cribo_init___cribo_a5ac5e_myrequests
-def _cribo_init___cribo_135ee1_myrequests_cookies(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_135ee1_myrequests_cookies(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -276,7 +276,7 @@ def _cribo_init___cribo_135ee1_myrequests_cookies(_cribo_self, *, _cribo_getattr
     _cribo_self.__initializing__ = False
     return _cribo_self
 myrequests_cookies.__init__ = _cribo_init___cribo_135ee1_myrequests_cookies
-def _cribo_init___cribo_530a30_myrequests_exceptions(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_530a30_myrequests_exceptions(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -315,7 +315,7 @@ def _cribo_init___cribo_530a30_myrequests_exceptions(_cribo_self, *, _cribo_geta
     _cribo_self.__initializing__ = False
     return _cribo_self
 myrequests_exceptions.__init__ = _cribo_init___cribo_530a30_myrequests_exceptions
-def _cribo_init___cribo_ce8acb_myrequests_utils(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_ce8acb_myrequests_utils(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

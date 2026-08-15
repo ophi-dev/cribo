@@ -112,7 +112,7 @@ else:
     _sys.meta_path.insert(0, _cribo_finder_local)
 _cribo_finder_local.register('auth', None, None, False, {'HTTPBasicAuth': 'HTTPBasicAuth_2'})
 _cribo_finder_local.register('another_auth', None, None, False, {'HTTPBasicAuth': 'HTTPBasicAuth_1'})
-_cribo_finder_local.register('proxy', None, None, False, {'HTTPProxyAuth': 'HTTPProxyAuth'})
+_cribo_finder_local.register('proxy', None, None, False, {'HTTPProxyAuth': 'HTTPProxyAuth', 'HTTPBasicAuth': 'HTTPBasicAuth'})
 auth = _cribo.types.SimpleNamespace(__name__='auth', __doc__='First auth module with HTTPBasicAuth.')
 """First auth module with HTTPBasicAuth."""
 class HTTPBasicAuth_2:

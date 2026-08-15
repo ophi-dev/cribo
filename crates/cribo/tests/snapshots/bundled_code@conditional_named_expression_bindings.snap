@@ -113,7 +113,7 @@ else:
 _cribo_finder_local.register('named_source', '_cribo_init___cribo_0a355e_named_source', 'named_source', False)
 named_source = _cribo.types.SimpleNamespace(__name__='named_source', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('named_source', named_source)
-def _cribo_init___cribo_0a355e_named_source(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_0a355e_named_source(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

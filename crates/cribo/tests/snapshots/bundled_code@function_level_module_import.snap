@@ -111,7 +111,7 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
 _cribo_finder_local.register('utils', None, 'utils', True)
-_cribo_finder.register('utils.calculator', None, None, False, {'add': 'add', 'multiply': 'multiply'})
+_cribo_finder.register('utils.calculator', None, None, False, {'add': 'add', 'multiply': 'multiply', 'description': 'description'})
 utils = _cribo.types.SimpleNamespace(__name__='utils')
 utils_calculator = _cribo.types.SimpleNamespace(__name__='utils.calculator', __doc__='Calculator module with simple operations')
 utils.calculator = utils_calculator

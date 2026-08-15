@@ -129,7 +129,7 @@ yaml_pkg_meta.YAMLObjectMetaclass = YAMLObjectMetaclass
 yaml_pkg_base = _cribo.types.SimpleNamespace(__name__='yaml_pkg.base', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('yaml_pkg.base', yaml_pkg_base)
 yaml_pkg.base = yaml_pkg_base
-def _cribo_init___cribo_f3f287_yaml_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_f3f287_yaml_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -149,7 +149,7 @@ def _cribo_init___cribo_f3f287_yaml_pkg(_cribo_self, *, _cribo_getattr=getattr, 
     _cribo_self.__initializing__ = False
     return _cribo_self
 yaml_pkg.__init__ = _cribo_init___cribo_f3f287_yaml_pkg
-def _cribo_init___cribo_8a246b_yaml_pkg_base(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_8a246b_yaml_pkg_base(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

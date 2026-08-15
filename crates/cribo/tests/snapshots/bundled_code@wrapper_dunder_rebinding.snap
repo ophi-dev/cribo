@@ -113,7 +113,7 @@ else:
 _cribo_finder_local.register('provider', '_cribo_init___cribo_898d3c_provider', 'provider', False)
 provider = _cribo.types.SimpleNamespace(__name__='provider', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('provider', provider)
-def _cribo_init___cribo_898d3c_provider(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_898d3c_provider(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

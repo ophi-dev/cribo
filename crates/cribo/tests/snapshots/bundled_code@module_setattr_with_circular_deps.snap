@@ -114,7 +114,7 @@ _cribo_finder_local.register('pkg', '_cribo_init___cribo_1fb248_pkg', 'pkg', Tru
 _cribo_finder.register('pkg._main', '_cribo_init___cribo_fc6bcd_pkg__main', 'pkg__main', False)
 _cribo_finder.register('pkg._client', '_cribo_init___cribo_7e63ae_pkg__client', 'pkg__client', False)
 _cribo_finder.register('pkg._types', None, None, False, {'AsyncStream': 'AsyncStream', 'SyncStream': 'SyncStream'})
-_cribo_finder.register('pkg._models', None, None, False, {'Request': 'Request', 'Response': 'Response'})
+_cribo_finder.register('pkg._models', None, None, False, {'Request': 'Request', 'Response': 'Response', 'SyncStream': 'SyncStream', 'AsyncStream': 'AsyncStream'})
 pkg__types = _cribo.types.SimpleNamespace(__name__='pkg._types', __doc__='Types module with stream classes.')
 pkg = _cribo.types.SimpleNamespace(__name__='pkg', __initializing__=False, __initialized__=False, __path__=[])
 pkg._types = pkg__types
@@ -161,7 +161,7 @@ pkg._client = pkg__client
 pkg__main = _cribo.types.SimpleNamespace(__name__='pkg._main', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('pkg._main', pkg__main)
 pkg._main = pkg__main
-def _cribo_init___cribo_1fb248_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_1fb248_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -200,7 +200,7 @@ def _cribo_init___cribo_1fb248_pkg(_cribo_self, *, _cribo_getattr=getattr, _crib
     _cribo_self.__initializing__ = False
     return _cribo_self
 pkg.__init__ = _cribo_init___cribo_1fb248_pkg
-def _cribo_init___cribo_7e63ae_pkg__client(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_7e63ae_pkg__client(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -239,7 +239,7 @@ def _cribo_init___cribo_7e63ae_pkg__client(_cribo_self, *, _cribo_getattr=getatt
     _cribo_self.__initializing__ = False
     return _cribo_self
 pkg__client.__init__ = _cribo_init___cribo_7e63ae_pkg__client
-def _cribo_init___cribo_fc6bcd_pkg__main(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_fc6bcd_pkg__main(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

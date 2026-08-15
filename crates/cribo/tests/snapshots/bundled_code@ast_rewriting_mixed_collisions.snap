@@ -119,8 +119,8 @@ _cribo_finder.register('services.auth.manager', '_cribo_init___cribo_ee1d45_serv
 _cribo_finder.register('core.utils', '_cribo_init___cribo_c57a32_core_utils', 'core_utils', True)
 _cribo_finder_local.register('core', '_cribo_init___cribo_62c387_core', 'core', True)
 _cribo_finder.register('core.database', None, 'core_database', True)
-_cribo_finder.register('core.utils.helpers', None, None, False, {'Logger': 'Logger_4', 'process': 'process_6', 'validate': 'validate_6'})
-_cribo_finder.register('core.database.connection', None, None, False, {'Connection': 'Connection_6', 'process': 'process_7'})
+_cribo_finder.register('core.utils.helpers', None, None, False, {'Logger': 'Logger_4', 'process': 'process_6', 'validate': 'validate_6', 'result': 'result_6', 'Connection': 'Connection', 'User': 'User_4'})
+_cribo_finder.register('core.database.connection', None, None, False, {'Connection': 'Connection_6', 'process': 'process_7', 'result': 'result_8', 'process_user': 'process_user', 'helper_validate': 'helper_validate', 'validate': 'validate', 'connection': 'connection_5'})
 core_utils_helpers = _cribo.types.SimpleNamespace(__name__='core.utils.helpers', __doc__='\nUtility helpers module with extensive naming conflicts\n')
 core = _cribo.types.SimpleNamespace(__name__='core', __initializing__=False, __initialized__=False, __path__=[])
 core_utils = _cribo.types.SimpleNamespace(__name__='core.utils', __initializing__=False, __initialized__=False, __path__=[])
@@ -188,7 +188,7 @@ core_utils_helpers.User = User_4
 core_utils_helpers.process = process_6
 core_utils_helpers.result = result_6
 core_utils_helpers.validate = validate_6
-def _cribo_init___cribo_62c387_core(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_62c387_core(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -209,7 +209,7 @@ def _cribo_init___cribo_62c387_core(_cribo_self, *, _cribo_getattr=getattr, _cri
     _cribo_self.__initializing__ = False
     return _cribo_self
 core.__init__ = _cribo_init___cribo_62c387_core
-def _cribo_init___cribo_c57a32_core_utils(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_c57a32_core_utils(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -234,7 +234,7 @@ models_user = _cribo.types.SimpleNamespace(__name__='models.user', __initializin
 _cribo_models_user_result = None
 _cribo_models_user_connection = None
 _cribo_finder.bind('models.user', models_user)
-def _cribo_init___cribo_b57669_models_user(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_b57669_models_user(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -434,7 +434,7 @@ models.user = models_user
 models_base = _cribo.types.SimpleNamespace(__name__='models.base', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('models.base', models_base)
 models.base = models_base
-def _cribo_init___cribo_98ecc1_models(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_98ecc1_models(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -468,7 +468,7 @@ def _cribo_init___cribo_98ecc1_models(_cribo_self, *, _cribo_getattr=getattr, _c
     return _cribo_self
 models.__init__ = _cribo_init___cribo_98ecc1_models
 _cribo_models_base_result = None
-def _cribo_init___cribo_bca2f6_models_base(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_bca2f6_models_base(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -667,7 +667,7 @@ core_database_connection.result = result_8
 services_auth_manager = _cribo.types.SimpleNamespace(__name__='services.auth.manager', __initializing__=False, __initialized__=False)
 _cribo_services_auth_manager_result = None
 _cribo_finder.bind('services.auth.manager', services_auth_manager)
-def _cribo_init___cribo_ee1d45_services_auth_manager(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_ee1d45_services_auth_manager(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -847,7 +847,7 @@ services = _cribo.types.SimpleNamespace(__name__='services', __initializing__=Fa
 services_auth = _cribo.types.SimpleNamespace(__name__='services.auth', __initializing__=False, __initialized__=False, __path__=[])
 services.auth = services_auth
 services_auth.manager = services_auth_manager
-def _cribo_init___cribo_93a195_services(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_93a195_services(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -875,7 +875,7 @@ def _cribo_init___cribo_93a195_services(_cribo_self, *, _cribo_getattr=getattr, 
     _cribo_self.__initializing__ = False
     return _cribo_self
 services.__init__ = _cribo_init___cribo_93a195_services
-def _cribo_init___cribo_b16105_services_auth(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_b16105_services_auth(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

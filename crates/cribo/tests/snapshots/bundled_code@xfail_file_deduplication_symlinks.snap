@@ -111,7 +111,7 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
 _cribo_finder_local.register('lib', None, 'lib', True)
-_cribo_finder.register('lib.helpers', None, None, False, {'get_location': 'get_location', 'increment_counter': 'increment_counter'})
+_cribo_finder.register('lib.helpers', None, None, False, {'get_location': 'get_location', 'increment_counter': 'increment_counter', 'counter': 'counter'})
 lib = _cribo.types.SimpleNamespace(__name__='lib')
 lib_helpers = _cribo.types.SimpleNamespace(__name__='lib.helpers')
 lib.helpers = lib_helpers

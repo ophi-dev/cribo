@@ -111,7 +111,7 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
 _cribo_finder.register('submodule.helpers', None, None, False, {'format_string': 'format_string'})
-_cribo_finder_local.register('submodule', None, None, True, {'process_data': 'process_data'})
+_cribo_finder_local.register('submodule', None, None, True, {'process_data': 'process_data', 'format_string': 'format_string'})
 submodule_helpers = _cribo.types.SimpleNamespace(__name__='submodule.helpers', __doc__='Helper functions module.')
 submodule = _cribo.types.SimpleNamespace(__name__='submodule', __initializing__=False, __initialized__=False, __path__=[])
 submodule.helpers = submodule_helpers

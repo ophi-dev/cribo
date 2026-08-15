@@ -115,5 +115,5 @@ plugin = _cribo.types.SimpleNamespace(__name__='plugin', __doc__='Distribution r
 NAME = "plugin"
 plugin.NAME = NAME
 importlib = _cribo.importlib
-plugin = _cribo.sys.modules['plugin'] if 'plugin' in _cribo.sys.modules else _cribo.types.SimpleNamespace(NAME=NAME)
+plugin = _cribo.importlib.import_module('plugin') if 'plugin' in _cribo.sys.modules else _cribo.types.SimpleNamespace(NAME=NAME)
 print(NAME)

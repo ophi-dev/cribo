@@ -116,7 +116,7 @@ loop_observer = _cribo.types.SimpleNamespace(__name__='loop_observer', __initial
 _cribo_finder.bind('loop_observer', loop_observer)
 loop_source = _cribo.types.SimpleNamespace(__name__='loop_source', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('loop_source', loop_source)
-def _cribo_init___cribo_fb64cc_loop_observer(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_fb64cc_loop_observer(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -143,7 +143,7 @@ def _cribo_init___cribo_fb64cc_loop_observer(_cribo_self, *, _cribo_getattr=geta
     _cribo_self.__initializing__ = False
     return _cribo_self
 loop_observer.__init__ = _cribo_init___cribo_fb64cc_loop_observer
-def _cribo_init___cribo_f42fc2_loop_source(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_f42fc2_loop_source(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

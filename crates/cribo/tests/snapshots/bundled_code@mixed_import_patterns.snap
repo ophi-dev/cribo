@@ -113,7 +113,7 @@ else:
 _cribo_finder_local.register('logger', '_cribo_init___cribo_0639af_logger', 'logger', False)
 _cribo_finder_local.register('config', '_cribo_init___cribo_f96d2c_config', 'config', False)
 _cribo_finder_local.register('utils', None, None, False, {'format_message': 'format_message', 'get_timestamp': 'get_timestamp'})
-_cribo_finder_local.register('app', None, None, False, {'Application': 'Application'})
+_cribo_finder_local.register('app', None, None, False, {'Application': 'Application', 'get_logger': 'get_logger', 'format_message': 'format_message', 'get_config': 'get_config'})
 utils = _cribo.types.SimpleNamespace(__name__='utils', __doc__='\nUtility module with no dependencies on other modules in this package.\nThis can be safely imported at module level by everyone.\n')
 """\nUtility module with no dependencies on other modules in this package.\nThis can be safely imported at module level by everyone.\n"""
 def format_message(message):
@@ -131,7 +131,7 @@ _cribo_finder.bind('config', config)
 logger = _cribo.types.SimpleNamespace(__name__='logger', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('logger', logger)
 _cribo_config__config = None
-def _cribo_init___cribo_f96d2c_config(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_f96d2c_config(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -201,7 +201,7 @@ def _cribo_init___cribo_f96d2c_config(_cribo_self, *, _cribo_getattr=getattr, _c
     return _cribo_self
 config.__init__ = _cribo_init___cribo_f96d2c_config
 _cribo_logger__logger = None
-def _cribo_init___cribo_0639af_logger(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_0639af_logger(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

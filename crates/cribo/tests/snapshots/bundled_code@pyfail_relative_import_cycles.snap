@@ -120,7 +120,7 @@ services.auth = services_auth
 services_database = _cribo.types.SimpleNamespace(__name__='services.database', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('services.database', services_database)
 services.database = services_database
-def _cribo_init___cribo_9d48f2_services_auth(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_9d48f2_services_auth(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -152,7 +152,7 @@ def _cribo_init___cribo_9d48f2_services_auth(_cribo_self, *, _cribo_getattr=geta
     _cribo_self.__initializing__ = False
     return _cribo_self
 services_auth.__init__ = _cribo_init___cribo_9d48f2_services_auth
-def _cribo_init___cribo_62de34_services_database(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_62de34_services_database(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

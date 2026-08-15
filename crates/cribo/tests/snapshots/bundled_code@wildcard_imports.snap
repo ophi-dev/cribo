@@ -111,9 +111,9 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
 _cribo_finder_local.register('with_side_effects', '_cribo_init___cribo_9a9871_with_side_effects', 'with_side_effects', False)
-_cribo_finder_local.register('explicit_all', None, None, False, {'safe_function': 'safe_function', 'SafeClass': 'SafeClass'})
-_cribo_finder_local.register('clash_module_a', None, None, False, {'shared_function': 'shared_function_2', 'SharedClass': 'SharedClass_2', 'unique_a_function': 'unique_a_function'})
-_cribo_finder_local.register('clash_module_b', None, None, False, {'shared_function': 'shared_function_1', 'SharedClass': 'SharedClass_1', 'unique_b_function': 'unique_b_function'})
+_cribo_finder_local.register('explicit_all', None, None, False, {'safe_function': 'safe_function', 'SafeClass': 'SafeClass', 'SAFE_CONSTANT': 'SAFE_CONSTANT'})
+_cribo_finder_local.register('clash_module_a', None, None, False, {'shared_function': 'shared_function_2', 'SharedClass': 'SharedClass_2', 'unique_a_function': 'unique_a_function', 'SHARED_CONSTANT': 'SHARED_CONSTANT_2'})
+_cribo_finder_local.register('clash_module_b', None, None, False, {'shared_function': 'shared_function_1', 'SharedClass': 'SharedClass_1', 'unique_b_function': 'unique_b_function', 'SHARED_CONSTANT': 'SHARED_CONSTANT_1'})
 explicit_all = _cribo.types.SimpleNamespace(__name__='explicit_all', __doc__='Module with no side-effects and explicit __all__.')
 """Module with no side-effects and explicit __all__."""
 def safe_function():
@@ -133,7 +133,7 @@ explicit_all.SafeClass = SafeClass
 explicit_all.SAFE_CONSTANT = SAFE_CONSTANT
 with_side_effects = _cribo.types.SimpleNamespace(__name__='with_side_effects', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('with_side_effects', with_side_effects)
-def _cribo_init___cribo_9a9871_with_side_effects(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_9a9871_with_side_effects(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

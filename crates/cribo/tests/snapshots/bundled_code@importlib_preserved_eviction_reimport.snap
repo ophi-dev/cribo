@@ -113,7 +113,7 @@ else:
 _cribo_finder_local.register('evicted_helper', '_cribo_init___cribo_3f1fc4_evicted_helper', 'evicted_helper', False)
 evicted_helper = _cribo.types.SimpleNamespace(__name__='evicted_helper', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('evicted_helper', evicted_helper)
-def _cribo_init___cribo_3f1fc4_evicted_helper(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_3f1fc4_evicted_helper(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

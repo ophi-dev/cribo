@@ -111,7 +111,7 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
 _cribo_finder_local.register('initpkg', None, 'initpkg', True)
-_cribo_finder.register('initpkg.sub', None, None, False, {'describe': 'describe'})
+_cribo_finder.register('initpkg.sub', None, None, False, {'describe': 'describe', 'BANNER': 'BANNER'})
 initpkg = _cribo.types.SimpleNamespace(__name__='initpkg', __doc__='Parent initializer whose side effect must run before the submodule loads.')
 """Parent initializer whose side effect must run before the submodule loads."""
 BANNER = "parent initialized"
@@ -123,5 +123,5 @@ def describe():
 describe.__module__ = 'initpkg.sub'
 initpkg_sub.describe = describe
 importlib = _cribo.importlib
-sub = _cribo.sys.modules['initpkg.sub'] if 'initpkg.sub' in _cribo.sys.modules else _cribo.types.SimpleNamespace(describe=describe)
+sub = _cribo.importlib.import_module('initpkg.sub') if 'initpkg' in _cribo.sys.modules or 'initpkg.sub' in _cribo.sys.modules else _cribo.types.SimpleNamespace(describe=describe)
 print(describe())

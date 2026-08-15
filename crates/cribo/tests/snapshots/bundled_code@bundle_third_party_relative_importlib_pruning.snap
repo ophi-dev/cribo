@@ -116,7 +116,7 @@ rel_pkg = _cribo.types.SimpleNamespace(__name__='rel_pkg', __initializing__=Fals
 rel_pkg.backend = rel_pkg_backend
 KIND = "relative"
 rel_pkg_backend.KIND = KIND
-def _cribo_init___cribo_8d8e6c_rel_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_8d8e6c_rel_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -128,7 +128,7 @@ def _cribo_init___cribo_8d8e6c_rel_pkg(_cribo_self, *, _cribo_getattr=getattr, _
     importlib = _cribo.importlib
     _cribo_self.importlib = importlib
     _cribo_self.importlib = importlib
-    backend = _cribo.sys.modules['rel_pkg.backend'] if 'rel_pkg.backend' in _cribo.sys.modules else _cribo.types.SimpleNamespace(KIND=KIND)
+    backend = _cribo.importlib.import_module('rel_pkg.backend') if 'rel_pkg' in _cribo.sys.modules or 'rel_pkg.backend' in _cribo.sys.modules else _cribo.types.SimpleNamespace(KIND=KIND)
     _cribo_self.backend = backend
 
     def backend_kind():

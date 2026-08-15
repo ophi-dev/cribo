@@ -123,7 +123,7 @@ foo.boo = foo_boo
 foo_boo___main__ = _cribo.types.SimpleNamespace(__name__='foo.boo.__main__', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('foo.boo.__main__', foo_boo___main__)
 foo_boo.__main__ = foo_boo___main__
-def _cribo_init___cribo_35e8d2_foo(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_35e8d2_foo(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -142,7 +142,7 @@ def _cribo_init___cribo_35e8d2_foo(_cribo_self, *, _cribo_getattr=getattr, _crib
     _cribo_self.__initializing__ = False
     return _cribo_self
 foo.__init__ = _cribo_init___cribo_35e8d2_foo
-def _cribo_init___cribo_9fa9ed_foo_boo___main__(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_9fa9ed_foo_boo___main__(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

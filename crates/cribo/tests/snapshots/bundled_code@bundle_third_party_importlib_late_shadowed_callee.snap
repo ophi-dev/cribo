@@ -116,7 +116,7 @@ late_shadow_pkg = _cribo.types.SimpleNamespace(__name__='late_shadow_pkg', __ini
 late_shadow_pkg.backend = late_shadow_pkg_backend
 KIND = "real-backend"
 late_shadow_pkg_backend.KIND = KIND
-def _cribo_init___cribo_d38e22_late_shadow_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_d38e22_late_shadow_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -128,7 +128,7 @@ def _cribo_init___cribo_d38e22_late_shadow_pkg(_cribo_self, *, _cribo_getattr=ge
     importlib = _cribo.importlib
     _cribo_self.importlib = importlib
     _cribo_self.importlib = importlib
-    backend = _cribo.sys.modules['late_shadow_pkg.backend'] if 'late_shadow_pkg.backend' in _cribo.sys.modules else _cribo.types.SimpleNamespace(KIND=KIND)
+    backend = _cribo.importlib.import_module('late_shadow_pkg.backend') if 'late_shadow_pkg' in _cribo.sys.modules or 'late_shadow_pkg.backend' in _cribo.sys.modules else _cribo.types.SimpleNamespace(KIND=KIND)
     _cribo_self.backend = backend
 
     def broken_loader():

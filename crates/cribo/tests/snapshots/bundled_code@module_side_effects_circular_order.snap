@@ -128,7 +128,7 @@ my_package.mod_b = my_package_mod_b
 my_package_mod_c = _cribo.types.SimpleNamespace(__name__='my_package.mod_c', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('my_package.mod_c', my_package_mod_c)
 my_package.mod_c = my_package_mod_c
-def _cribo_init___cribo_c04dc3_my_package(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_c04dc3_my_package(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -148,7 +148,7 @@ def _cribo_init___cribo_c04dc3_my_package(_cribo_self, *, _cribo_getattr=getattr
     _cribo_self.__initializing__ = False
     return _cribo_self
 my_package.__init__ = _cribo_init___cribo_c04dc3_my_package
-def _cribo_init___cribo_e90488_my_package_mod_a(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_e90488_my_package_mod_a(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -166,7 +166,7 @@ def _cribo_init___cribo_e90488_my_package_mod_a(_cribo_self, *, _cribo_getattr=g
     _cribo_self.__initializing__ = False
     return _cribo_self
 my_package_mod_a.__init__ = _cribo_init___cribo_e90488_my_package_mod_a
-def _cribo_init___cribo_d862bd_my_package_mod_b(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_d862bd_my_package_mod_b(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -192,7 +192,7 @@ def _cribo_init___cribo_d862bd_my_package_mod_b(_cribo_self, *, _cribo_getattr=g
     _cribo_self.__initializing__ = False
     return _cribo_self
 my_package_mod_b.__init__ = _cribo_init___cribo_d862bd_my_package_mod_b
-def _cribo_init___cribo_748052_my_package_mod_c(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_748052_my_package_mod_c(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

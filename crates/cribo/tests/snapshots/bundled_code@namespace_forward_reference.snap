@@ -111,7 +111,7 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
 _cribo_finder_local.register('mypkg', None, 'mypkg', True)
-_cribo_finder.register('mypkg.exceptions', None, None, False, {'MyJSONError': 'MyJSONError'})
+_cribo_finder.register('mypkg.exceptions', None, None, False, {'MyJSONError': 'MyJSONError', 'JSONDecodeError': 'JSONDecodeError'})
 mypkg_compat = _cribo.types.SimpleNamespace(__name__='mypkg.compat')
 mypkg = _cribo.types.SimpleNamespace(__name__='mypkg', __initializing__=False, __initialized__=False, __path__=[])
 mypkg.compat = mypkg_compat

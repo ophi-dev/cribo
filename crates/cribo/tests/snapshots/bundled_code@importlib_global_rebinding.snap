@@ -113,7 +113,7 @@ else:
 _cribo_finder_local.register('helper', '_cribo_init___cribo_d07f3b_helper', 'helper', False)
 helper = _cribo.types.SimpleNamespace(__name__='helper', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('helper', helper)
-def _cribo_init___cribo_d07f3b_helper(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_d07f3b_helper(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -132,7 +132,7 @@ helper.__init__ = _cribo_init___cribo_d07f3b_helper
 importlib = _cribo.importlib
 def load():
     global importlib
-    module = _cribo.sys.modules['helper'] if 'helper' in _cribo.sys.modules else _cribo_init___cribo_d07f3b_helper(helper)
+    module = _cribo.importlib.import_module('helper') if 'helper' in _cribo.sys.modules else _cribo_init___cribo_d07f3b_helper(helper)
     importlib = None
     return module
 print("VALUE:", load().VALUE)

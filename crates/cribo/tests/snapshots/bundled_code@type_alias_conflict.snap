@@ -110,8 +110,8 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
         break
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
-_cribo_finder_local.register('first', None, None, False, {'Bound': 'Bound_2', 'alias_is_recursive': 'alias_is_recursive_2', 'alias_type_parameter_is_scoped': 'alias_type_parameter_is_scoped_2', 'alias_bound_is_renamed': 'alias_bound_is_renamed_2'})
-_cribo_finder_local.register('second', None, None, False, {'Bound': 'Bound_1', 'alias_is_recursive': 'alias_is_recursive_1', 'alias_type_parameter_is_scoped': 'alias_type_parameter_is_scoped_1', 'alias_bound_is_renamed': 'alias_bound_is_renamed_1'})
+_cribo_finder_local.register('first', None, None, False, {'Bound': 'Bound_2', 'alias_is_recursive': 'alias_is_recursive_2', 'alias_type_parameter_is_scoped': 'alias_type_parameter_is_scoped_2', 'alias_bound_is_renamed': 'alias_bound_is_renamed_2', 'T': 'T_2'})
+_cribo_finder_local.register('second', None, None, False, {'Bound': 'Bound_1', 'alias_is_recursive': 'alias_is_recursive_1', 'alias_type_parameter_is_scoped': 'alias_type_parameter_is_scoped_1', 'alias_bound_is_renamed': 'alias_bound_is_renamed_1', 'T': 'T_1'})
 first = _cribo.types.SimpleNamespace(__name__='first')
 type SharedAlias_2 = list[SharedAlias_2]
 T_2 = int

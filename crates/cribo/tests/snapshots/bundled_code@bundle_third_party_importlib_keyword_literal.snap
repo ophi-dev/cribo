@@ -116,7 +116,7 @@ kw_pkg = _cribo.types.SimpleNamespace(__name__='kw_pkg', __initializing__=False,
 kw_pkg.backend = kw_pkg_backend
 KIND = "keyword-literal"
 kw_pkg_backend.KIND = KIND
-def _cribo_init___cribo_b428f2_kw_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_b428f2_kw_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -128,7 +128,7 @@ def _cribo_init___cribo_b428f2_kw_pkg(_cribo_self, *, _cribo_getattr=getattr, _c
     importlib = _cribo.importlib
     _cribo_self.importlib = importlib
     _cribo_self.importlib = importlib
-    backend = _cribo.sys.modules['kw_pkg.backend'] if 'kw_pkg.backend' in _cribo.sys.modules else _cribo.types.SimpleNamespace(KIND=KIND)
+    backend = _cribo.importlib.import_module('kw_pkg.backend') if 'kw_pkg' in _cribo.sys.modules or 'kw_pkg.backend' in _cribo.sys.modules else _cribo.types.SimpleNamespace(KIND=KIND)
     _cribo_self.backend = backend
 
     def backend_kind():

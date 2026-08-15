@@ -116,7 +116,7 @@ conditional_observer = _cribo.types.SimpleNamespace(__name__='conditional_observ
 _cribo_finder.bind('conditional_observer', conditional_observer)
 conditional_source = _cribo.types.SimpleNamespace(__name__='conditional_source', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('conditional_source', conditional_source)
-def _cribo_init___cribo_d338f1_conditional_observer(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_d338f1_conditional_observer(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -137,7 +137,7 @@ def _cribo_init___cribo_d338f1_conditional_observer(_cribo_self, *, _cribo_getat
     _cribo_self.__initializing__ = False
     return _cribo_self
 conditional_observer.__init__ = _cribo_init___cribo_d338f1_conditional_observer
-def _cribo_init___cribo_c4de75_conditional_source(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_c4de75_conditional_source(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

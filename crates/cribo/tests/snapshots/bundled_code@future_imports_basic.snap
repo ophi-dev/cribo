@@ -117,7 +117,7 @@ _cribo_finder.register('mypackage.submodule', None, 'mypackage_submodule', True)
 _cribo_finder_local.register('mypackage', None, 'mypackage', True)
 mypackage_core = _cribo.types.SimpleNamespace(__name__='mypackage.core', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('mypackage.core', mypackage_core)
-def _cribo_init___cribo_41d36f_mypackage_core(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_41d36f_mypackage_core(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -160,7 +160,7 @@ mypackage.core = mypackage_core
 """Package initialization with future import."""
 mypackage_submodule_utils = _cribo.types.SimpleNamespace(__name__='mypackage.submodule.utils', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('mypackage.submodule.utils', mypackage_submodule_utils)
-def _cribo_init___cribo_c3d681_mypackage_submodule_utils(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_c3d681_mypackage_submodule_utils(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

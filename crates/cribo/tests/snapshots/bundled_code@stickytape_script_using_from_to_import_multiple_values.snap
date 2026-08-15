@@ -110,7 +110,7 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
         break
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
-_cribo_finder_local.register('greeting', None, None, False, {'print_stdout': 'print_stdout'})
+_cribo_finder_local.register('greeting', None, None, False, {'print_stdout': 'print_stdout', 'message': 'message'})
 greeting = _cribo.types.SimpleNamespace(__name__='greeting')
 message = "Hello"
 def print_stdout(value):

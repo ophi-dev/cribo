@@ -112,7 +112,7 @@ else:
     _sys.meta_path.insert(0, _cribo_finder_local)
 _cribo_finder_local.register('pkg', '_cribo_init___cribo_f70f3a_pkg', 'pkg', True)
 _cribo_finder.register('pkg.core', '_cribo_init___cribo_1a829c_pkg_core', 'pkg_core', False)
-_cribo_finder.register('pkg.compat', None, None, False, {'BaseClass': 'BaseClass'})
+_cribo_finder.register('pkg.compat', None, None, False, {'BaseClass': 'BaseClass', 'CONSTANT': 'CONSTANT'})
 pkg_compat = _cribo.types.SimpleNamespace(__name__='pkg.compat', __doc__='Compat module.')
 pkg = _cribo.types.SimpleNamespace(__name__='pkg', __initializing__=False, __initialized__=False, __path__=[])
 pkg.compat = pkg_compat
@@ -127,7 +127,7 @@ pkg_compat.BaseClass = BaseClass
 pkg_core = _cribo.types.SimpleNamespace(__name__='pkg.core', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('pkg.core', pkg_core)
 pkg.core = pkg_core
-def _cribo_init___cribo_f70f3a_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_f70f3a_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -150,7 +150,7 @@ def _cribo_init___cribo_f70f3a_pkg(_cribo_self, *, _cribo_getattr=getattr, _crib
     _cribo_self.__initializing__ = False
     return _cribo_self
 pkg.__init__ = _cribo_init___cribo_f70f3a_pkg
-def _cribo_init___cribo_1a829c_pkg_core(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_1a829c_pkg_core(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

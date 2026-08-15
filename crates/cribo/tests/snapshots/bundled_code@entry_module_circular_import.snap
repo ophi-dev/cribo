@@ -117,7 +117,7 @@ _cribo_finder.bind('child_with_init', child_with_init)
 main = _cribo.types.SimpleNamespace(__name__='main', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('main', main)
 _cribo_child_with_init__initialized = None
-def _cribo_init___cribo_651687_child_with_init(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_651687_child_with_init(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -166,7 +166,7 @@ def _cribo_init___cribo_651687_child_with_init(_cribo_self, *, _cribo_getattr=ge
     _cribo_self.__initializing__ = False
     return _cribo_self
 child_with_init.__init__ = _cribo_init___cribo_651687_child_with_init
-def _cribo_init___cribo_24f0c8_main(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_24f0c8_main(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

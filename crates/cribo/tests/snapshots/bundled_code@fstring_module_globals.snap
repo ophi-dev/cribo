@@ -110,7 +110,7 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
         break
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
-_cribo_finder_local.register('worker', None, None, False, {'Worker': 'Worker'})
+_cribo_finder_local.register('worker', None, None, False, {'Worker': 'Worker', 'status': 'status', 'tasks': 'tasks', 'counter': 'counter'})
 worker = _cribo.types.SimpleNamespace(__name__='worker', __doc__='Worker module with globals that need lifting when using f-strings')
 """Worker module with globals that need lifting when using f-strings"""
 status = "idle"

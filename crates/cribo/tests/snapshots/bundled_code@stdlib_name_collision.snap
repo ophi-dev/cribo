@@ -112,7 +112,7 @@ else:
     _sys.meta_path.insert(0, _cribo_finder_local)
 _cribo_finder_local.register('mypackage', None, 'mypackage', True)
 _cribo_finder.register('mypackage.abc', None, None, False, {'MyClass': 'MyClass'})
-_cribo_finder.register('mypackage.pretty', None, None, False, {'format_object': 'format_object'})
+_cribo_finder.register('mypackage.pretty', None, None, False, {'format_object': 'format_object', 'MyClass': 'MyClass'})
 mypackage_abc = _cribo.types.SimpleNamespace(__name__='mypackage.abc', __doc__="Local module named 'abc' - should not be confused with stdlib abc.")
 mypackage = _cribo.types.SimpleNamespace(__name__='mypackage', __initializing__=False, __initialized__=False, __path__=[])
 mypackage.abc = mypackage_abc

@@ -113,7 +113,7 @@ else:
 _cribo_finder_local.register('eval_pkg', '_cribo_init___cribo_0f12b8_eval_pkg', 'eval_pkg', True)
 eval_pkg = _cribo.types.SimpleNamespace(__name__='eval_pkg', __initializing__=False, __initialized__=False, __path__=[])
 _cribo_finder.bind('eval_pkg', eval_pkg)
-def _cribo_init___cribo_0f12b8_eval_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_0f12b8_eval_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

@@ -110,7 +110,7 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
         break
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
-_cribo_finder_local.register('helpers', None, None, False, {'make_tag': 'make_tag_2', 'Schema': 'Schema_2'})
+_cribo_finder_local.register('helpers', None, None, False, {'make_tag': 'make_tag_2', 'Schema': 'Schema_2', 'DEFAULT_MODE': 'DEFAULT_MODE_2'})
 helpers = _cribo.types.SimpleNamespace(__name__='helpers', __doc__='\nHelper module that defines symbols colliding with the entry module.\nThe conflict resolver will rename one copy; this fixture verifies that\ndefinition-time expressions (decorators, defaults, annotations) in entry\nmodule functions are rewritten to use the renamed identifiers.\n')
 """\nHelper module that defines symbols colliding with the entry module.\nThe conflict resolver will rename one copy; this fixture verifies that\ndefinition-time expressions (decorators, defaults, annotations) in entry\nmodule functions are rewritten to use the renamed identifiers.\n"""
 def make_tag_2(func):

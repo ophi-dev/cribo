@@ -111,7 +111,7 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
 _cribo_finder_local.register('pkg', '_cribo_init___cribo_9c0ae3_pkg', 'pkg', True)
-_cribo_finder.register('pkg.submodule', None, None, False, {'create_object': 'create_object'})
+_cribo_finder.register('pkg.submodule', None, None, False, {'create_object': 'create_object', 'MyObject': 'MyObject'})
 pkg_submodule = _cribo.types.SimpleNamespace(__name__='pkg.submodule')
 pkg = _cribo.types.SimpleNamespace(__name__='pkg', __initializing__=False, __initialized__=False, __path__=[])
 pkg.submodule = pkg_submodule
@@ -121,7 +121,7 @@ def create_object():
     return pkg.MyObject()
 create_object.__module__ = 'pkg.submodule'
 pkg_submodule.create_object = create_object
-def _cribo_init___cribo_9c0ae3_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_9c0ae3_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

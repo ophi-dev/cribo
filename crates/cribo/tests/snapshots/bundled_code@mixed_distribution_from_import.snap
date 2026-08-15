@@ -113,7 +113,7 @@ else:
 _cribo_finder.register('mixed_package', '_cribo_init___cribo_eb0568_mixed_package', 'mixed_package', True)
 mixed_package = _cribo.types.SimpleNamespace(__name__='mixed_package', __initializing__=False, __initialized__=False, __path__=[])
 _cribo_finder.bind('mixed_package', mixed_package)
-def _cribo_init___cribo_eb0568_mixed_package(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_eb0568_mixed_package(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

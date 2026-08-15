@@ -117,10 +117,10 @@ _cribo_finder.register('core.utils', None, 'core_utils', True)
 _cribo_finder_local.register('core', None, 'core', True)
 _cribo_finder_local.register('models', None, 'models', True)
 _cribo_finder.register('core.database', None, 'core_database', True)
-_cribo_finder.register('core.utils.helpers', None, None, False, {'Logger': 'Logger_3', 'process': 'process_5', 'validate': 'validate_5'})
-_cribo_finder.register('models.user', None, None, False, {'Logger': 'Logger_2', 'User': 'User_2', 'process_user': 'process_user'})
-_cribo_finder.register('core.database.connection', None, None, False, {'Connection': 'Connection_5', 'process': 'process_6'})
-_cribo_finder.register('models.base', None, None, False, {'BaseModel': 'BaseModel', 'initialize': 'initialize', 'validate': 'validate_2', 'process': 'process_2', 'Logger': 'Logger_1', 'connect': 'connect_1', 'shadow_test': 'shadow_test'})
+_cribo_finder.register('core.utils.helpers', None, None, False, {'Logger': 'Logger_3', 'process': 'process_5', 'validate': 'validate_5', 'result': 'result_5', 'Connection': 'Connection', 'User': 'User_4'})
+_cribo_finder.register('models.user', None, None, False, {'Logger': 'Logger_2', 'User': 'User_2', 'process_user': 'process_user', 'result': 'result_3', 'util_process': 'util_process', 'process': 'process', 'validate': 'validate', 'Connection': 'Connection', 'connection': 'connection', 'UtilLogger': 'UtilLogger'})
+_cribo_finder.register('core.database.connection', None, None, False, {'Connection': 'Connection_5', 'process': 'process_6', 'result': 'result_6', 'process_user': 'process_user', 'helper_validate': 'helper_validate', 'validate': 'validate', 'connection': 'connection'})
+_cribo_finder.register('models.base', None, None, False, {'BaseModel': 'BaseModel', 'initialize': 'initialize', 'validate': 'validate_2', 'process': 'process_2', 'Logger': 'Logger_1', 'connect': 'connect_1', 'shadow_test': 'shadow_test', 'result': 'result_2', 'UserLogger': 'UserLogger', 'core_validate': 'core_validate'})
 core = _cribo.types.SimpleNamespace(__name__='core')
 core_database = _cribo.types.SimpleNamespace(__name__='core.database')
 core.database = core_database
@@ -450,7 +450,7 @@ models_base.shadow_test = shadow_test
 models_base.validate = validate_2
 services_auth_manager = _cribo.types.SimpleNamespace(__name__='services.auth.manager', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('services.auth.manager', services_auth_manager)
-def _cribo_init___cribo_6ccb3a_services_auth_manager(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_6ccb3a_services_auth_manager(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

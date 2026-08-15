@@ -129,7 +129,7 @@ pkg.models = pkg_models
 pkg_utils = _cribo.types.SimpleNamespace(__name__='pkg.utils', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('pkg.utils', pkg_utils)
 pkg.utils = pkg_utils
-def _cribo_init___cribo_6d9930_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_6d9930_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -148,7 +148,7 @@ def _cribo_init___cribo_6d9930_pkg(_cribo_self, *, _cribo_getattr=getattr, _crib
     _cribo_self.__initializing__ = False
     return _cribo_self
 pkg.__init__ = _cribo_init___cribo_6d9930_pkg
-def _cribo_init___cribo_12d613_pkg_adapters(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_12d613_pkg_adapters(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -187,7 +187,7 @@ def _cribo_init___cribo_12d613_pkg_adapters(_cribo_self, *, _cribo_getattr=getat
     _cribo_self.__initializing__ = False
     return _cribo_self
 pkg_adapters.__init__ = _cribo_init___cribo_12d613_pkg_adapters
-def _cribo_init___cribo_e94ab8_pkg_auth(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_e94ab8_pkg_auth(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -227,7 +227,7 @@ def _cribo_init___cribo_e94ab8_pkg_auth(_cribo_self, *, _cribo_getattr=getattr, 
     _cribo_self.__initializing__ = False
     return _cribo_self
 pkg_auth.__init__ = _cribo_init___cribo_e94ab8_pkg_auth
-def _cribo_init___cribo_01ad7c_pkg_models(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_01ad7c_pkg_models(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -259,7 +259,7 @@ def _cribo_init___cribo_01ad7c_pkg_models(_cribo_self, *, _cribo_getattr=getattr
     _cribo_self.__initializing__ = False
     return _cribo_self
 pkg_models.__init__ = _cribo_init___cribo_01ad7c_pkg_models
-def _cribo_init___cribo_bdb497_pkg_utils(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_bdb497_pkg_utils(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

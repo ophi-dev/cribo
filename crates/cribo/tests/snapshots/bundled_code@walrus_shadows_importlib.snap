@@ -110,7 +110,7 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
         break
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
-_cribo_finder_local.register('helper', None, None, False, {'import_module': 'import_module'})
+_cribo_finder_local.register('helper', None, None, False, {'import_module': 'import_module', 'KIND': 'KIND'})
 helper = _cribo.types.SimpleNamespace(__name__='helper')
 KIND = "bundled helper"
 def import_module(name):
@@ -120,7 +120,7 @@ helper.KIND = KIND
 helper.import_module = import_module
 """A walrus target rebinds its name for all SUBSEQUENT expressions.\n\nThe first import_module call dispatches through the real importlib (the\nwalrus in the same statement list has not executed yet), while calls after\nthe walrus dispatch to the custom binding and must stay untouched.\n"""
 importlib = _cribo.importlib
-real = _cribo.sys.modules['helper'] if 'helper' in _cribo.sys.modules else _cribo.types.SimpleNamespace(KIND=KIND, import_module=import_module)
+real = _cribo.importlib.import_module('helper') if 'helper' in _cribo.sys.modules else _cribo.types.SimpleNamespace(KIND=KIND, import_module=import_module)
 print("real:", KIND)
 (importlib := real)
 print("custom:", importlib.import_module("helper"))

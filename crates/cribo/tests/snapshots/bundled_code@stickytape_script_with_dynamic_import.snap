@@ -114,5 +114,5 @@ greeting = _cribo.types.SimpleNamespace(__name__='greeting')
 message = "Hello"
 greeting.message = message
 importlib = _cribo.importlib
-greeting = _cribo.sys.modules['greeting'] if 'greeting' in _cribo.sys.modules else _cribo.types.SimpleNamespace(message=message)
+greeting = _cribo.importlib.import_module('greeting') if 'greeting' in _cribo.sys.modules else _cribo.types.SimpleNamespace(message=message)
 print(message)

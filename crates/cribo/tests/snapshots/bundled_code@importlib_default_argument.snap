@@ -113,7 +113,7 @@ else:
 _cribo_finder_local.register('effectful_helper', '_cribo_init___cribo_c45595_effectful_helper', 'effectful_helper', False)
 effectful_helper = _cribo.types.SimpleNamespace(__name__='effectful_helper', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('effectful_helper', effectful_helper)
-def _cribo_init___cribo_c45595_effectful_helper(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_c45595_effectful_helper(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -130,7 +130,7 @@ def _cribo_init___cribo_c45595_effectful_helper(_cribo_self, *, _cribo_getattr=g
 effectful_helper.__init__ = _cribo_init___cribo_c45595_effectful_helper
 """Default-argument expressions evaluate in the ENCLOSING scope.\n\nThe parameter name shadows `importlib` only inside the body; the default\nexpression `importlib.import_module(...)` runs at definition time through\nthe module-level import, so `effectful_helper` must be discovered and\nbundled.\n"""
 importlib = _cribo.importlib
-def load(importlib=_cribo.sys.modules['effectful_helper'] if 'effectful_helper' in _cribo.sys.modules else _cribo_init___cribo_c45595_effectful_helper(effectful_helper)):
+def load(importlib=_cribo.importlib.import_module('effectful_helper') if 'effectful_helper' in _cribo.sys.modules else _cribo_init___cribo_c45595_effectful_helper(effectful_helper)):
     return importlib
 helper = load()
 print("loaded:", helper.GREETING)

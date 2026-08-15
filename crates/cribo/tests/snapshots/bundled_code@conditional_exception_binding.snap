@@ -116,7 +116,7 @@ exception_observer = _cribo.types.SimpleNamespace(__name__='exception_observer',
 _cribo_finder.bind('exception_observer', exception_observer)
 exception_source = _cribo.types.SimpleNamespace(__name__='exception_source', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('exception_source', exception_source)
-def _cribo_init___cribo_124c30_exception_observer(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_124c30_exception_observer(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -143,7 +143,7 @@ def _cribo_init___cribo_124c30_exception_observer(_cribo_self, *, _cribo_getattr
     _cribo_self.__initializing__ = False
     return _cribo_self
 exception_observer.__init__ = _cribo_init___cribo_124c30_exception_observer
-def _cribo_init___cribo_b407bb_exception_source(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_b407bb_exception_source(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

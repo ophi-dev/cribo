@@ -133,7 +133,7 @@ pkg_definitions.AnotherError = AnotherError_2
 pkg_definitions.CustomError = CustomError_2
 pkg_module_with_sideeffects = _cribo.types.SimpleNamespace(__name__='pkg.module_with_sideeffects', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('pkg.module_with_sideeffects', pkg_module_with_sideeffects)
-def _cribo_init___cribo_814350_pkg_module_with_sideeffects(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_814350_pkg_module_with_sideeffects(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

@@ -115,7 +115,7 @@ _cribo_finder_local.register('private_consumer', '_cribo_init___cribo_f05a42_pri
 _cribo_finder_local.register('first', '_cribo_init___cribo_39eca0_first', 'first', False)
 first = _cribo.types.SimpleNamespace(__name__='first', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('first', first)
-def _cribo_init___cribo_39eca0_first(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_39eca0_first(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -182,7 +182,7 @@ def _cribo_init___cribo_39eca0_first(_cribo_self, *, _cribo_getattr=getattr, _cr
 first.__init__ = _cribo_init___cribo_39eca0_first
 private_consumer = _cribo.types.SimpleNamespace(__name__='private_consumer', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('private_consumer', private_consumer)
-def _cribo_init___cribo_f05a42_private_consumer(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_f05a42_private_consumer(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -202,7 +202,7 @@ def _cribo_init___cribo_f05a42_private_consumer(_cribo_self, *, _cribo_getattr=g
 private_consumer.__init__ = _cribo_init___cribo_f05a42_private_consumer
 second = _cribo.types.SimpleNamespace(__name__='second', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('second', second)
-def _cribo_init___cribo_4717e4_second(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_4717e4_second(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

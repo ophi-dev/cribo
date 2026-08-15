@@ -122,7 +122,7 @@ module_c = _cribo.types.SimpleNamespace(__name__='module_c', __initializing__=Fa
 _cribo_finder.bind('module_c', module_c)
 module_d = _cribo.types.SimpleNamespace(__name__='module_d', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('module_d', module_d)
-def _cribo_init___cribo_1444c2_module_a(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_1444c2_module_a(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -150,7 +150,7 @@ def _cribo_init___cribo_1444c2_module_a(_cribo_self, *, _cribo_getattr=getattr, 
     _cribo_self.__initializing__ = False
     return _cribo_self
 module_a.__init__ = _cribo_init___cribo_1444c2_module_a
-def _cribo_init___cribo_277dcc_module_b(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_277dcc_module_b(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -177,7 +177,7 @@ def _cribo_init___cribo_277dcc_module_b(_cribo_self, *, _cribo_getattr=getattr, 
     _cribo_self.__initializing__ = False
     return _cribo_self
 module_b.__init__ = _cribo_init___cribo_277dcc_module_b
-def _cribo_init___cribo_21fc08_module_c(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_21fc08_module_c(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -204,7 +204,7 @@ def _cribo_init___cribo_21fc08_module_c(_cribo_self, *, _cribo_getattr=getattr, 
     _cribo_self.__initializing__ = False
     return _cribo_self
 module_c.__init__ = _cribo_init___cribo_21fc08_module_c
-def _cribo_init___cribo_f1543a_module_d(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_f1543a_module_d(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

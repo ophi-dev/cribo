@@ -124,7 +124,7 @@ mypackage_exceptions.CustomError = CustomError
 mypackage_utils = _cribo.types.SimpleNamespace(__name__='mypackage.utils', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('mypackage.utils', mypackage_utils)
 mypackage.utils = mypackage_utils
-def _cribo_init___cribo_ddd935_mypackage(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_ddd935_mypackage(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -142,7 +142,7 @@ def _cribo_init___cribo_ddd935_mypackage(_cribo_self, *, _cribo_getattr=getattr,
     _cribo_self.__initializing__ = False
     return _cribo_self
 mypackage.__init__ = _cribo_init___cribo_ddd935_mypackage
-def _cribo_init___cribo_09b9b3_mypackage_utils(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_09b9b3_mypackage_utils(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

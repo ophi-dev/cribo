@@ -111,7 +111,7 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
 _cribo_finder_local.register('side_effect_module', '_cribo_init___cribo_2f952c_side_effect_module', 'side_effect_module', False)
-_cribo_finder_local.register('strings_inline', None, None, False, {'format_report': 'format_report'})
+_cribo_finder_local.register('strings_inline', None, None, False, {'format_report': 'format_report', 'DOUBLE_QUOTED': 'DOUBLE_QUOTED', 'HEADER': 'HEADER', 'TAIL': 'TAIL'})
 _cribo_finder_local.register('docstring_module', None, None, False, {'simple_function': 'simple_function', 'multiline_function': 'multiline_function', 'indented_docstring': 'indented_docstring', 'DocumentedClass': 'DocumentedClass', 'triple_quoted_variations': 'triple_quoted_variations', 'docstring_with_formatting': 'docstring_with_formatting'})
 strings_inline = _cribo.types.SimpleNamespace(__name__='strings_inline', __doc__='Inline-only module mixing multiline literal patterns.')
 """Inline-only module mixing multiline literal patterns."""
@@ -130,7 +130,7 @@ strings_inline.TAIL = TAIL
 strings_inline.format_report = format_report
 side_effect_module = _cribo.types.SimpleNamespace(__name__='side_effect_module', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('side_effect_module', side_effect_module)
-def _cribo_init___cribo_2f952c_side_effect_module(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_2f952c_side_effect_module(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

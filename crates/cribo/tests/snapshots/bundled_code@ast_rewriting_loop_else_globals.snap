@@ -115,7 +115,7 @@ loops = _cribo.types.SimpleNamespace(__name__='loops', __initializing__=False, _
 _cribo_loops_last_result = None
 _cribo_loops_loop_count = None
 _cribo_finder.bind('loops', loops)
-def _cribo_init___cribo_bca834_loops(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_bca834_loops(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

@@ -8,6 +8,7 @@ use ruff_text_size::TextRange;
 use super::{TransformError, state::InitFunctionState};
 use crate::{
     ast_builder,
+    ast_builder::{CRIBO_PREFIX, CRIBO_SYS_ALIAS},
     code_generator::{
         bundler::Bundler, context::ModuleTransformContext, module_transformer::SELF_PARAM,
     },
@@ -118,6 +119,11 @@ impl FinalizationPhase {
             kwonlyargs: vec![
                 captured_builtin(super::CAPTURED_GETATTR, "getattr"),
                 captured_builtin(super::CAPTURED_BASE_EXCEPTION, "BaseException"),
+                // Generated support globals resolve through the SAME names as
+                // parameters, so the lazily executed body picks the captured
+                // values even if user entry code rebinds `_cribo`/`_sys` later
+                captured_builtin(CRIBO_PREFIX, CRIBO_PREFIX),
+                captured_builtin(CRIBO_SYS_ALIAS, CRIBO_SYS_ALIAS),
             ]
             .into(),
             kwarg: None,

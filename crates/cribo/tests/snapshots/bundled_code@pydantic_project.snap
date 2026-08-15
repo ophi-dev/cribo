@@ -116,7 +116,7 @@ _cribo_finder_local.register('utils', None, 'utils', True)
 _cribo_finder.register('utils.validation', None, None, False, {'validate_email': 'validate_email'})
 schemas_user = _cribo.types.SimpleNamespace(__name__='schemas.user', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('schemas.user', schemas_user)
-def _cribo_init___cribo_e6d2b7_schemas_user(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_e6d2b7_schemas_user(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

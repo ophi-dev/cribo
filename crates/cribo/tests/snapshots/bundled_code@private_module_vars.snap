@@ -115,7 +115,7 @@ _cribo_finder_local.register('pkg', None, 'pkg', True)
 _cribo_finder.register('pkg.consumer', None, None, False, {'get_validators': 'get_validators'})
 pkg__internal = _cribo.types.SimpleNamespace(__name__='pkg._internal', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('pkg._internal', pkg__internal)
-def _cribo_init___cribo_73cafd_pkg__internal(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_73cafd_pkg__internal(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

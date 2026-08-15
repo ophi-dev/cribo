@@ -113,7 +113,7 @@ else:
 _cribo_finder_local.register('my-module', '_cribo_init___cribo_332fbf_my_module', 'my_module', False)
 my_module = _cribo.types.SimpleNamespace(__name__='my-module', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('my-module', my_module)
-def _cribo_init___cribo_332fbf_my_module(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_332fbf_my_module(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -134,7 +134,7 @@ def _cribo_init___cribo_332fbf_my_module(_cribo_self, *, _cribo_getattr=getattr,
     return _cribo_self
 my_module.__init__ = _cribo_init___cribo_332fbf_my_module
 importlib = _cribo.importlib
-mod = _cribo.sys.modules['my-module'] if 'my-module' in _cribo.sys.modules else _cribo_init___cribo_332fbf_my_module(my_module)
+mod = _cribo.importlib.import_module('my-module') if 'my-module' in _cribo.sys.modules else _cribo_init___cribo_332fbf_my_module(my_module)
 print(f"Value: {mod.value}")
 print(f"Function result: {mod.get_value()}")
 assert mod.value == 42

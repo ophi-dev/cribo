@@ -112,7 +112,7 @@ else:
     _sys.meta_path.insert(0, _cribo_finder_local)
 _cribo_finder_local.register('utils', None, 'utils', True)
 _cribo_finder.register('utils.helpers', None, None, False, {'helper_function': 'helper_function', 'UtilityClass': 'UtilityClass'})
-_cribo_finder.register('utils.config', None, None, False, {'get_config': 'get_config'})
+_cribo_finder.register('utils.config', None, None, False, {'get_config': 'get_config', 'DEFAULT_CONFIG': 'DEFAULT_CONFIG'})
 utils_helpers = _cribo.types.SimpleNamespace(__name__='utils.helpers', __doc__='Utility module for testing regular import aliases.')
 utils = _cribo.types.SimpleNamespace(__name__='utils', __initializing__=False, __initialized__=False, __path__=[])
 utils.helpers = utils_helpers

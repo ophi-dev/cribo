@@ -114,7 +114,7 @@ _cribo_finder_local.register('helperpkg', '_cribo_init___cribo_f8c299_helperpkg'
 _cribo_finder_local.register('helper', '_cribo_init___cribo_ba4087_helper', 'helper', False)
 helper = _cribo.types.SimpleNamespace(__name__='helper', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('helper', helper)
-def _cribo_init___cribo_ba4087_helper(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_ba4087_helper(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -131,7 +131,7 @@ def _cribo_init___cribo_ba4087_helper(_cribo_self, *, _cribo_getattr=getattr, _c
 helper.__init__ = _cribo_init___cribo_ba4087_helper
 helperpkg = _cribo.types.SimpleNamespace(__name__='helperpkg', __initializing__=False, __initialized__=False, __path__=[])
 _cribo_finder.bind('helperpkg', helperpkg)
-def _cribo_init___cribo_f8c299_helperpkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_f8c299_helperpkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

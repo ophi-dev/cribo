@@ -112,7 +112,7 @@ else:
     _sys.meta_path.insert(0, _cribo_finder_local)
 _cribo_finder_local.register('module_mixed_patterns', '_cribo_init___cribo_c75306_module_mixed_patterns', 'module_mixed_patterns', False)
 _cribo_finder_local.register('module_globals_dict', '_cribo_init___cribo_5101f4_module_globals_dict', 'module_globals_dict', False)
-_cribo_finder_local.register('module_global_keyword', None, None, False, {'get_foo': 'get_foo', 'modify_foo': 'modify_foo'})
+_cribo_finder_local.register('module_global_keyword', None, None, False, {'get_foo': 'get_foo', 'modify_foo': 'modify_foo', 'foo': 'foo_3'})
 module_global_keyword = _cribo.types.SimpleNamespace(__name__='module_global_keyword', __doc__='Module demonstrating global keyword usage.')
 """Module demonstrating global keyword usage."""
 foo_3 = "module1_foo"
@@ -130,7 +130,7 @@ module_global_keyword.get_foo = get_foo
 module_global_keyword.modify_foo = modify_foo
 module_globals_dict = _cribo.types.SimpleNamespace(__name__='module_globals_dict', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('module_globals_dict', module_globals_dict)
-def _cribo_init___cribo_5101f4_module_globals_dict(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_5101f4_module_globals_dict(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):
@@ -188,7 +188,7 @@ module_mixed_patterns = _cribo.types.SimpleNamespace(__name__='module_mixed_patt
 _cribo_module_mixed_patterns_foo = None
 _cribo_module_mixed_patterns_counter = None
 _cribo_finder.bind('module_mixed_patterns', module_mixed_patterns)
-def _cribo_init___cribo_c75306_module_mixed_patterns(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException):
+def _cribo_init___cribo_c75306_module_mixed_patterns(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
         return _cribo_self
     if _cribo_getattr(_cribo_self, '__initializing__', False):

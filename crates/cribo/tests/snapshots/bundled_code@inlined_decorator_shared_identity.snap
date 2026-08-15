@@ -111,7 +111,7 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
 _cribo_finder_local.register('shared', None, None, False, {'canonical': 'canonical'})
-_cribo_finder_local.register('provider', None, None, False, {'replace_with_shared': 'replace_with_shared', 'exported': 'exported'})
+_cribo_finder_local.register('provider', None, None, False, {'replace_with_shared': 'replace_with_shared', 'exported': 'exported', 'canonical': 'canonical'})
 shared = _cribo.types.SimpleNamespace(__name__='shared')
 def canonical():
     return "canonical result"

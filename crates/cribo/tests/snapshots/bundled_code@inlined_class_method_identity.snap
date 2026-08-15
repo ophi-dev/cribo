@@ -110,7 +110,7 @@ for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
         break
 else:
     _sys.meta_path.insert(0, _cribo_finder_local)
-_cribo_finder_local.register('records', None, None, False, {'register': 'register', 'Entry': 'Entry'})
+_cribo_finder_local.register('records', None, None, False, {'register': 'register', 'Entry': 'Entry', 'OWNERS': 'OWNERS'})
 records = _cribo.types.SimpleNamespace(__name__='records')
 OWNERS = []
 def register(func):

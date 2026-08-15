@@ -117,8 +117,13 @@ impl PhaseOrchestrator {
         // Phase 8: Post-Processing
         log::debug!("[Orchestrator] Phase 8: Post-Processing");
         let post_processing_phase = PostProcessingPhase::new();
-        let post_processing_output =
-            post_processing_phase.execute(bundler, &entry_symbols, &entry_renames, &final_body);
+        let post_processing_output = post_processing_phase.execute(
+            bundler,
+            &entry_symbols,
+            &entry_renames,
+            &symbol_renames,
+            &final_body,
+        );
 
         // Insert proxy statements after __future__ imports
         PostProcessingPhase::insert_proxy_statements(
