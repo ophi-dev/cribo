@@ -355,6 +355,14 @@ impl PostProcessingPhase {
         struct Collector<'a> {
             bundler: &'a Bundler<'a>,
             roots: FxIndexSet<String>,
+            /// Names bound to the real `importlib` module in the emitted
+            /// bundle (`import importlib [as il]`, `importlib =
+            /// _cribo.importlib`)
+            importlib_names: FxIndexSet<String>,
+            /// Names bound to the real `importlib.import_module` function
+            /// (`from importlib import import_module [as im]`, assignments
+            /// off an importlib binding)
+            import_module_names: FxIndexSet<String>,
         }
 
         impl Collector<'_> {
@@ -364,6 +372,91 @@ impl PostProcessingPhase {
                 };
                 if self.bundler.get_module_id(name).is_none() {
                     self.roots.insert(root.to_owned());
+                }
+            }
+
+            /// Track which names dispatch to the REAL importlib. A user-defined
+            /// method that merely shares the `import_module` spelling
+            /// (`loader.import_module("pkg.missing")`) is not an import and must
+            /// not demote a bundled root behind `PathFinder`.
+            fn track_bindings(&mut self, stmt: &Stmt) {
+                use ruff_python_ast::Expr;
+                match stmt {
+                    Stmt::Import(import) => {
+                        for alias in &import.names {
+                            let module = alias.name.as_str();
+                            if module == "importlib" || module.starts_with("importlib.") {
+                                let bound = alias.asname.as_ref().map_or_else(
+                                    || module.split('.').next().unwrap_or(module),
+                                    ruff_python_ast::Identifier::as_str,
+                                );
+                                self.importlib_names.insert(bound.to_owned());
+                            }
+                        }
+                    }
+                    Stmt::ImportFrom(import_from)
+                        if import_from.level == 0
+                            && import_from.module.as_deref() == Some("importlib") =>
+                    {
+                        for alias in &import_from.names {
+                            if alias.name.as_str() == "import_module" {
+                                let bound = alias.asname.as_ref().unwrap_or(&alias.name);
+                                self.import_module_names.insert(bound.to_string());
+                            }
+                        }
+                    }
+                    Stmt::Assign(assign) => {
+                        let [Expr::Name(target)] = assign.targets.as_slice() else {
+                            return;
+                        };
+                        let binds_importlib = match &*assign.value {
+                            // The import transformer spells a stdlib binding as
+                            // `importlib = _cribo.importlib`
+                            Expr::Attribute(attribute)
+                                if attribute.attr.as_str() == "importlib" =>
+                            {
+                                matches!(&*attribute.value, Expr::Name(base)
+                                    if base.id.as_str() == crate::ast_builder::CRIBO_PREFIX)
+                            }
+                            Expr::Name(source) => self.importlib_names.contains(source.id.as_str()),
+                            _ => false,
+                        };
+                        let binds_import_module = match &*assign.value {
+                            Expr::Attribute(attribute)
+                                if attribute.attr.as_str() == "import_module" =>
+                            {
+                                match &*attribute.value {
+                                    Expr::Name(base) => {
+                                        self.importlib_names.contains(base.id.as_str())
+                                    }
+                                    Expr::Attribute(inner)
+                                        if inner.attr.as_str() == "importlib" =>
+                                    {
+                                        matches!(&*inner.value, Expr::Name(base)
+                                            if base.id.as_str() == crate::ast_builder::CRIBO_PREFIX)
+                                    }
+                                    _ => false,
+                                }
+                            }
+                            Expr::Name(source) => {
+                                self.import_module_names.contains(source.id.as_str())
+                            }
+                            _ => false,
+                        };
+                        // Sticky: once a name has carried the real importlib,
+                        // calls through it anywhere in the body may dispatch
+                        // there (function bodies run after any later rebind
+                        // too) — over-inclusion only keeps an installed root
+                        // reachable, while a name NEVER bound to importlib
+                        // (a user loader object) records nothing
+                        if binds_importlib {
+                            self.importlib_names.insert(target.id.to_string());
+                        }
+                        if binds_import_module {
+                            self.import_module_names.insert(target.id.to_string());
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -408,11 +501,18 @@ impl PostProcessingPhase {
                 // target (`importlib.import_module("mixed_package._native",
                 // **{})`) resolve through the real machinery too: the parent
                 // must stay reachable through PathFinder for its installed
-                // __path__ to serve the external child
+                // __path__ to serve the external child. Only calls dispatching
+                // through a tracked importlib binding count — a user method
+                // spelled `import_module` is not an import
                 if let Expr::Call(call) = expr {
                     let callee_is_import_module = match &*call.func {
-                        Expr::Attribute(attribute) => attribute.attr.as_str() == "import_module",
-                        Expr::Name(name) => name.id.as_str() == "import_module",
+                        Expr::Attribute(attribute)
+                            if attribute.attr.as_str() == "import_module" =>
+                        {
+                            matches!(&*attribute.value, Expr::Name(base)
+                                if self.importlib_names.contains(base.id.as_str()))
+                        }
+                        Expr::Name(name) => self.import_module_names.contains(name.id.as_str()),
                         _ => false,
                     };
                     if callee_is_import_module
@@ -430,7 +530,16 @@ impl PostProcessingPhase {
         let mut collector = Collector {
             bundler,
             roots: FxIndexSet::default(),
+            importlib_names: FxIndexSet::default(),
+            import_module_names: FxIndexSet::default(),
         };
+        // Bindings are tracked at the top level in source order FIRST: the
+        // walk below descends into function bodies whose calls execute after
+        // the whole module-level program has run, so a later top-level binding
+        // still applies to them
+        for stmt in final_body {
+            collector.track_bindings(stmt);
+        }
         for stmt in final_body {
             collector.visit_stmt(stmt);
         }

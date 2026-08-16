@@ -725,6 +725,8 @@ impl<'a> TreeShaker<'a> {
                 worklist.push_back((source_module_id, original_name));
             } else if let Some(module_id) = self.find_defining_module(var) {
                 worklist.push_back((module_id, var.clone()));
+            } else if self.var_is_module_importlib_binding(current_module_id, var) {
+                worklist.push_back((current_module_id, var.clone()));
             }
         }
 
@@ -763,6 +765,8 @@ impl<'a> TreeShaker<'a> {
                         module_display
                     );
                     worklist.push_back((module_id, var.clone()));
+                } else if self.var_is_module_importlib_binding(current_module_id, var) {
+                    worklist.push_back((current_module_id, var.clone()));
                 }
             }
         }
@@ -825,6 +829,27 @@ impl<'a> TreeShaker<'a> {
             current_module_id,
             worklist,
         );
+    }
+
+    /// Return whether `var` is bound by an `import importlib` (or an aliased
+    /// `importlib` import) item in this module.
+    ///
+    /// Bindings of stdlib modules are normally rewritten to the `_cribo`
+    /// proxy in emitted code, so dropping their symbols is harmless — but a
+    /// PRESERVED verbatim `importlib.import_module(...)` call dispatches
+    /// through this binding at runtime, so a surviving reader must keep the
+    /// binding alive.
+    fn var_is_module_importlib_binding(&self, module_id: ModuleId, var: &str) -> bool {
+        let Some(module_dep) = self.graph.modules.get(&module_id) else {
+            return false;
+        };
+        module_dep.items.values().any(|item| {
+            matches!(
+                &item.item_type,
+                ItemType::Import { module, .. }
+                    if module == "importlib" || module.starts_with("importlib.")
+            ) && item.var_decls.contains(var)
+        })
     }
 
     /// Get symbols that survive tree-shaking for a module

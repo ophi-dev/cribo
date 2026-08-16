@@ -1130,20 +1130,38 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
                         } else {
                             None
                         };
-                        let import = DiscoveredImport {
-                            module_name: Some(module_name),
-                            names: vec![],
-                            location: self.current_location(),
-                            range: call.range,
-                            level,
-                            import_type: ImportType::ImportlibPreserved,
-                            execution_contexts: FxIndexSet::default(),
-                            is_used_in_init: false,
-                            is_movable: false,
-                            is_type_checking_only: self.in_type_checking(),
-                            package_context,
-                        };
-                        self.imports.push(import);
+                        if level > 0
+                            && package_context.is_none()
+                            && !crate::python::importlib_call::package_argument_is_dunder_package(
+                                call,
+                            )
+                        {
+                            // A relative target with an OPAQUE anchor that is
+                            // not provably __package__: the runtime call may
+                            // anchor at ANY package, so no static candidate
+                            // exists — registering the containing package's
+                            // guess would resolve the WRONG module. The call
+                            // stays verbatim and unresolved.
+                            log::debug!(
+                                "Skipping preserved relative importlib call '{module_name}': its \
+                                 package anchor is opaque and not __package__"
+                            );
+                        } else {
+                            let import = DiscoveredImport {
+                                module_name: Some(module_name),
+                                names: vec![],
+                                location: self.current_location(),
+                                range: call.range,
+                                level,
+                                import_type: ImportType::ImportlibPreserved,
+                                execution_contexts: FxIndexSet::default(),
+                                is_used_in_init: false,
+                                is_movable: false,
+                                is_type_checking_only: self.in_type_checking(),
+                                package_context,
+                            };
+                            self.imports.push(import);
+                        }
                     }
                 } else if self.is_conditionally_shadowed_importlib_call(call)
                     && !crate::python::importlib_call::statically_raises_type_error(call)

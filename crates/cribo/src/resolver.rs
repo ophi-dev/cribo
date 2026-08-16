@@ -2847,28 +2847,23 @@ impl ModuleResolver {
         }
 
         let search_dirs = self.get_search_directories();
-        if let Some((search_root, resolved)) = self.locate_in_directories(module_name, &search_dirs)
+        let located = self.locate_in_directories(module_name, &search_dirs);
+        // A namespace-portion candidate from the normal roots does NOT settle
+        // the classification: Python keeps scanning and a REGULAR package
+        // found later — including in site-packages — wins together with its
+        // distribution policies (native artifacts, metadata queries,
+        // Requires-Dist edges), exactly like resolve_module_path_with_context
+        // defers portions until the site-packages scan. Classifying the
+        // portion first would cache a first-party disposition that path
+        // resolution then applies to the installed regular package.
+        let located_is_namespace_candidate = located.as_ref().is_some_and(|(_, resolved)| {
+            matches!(resolved.source, ImportSource::NamespacePackage)
+                || resolved.via_namespace_portion
+        });
+        if let Some((search_root, resolved)) = &located
+            && !located_is_namespace_candidate
         {
-            let mut classification = self.classify_resolved_import(
-                module_name,
-                &search_root,
-                &resolved,
-                ImportOrigin::FirstParty,
-                true,
-            );
-            // Under third-party bundling, distribution-backed packages supplied through
-            // normal roots (e.g. PYTHONPATH vendoring with adjacent dist-info) are
-            // subject to the same external policy as site-packages installs;
-            // known_first_party remains the force-include escape hatch
-            if self.config.bundle_third_party()
-                && classification.origin == ImportOrigin::ThirdParty
-                && classification.should_bundle()
-                && !self.config.known_first_party.contains(module_name)
-                && self.package_must_stay_external(&search_root, module_name)
-            {
-                classification.bundle = BundleDisposition::External;
-            }
-            return classification;
+            return self.classify_normal_root_import(module_name, search_root, resolved);
         }
 
         if module_name.contains('.') {
@@ -2901,18 +2896,32 @@ impl ModuleResolver {
         if let Some((search_root, resolved)) =
             self.locate_in_directories(module_name, &virtualenv_dirs)
         {
-            // Opt-in third-party bundling: pure-Python distributions are bundled, but any
-            // package shipping native extensions (.so/.pyd) or reading its own installed
-            // distribution metadata at runtime stays external as a whole.
-            let allow_bundle = self.config.bundle_third_party()
-                && !self.package_must_stay_external(&search_root, module_name);
-            return self.classify_resolved_import(
-                module_name,
-                &search_root,
-                &resolved,
-                ImportOrigin::ThirdParty,
-                allow_bundle,
-            );
+            // A REGULAR installed package outranks a deferred namespace
+            // portion from the normal roots; portions from either segment
+            // merge at runtime, so the earlier normal-root candidate keeps
+            // representing them when nothing concrete exists here either
+            let resolved_is_namespace_candidate =
+                matches!(resolved.source, ImportSource::NamespacePackage)
+                    || resolved.via_namespace_portion;
+            if !resolved_is_namespace_candidate || located.is_none() {
+                // Opt-in third-party bundling: pure-Python distributions are bundled, but any
+                // package shipping native extensions (.so/.pyd) or reading its own installed
+                // distribution metadata at runtime stays external as a whole.
+                let allow_bundle = self.config.bundle_third_party()
+                    && !self.package_must_stay_external(&search_root, module_name);
+                return self.classify_resolved_import(
+                    module_name,
+                    &search_root,
+                    &resolved,
+                    ImportOrigin::ThirdParty,
+                    allow_bundle,
+                );
+            }
+        }
+
+        // No regular package anywhere: the deferred namespace portion wins
+        if let Some((search_root, resolved)) = &located {
+            return self.classify_normal_root_import(module_name, search_root, resolved);
         }
 
         if explicit_first_party {
@@ -2936,6 +2945,36 @@ impl ModuleResolver {
             ImportSource::Unresolved,
             BundleDisposition::External,
         )
+    }
+
+    /// Classify an import resolved through the NORMAL search roots (entry
+    /// directory, configured src roots, `PYTHONPATH`). Under third-party
+    /// bundling, distribution-backed packages supplied through normal roots
+    /// (e.g. PYTHONPATH vendoring with adjacent dist-info) are subject to the
+    /// same external policy as site-packages installs; `known_first_party`
+    /// remains the force-include escape hatch.
+    fn classify_normal_root_import(
+        &self,
+        module_name: &str,
+        search_root: &Path,
+        resolved: &ResolvedModule,
+    ) -> ImportClassification {
+        let mut classification = self.classify_resolved_import(
+            module_name,
+            search_root,
+            resolved,
+            ImportOrigin::FirstParty,
+            true,
+        );
+        if self.config.bundle_third_party()
+            && classification.origin == ImportOrigin::ThirdParty
+            && classification.should_bundle()
+            && !self.config.known_first_party.contains(module_name)
+            && self.package_must_stay_external(search_root, module_name)
+        {
+            classification.bundle = BundleDisposition::External;
+        }
+        classification
     }
 
     /// Return whether the top-level package owning `module_name` under `search_root`
@@ -4311,7 +4350,13 @@ impl ModuleResolver {
             .enumerate()
             .map(|(declarer_index, (search_root, declarer))| {
                 edges.iter().any(|(from, _)| *from == declarer_index)
-                    && self.distribution_stays_external_directly(declarer, search_root)
+                    && (self.distribution_stays_external_directly(declarer, search_root)
+                        // A metadata-queried declarer stays external too
+                        // (queried_distribution_owns_import keeps IT external);
+                        // installing it installs its Requires-Dist targets, so
+                        // inlining a target would split module identity between
+                        // the bundle and the installed copy
+                        || self.distribution_is_metadata_queried(declarer))
             })
             .collect();
         let mut name_to_index: FxIndexMap<String, Vec<usize>> = FxIndexMap::default();
@@ -4389,6 +4434,20 @@ impl ModuleResolver {
         })
     }
 
+    /// Return whether a distribution's metadata is queried at runtime by
+    /// bundled code — by name, or implicitly through a global enumeration of
+    /// installed distributions.
+    fn distribution_is_metadata_queried(&self, distribution: &DistributionInfo) -> bool {
+        if distribution.name.is_empty() {
+            return false;
+        }
+        self.global_distribution_enumeration.get()
+            || self
+                .queried_distributions
+                .borrow()
+                .contains(&Self::normalize_distribution_name(&distribution.name))
+    }
+
     /// Return whether any distribution claiming an import has its metadata queried at
     /// runtime by bundled code. When bundled code enumerates installed distributions
     /// globally, every owned import counts as queried: the enumeration would no
@@ -4398,21 +4457,16 @@ impl ModuleResolver {
         site_packages_dir: &Path,
         import_name: &str,
     ) -> bool {
-        let enumerated = self.global_distribution_enumeration.get();
-        let queried = self.queried_distributions.borrow();
-        if queried.is_empty() && !enumerated {
+        if self.queried_distributions.borrow().is_empty()
+            && !self.global_distribution_enumeration.get()
+        {
             return false;
         }
         self.with_distribution_ownership_index(site_packages_dir, |index| {
             index
                 .owning_distributions(import_name)
                 .iter()
-                .any(|distribution| {
-                    !distribution.name.is_empty()
-                        && (enumerated
-                            || queried
-                                .contains(&Self::normalize_distribution_name(&distribution.name)))
-                })
+                .any(|distribution| self.distribution_is_metadata_queried(distribution))
         })
     }
 

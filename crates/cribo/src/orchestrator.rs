@@ -1224,8 +1224,10 @@ impl BundleOrchestrator {
     /// A PRESERVED relative call (`import_module(".backend", __package__, **{})`)
     /// resolves its absolute candidate here: through the literal package
     /// context when present, otherwise against the containing file's location —
-    /// the verbatim runtime call then finds the bundled target registered with
-    /// the finder.
+    /// discovery only records anchor-less relative targets whose package
+    /// argument is provably `__package__`, so the file-path fallback stands in
+    /// for exactly that runtime value. The verbatim runtime call then finds
+    /// the bundled target registered with the finder.
     fn handle_importlib_static(
         &self,
         import: &DiscoveredImport,

@@ -7,8 +7,8 @@ __module__ — including at decorator time, before any outer stamp could help.
 
 import provider
 
-entry = provider.Entry()
+record = provider.Record()
 worker = provider.make_worker()
 print("observed:", provider.OWNERS)
-print("tagged:", provider.Entry.tagged.__module__, entry.tagged())
+print("tagged:", provider.Record.tagged.__module__, record.tagged())
 print("worker:", worker.__module__, worker())

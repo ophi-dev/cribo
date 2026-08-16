@@ -6,7 +6,7 @@ def register(func):
     return func
 
 
-class Entry:
+class Record:
     if True:
 
         @register

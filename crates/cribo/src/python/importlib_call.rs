@@ -151,6 +151,18 @@ fn expression_is_inert(expr: &Expr) -> bool {
     }
 }
 
+/// Return whether the `package` argument of an `import_module` call is provably
+/// the containing module's own `__package__` — the one runtime anchor a
+/// file-path fallback may stand in for. Any other non-literal expression
+/// (`import_module(".backend", selected_package)`) can name a DIFFERENT
+/// package at runtime, so no static candidate exists for it.
+pub(crate) fn package_argument_is_dunder_package(call: &ExprCall) -> bool {
+    matches!(
+        positional_or_keyword_argument(call, 1, "package"),
+        Some(Expr::Name(name)) if name.id.as_str() == "__package__"
+    )
+}
+
 /// Return whether an `import_module` call's arguments are opaque (`*args`/`**kwargs`
 /// unpacking): neither its target nor its runtime behavior can be determined
 /// statically.
