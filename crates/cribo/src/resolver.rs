@@ -3044,7 +3044,7 @@ impl ModuleResolver {
         // OWNING root's metadata, so every collected metadata root is
         // consulted — but only where a distribution actually claims the
         // import. Root-global predicates (module-map satisfaction,
-        // enumeration completeness) would otherwise mis-trip in roots that
+        // enumeration completeness) would otherwise trip wrongly in roots that
         // know nothing about the distribution.
         let supplied_root = self.canonicalize_path(search_root.to_path_buf());
         self.get_distribution_metadata_search_directories()
