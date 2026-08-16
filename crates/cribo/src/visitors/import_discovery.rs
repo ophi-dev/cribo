@@ -7,7 +7,7 @@ use ruff_python_ast::{
     StmtImportFrom, UnaryOp,
     visitor::source_order::{SourceOrderVisitor, TraversalSignal, walk_expr, walk_stmt},
 };
-use ruff_text_size::TextRange;
+use ruff_text_size::{Ranged, TextRange};
 
 use crate::{
     resolver::ModuleId,
@@ -1063,7 +1063,7 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
                                 module_name: Some(module_name),
                                 names: vec![], // No specific names for direct module import
                                 location: self.current_location(),
-                                range: call.range,
+                                range: call.range(),
                                 level,
                                 import_type: ImportType::ImportlibStatic,
                                 execution_contexts: FxIndexSet::default(),
@@ -1093,7 +1093,7 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
                                 module_name: Some(module_name),
                                 names: vec![],
                                 location: self.current_location(),
-                                range: call.range,
+                                range: call.range(),
                                 level: 0,
                                 import_type: ImportType::ImportlibPreserved,
                                 execution_contexts: FxIndexSet::default(),
@@ -1151,7 +1151,7 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
                                 module_name: Some(module_name),
                                 names: vec![],
                                 location: self.current_location(),
-                                range: call.range,
+                                range: call.range(),
                                 level,
                                 import_type: ImportType::ImportlibPreserved,
                                 execution_contexts: FxIndexSet::default(),
@@ -1183,7 +1183,7 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
                         module_name: Some(module_name),
                         names: vec![],
                         location: self.current_location(),
-                        range: call.range,
+                        range: call.range(),
                         level: 0,
                         import_type: ImportType::ImportlibPreserved,
                         execution_contexts: FxIndexSet::default(),

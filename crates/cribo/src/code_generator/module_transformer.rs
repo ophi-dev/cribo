@@ -15,6 +15,7 @@ use log::debug;
 use ruff_python_ast::{
     ExceptHandler, Expr, ExprCall, ExprContext, ModModule, Stmt, StmtAssign, StmtFunctionDef,
 };
+use ruff_text_size::Ranged;
 
 /// Rewrite Load-context import globals (`__name__`, `__package__`) to attributes
 /// of the module namespace object, everywhere inside function and class bodies:
@@ -1669,7 +1670,7 @@ pub(crate) fn transform_expr_for_module_vars(
 
 /// Return whether a synthetic call synchronizes a local binding to a module attribute.
 fn is_generated_module_attr_sync_call(call: &ExprCall) -> bool {
-    if !call.range.is_empty() || !call.arguments.keywords.is_empty() {
+    if !call.range().is_empty() || !call.arguments.keywords.is_empty() {
         return false;
     }
     let Expr::Attribute(setattr) = call.func.as_ref() else {
