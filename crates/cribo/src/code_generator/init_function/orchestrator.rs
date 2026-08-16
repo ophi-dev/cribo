@@ -147,7 +147,7 @@ impl<'a> InitFunctionBuilder<'a> {
         mut function_stmt: Stmt,
         registers_in_sys_modules: bool,
     ) -> Stmt {
-        use ruff_python_ast::{CmpOp, ExceptHandler, ExceptHandlerExceptHandler, ExprContext};
+        use ruff_python_ast::{ExceptHandler, ExceptHandlerExceptHandler, ExprContext};
 
         use crate::{
             ast_builder::{CRIBO_SYS_ALIAS, expressions, statements},
@@ -230,37 +230,25 @@ impl<'a> InitFunctionBuilder<'a> {
             vec![],
         ))));
         // self.__initializing__ = False
-        // if _sys.modules.get(self.__name__) is self:
-        //     del _sys.modules[self.__name__]
+        // _sys.modules.pop(self.__name__, None)
         // raise
-        let registration_is_current =
-            ruff_python_ast::Expr::Compare(ruff_python_ast::ExprCompare {
-                node_index: ruff_python_ast::AtomicNodeIndex::NONE,
-                left: Box::new(expressions::call(
-                    expressions::attribute(sys_modules(), "get", ExprContext::Load),
-                    vec![self_name_attribute()],
-                    vec![],
-                )),
-                ops: Box::new([CmpOp::Is]),
-                comparators: Box::new([expressions::name(SELF_PARAM, ExprContext::Load)]),
-                range: ruff_text_size::TextRange::default(),
-            });
-        let unregister = Stmt::Delete(ruff_python_ast::StmtDelete {
-            node_index: ruff_python_ast::AtomicNodeIndex::NONE,
-            targets: vec![expressions::subscript(
-                sys_modules(),
-                self_name_attribute(),
-                ExprContext::Del,
-            )],
-            range: ruff_text_size::TextRange::default(),
-        });
+        //
+        // CPython removes the NAME from sys.modules when module execution
+        // fails, regardless of whether the entry still points to the executing
+        // module — a replacement installed before the failure is removed too,
+        // so a later import retries the body instead of observing it
+        let unregister = statements::expr(expressions::call(
+            expressions::attribute(sys_modules(), "pop", ExprContext::Load),
+            vec![self_name_attribute(), expressions::none_literal()],
+            vec![],
+        ));
         let cleanup = vec![
             statements::assign_attribute(
                 SELF_PARAM,
                 "__initializing__",
                 expressions::bool_literal(false),
             ),
-            statements::if_stmt(registration_is_current, vec![unregister], vec![]),
+            unregister,
             statements::raise(None, None),
         ];
         let handler = ExceptHandler::ExceptHandler(ExceptHandlerExceptHandler {

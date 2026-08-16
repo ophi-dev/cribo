@@ -131,6 +131,7 @@ impl InitializationPhase {
         // resolving real submodule imports, so it must exist (None is valid).
         // self.__spec__ = None
         // _sys.modules[self.__name__] = self
+        // self._cribo_registered = True
         if crate::visitors::utils::accesses_own_sys_modules_entry(&ast.body)
             || bundler
                 .resolver
@@ -160,6 +161,17 @@ impl InitializationPhase {
                     ExprContext::Store,
                 )],
                 ast_builder::expressions::name(SELF_PARAM, ExprContext::Load),
+            ));
+            // The stamp outlives the sys.modules entry: after eviction, the
+            // meta-path loader's create_module distinguishes "was registered
+            // and evicted" (needs a FRESH life, like CPython re-executing the
+            // module) from "statically initialized, never registered" (the
+            // first machinery import must return this SAME namespace so
+            // pickle-style lookups preserve object identity)
+            state.body.push(ast_builder::statements::assign_attribute(
+                SELF_PARAM,
+                "_cribo_registered",
+                ast_builder::expressions::name("True", ExprContext::Load),
             ));
         }
 

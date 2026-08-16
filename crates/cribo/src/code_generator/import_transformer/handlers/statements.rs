@@ -171,13 +171,15 @@ impl StatementsHandler {
         }
 
         t.transform_expr(&mut s.target);
-        // A loop body may execute zero times: alias additions inside it must
-        // not promote past the loop (removals still veto)
+        // A loop body may execute zero times, and the ELSE suite runs on the
+        // zero-iteration path too: transform each from the PRE-loop state, and
+        // drop alias additions past the loop (removals still veto)
         let pre_aliases = t.state.import_aliases.clone();
         t.transform_statements(&mut s.body);
+        let body_aliases = std::mem::replace(&mut t.state.import_aliases, pre_aliases.clone());
         t.transform_statements(&mut s.orelse);
-        let branch = std::mem::replace(&mut t.state.import_aliases, pre_aliases.clone());
-        Self::merge_conditional_aliases(t, &pre_aliases, &[branch], false);
+        let else_aliases = std::mem::replace(&mut t.state.import_aliases, pre_aliases.clone());
+        Self::merge_conditional_aliases(t, &pre_aliases, &[body_aliases, else_aliases], false);
     }
 
     pub(in crate::code_generator::import_transformer) fn handle_while(
@@ -185,13 +187,15 @@ impl StatementsHandler {
         s: &mut StmtWhile,
     ) {
         t.transform_expr(&mut s.test);
-        // A loop body may execute zero times: alias additions inside it must
-        // not promote past the loop (removals still veto)
+        // A loop body may execute zero times, and the ELSE suite runs on the
+        // zero-iteration path too: transform each from the PRE-loop state, and
+        // drop alias additions past the loop (removals still veto)
         let pre_aliases = t.state.import_aliases.clone();
         t.transform_statements(&mut s.body);
+        let body_aliases = std::mem::replace(&mut t.state.import_aliases, pre_aliases.clone());
         t.transform_statements(&mut s.orelse);
-        let branch = std::mem::replace(&mut t.state.import_aliases, pre_aliases.clone());
-        Self::merge_conditional_aliases(t, &pre_aliases, &[branch], false);
+        let else_aliases = std::mem::replace(&mut t.state.import_aliases, pre_aliases.clone());
+        Self::merge_conditional_aliases(t, &pre_aliases, &[body_aliases, else_aliases], false);
     }
 
     pub(in crate::code_generator::import_transformer) fn handle_if(
@@ -291,6 +295,10 @@ impl StatementsHandler {
         t: &mut RecursiveImportTransformer<'_>,
         s: &mut StmtMatch,
     ) {
+        // The SUBJECT evaluates before any pattern capture is bound: transform
+        // it while the pre-match bindings are still in effect
+        t.transform_expr(&mut s.subject);
+
         for case in &s.cases {
             crate::visitors::patterns::visit_binding_names(&case.pattern, &mut |name| {
                 t.state.local_variables.insert(name.to_owned());
@@ -299,7 +307,6 @@ impl StatementsHandler {
             });
         }
 
-        t.transform_expr(&mut s.subject);
         // Cases are mutually exclusive branches; alias additions promote past
         // the match only if every case establishes them, and no wildcard
         // analysis is attempted (additions are conservatively dropped)

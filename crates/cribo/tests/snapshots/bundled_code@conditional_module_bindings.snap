@@ -44,7 +44,7 @@ class _CriboPreservedLoader:
         elif self._entry[1] is not None:
             module = _globals()[self._entry[1]]
         if module is not None:
-            if _getattr(module, '_cribo_machinery_loaded', False):
+            if _getattr(module, '_cribo_machinery_loaded', False) or _getattr(module, '__initialized__', False) and _getattr(module, '_cribo_registered', False):
                 saved = _type(self)._pristine.get(_id(module))
                 fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
@@ -60,7 +60,7 @@ class _CriboPreservedLoader:
         init = self._entry[0]
         pristine = _type(self)._pristine
         key = _id(module)
-        record_snapshot = not _getattr(module, '_cribo_fresh_life', False)
+        record_snapshot = not _getattr(module, '_cribo_fresh_life', False) and not _getattr(module, '__initialized__', False) and (self._namespace is not None or self._entry[1] is not None)
         if init is None:
             if record_snapshot and key not in pristine:
                 pristine[key] = _dict(module.__dict__)
@@ -152,11 +152,14 @@ def _cribo_init___cribo_39eca0_first(_cribo_self, *, _cribo_getattr=getattr, _cr
             def conditional_function():
                 return _cribo_self.CONDITIONAL_VALUE
             first.conditional_function = conditional_function
+            conditional_function.__module__ = 'first'
+            conditional_function.__qualname__ = 'conditional_function'
 
             class ConditionalClass:
                 VALUE = CONDITIONAL_VALUE
             first.ConditionalClass = ConditionalClass
             ConditionalClass.__module__ = 'first'
+            ConditionalClass.__qualname__ = 'ConditionalClass'
         for LOOP_VALUE in ("loop",):
             first.LOOP_VALUE = LOOP_VALUE
             pass
@@ -229,6 +232,8 @@ def _cribo_init___cribo_4717e4_second(_cribo_self, *, _cribo_getattr=getattr, _c
             def conditional_function():
                 return _cribo_self.CONDITIONAL_VALUE
             second.conditional_function = conditional_function
+            conditional_function.__module__ = 'second'
+            conditional_function.__qualname__ = 'conditional_function'
         _cribo_self.__initialized__ = True
         _cribo_self.__initializing__ = False
         return _cribo_self

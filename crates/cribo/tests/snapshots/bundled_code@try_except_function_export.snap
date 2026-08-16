@@ -44,7 +44,7 @@ class _CriboPreservedLoader:
         elif self._entry[1] is not None:
             module = _globals()[self._entry[1]]
         if module is not None:
-            if _getattr(module, '_cribo_machinery_loaded', False):
+            if _getattr(module, '_cribo_machinery_loaded', False) or _getattr(module, '__initialized__', False) and _getattr(module, '_cribo_registered', False):
                 saved = _type(self)._pristine.get(_id(module))
                 fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
@@ -60,7 +60,7 @@ class _CriboPreservedLoader:
         init = self._entry[0]
         pristine = _type(self)._pristine
         key = _id(module)
-        record_snapshot = not _getattr(module, '_cribo_fresh_life', False)
+        record_snapshot = not _getattr(module, '_cribo_fresh_life', False) and not _getattr(module, '__initialized__', False) and (self._namespace is not None or self._entry[1] is not None)
         if init is None:
             if record_snapshot and key not in pristine:
                 pristine[key] = _dict(module.__dict__)
@@ -136,6 +136,8 @@ def _cribo_init___cribo_e6f4c0_test_module(_cribo_self, *, _cribo_getattr=getatt
             def get_function():
                 return "fallback function"
             test_module.get_function = get_function
+            get_function.__module__ = 'test_module'
+            get_function.__qualname__ = 'get_function'
             HAS_MODULE = False
             test_module.HAS_MODULE = HAS_MODULE
         else:
@@ -143,6 +145,8 @@ def _cribo_init___cribo_e6f4c0_test_module(_cribo_self, *, _cribo_getattr=getatt
             def get_function():
                 return "real function with module"
             test_module.get_function = get_function
+            get_function.__module__ = 'test_module'
+            get_function.__qualname__ = 'get_function'
         _cribo_self.get_function = get_function
         _cribo_self.__initialized__ = True
         _cribo_self.__initializing__ = False

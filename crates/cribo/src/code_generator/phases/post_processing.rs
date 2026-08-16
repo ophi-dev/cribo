@@ -401,6 +401,30 @@ impl PostProcessingPhase {
                 }
                 walk_stmt(self, stmt);
             }
+
+            fn visit_expr(&mut self, expr: &'a ruff_python_ast::Expr) {
+                use ruff_python_ast::Expr;
+                // Preserved DYNAMIC imports with a statically known dotted
+                // target (`importlib.import_module("mixed_package._native",
+                // **{})`) resolve through the real machinery too: the parent
+                // must stay reachable through PathFinder for its installed
+                // __path__ to serve the external child
+                if let Expr::Call(call) = expr {
+                    let callee_is_import_module = match &*call.func {
+                        Expr::Attribute(attribute) => attribute.attr.as_str() == "import_module",
+                        Expr::Name(name) => name.id.as_str() == "import_module",
+                        _ => false,
+                    };
+                    if callee_is_import_module
+                        && let Some(module_name) =
+                            crate::python::importlib_call::literal_module_name(call)
+                        && !module_name.starts_with('.')
+                    {
+                        self.record(module_name);
+                    }
+                }
+                ruff_python_ast::visitor::source_order::walk_expr(self, expr);
+            }
         }
 
         let mut collector = Collector {
@@ -455,26 +479,131 @@ impl PostProcessingPhase {
                 _ => {}
             }
         };
-        for stmt in final_body {
-            // Decorated definitions carry their stamps inside a try/except
-            // guard (decorators may return objects rejecting attribute writes),
-            // wrapped in an identity check (only results still carrying the
-            // definition's __name__ are stamped); harvest those blocks too so
-            // their exports register with the finder
-            if let Stmt::Try(try_stmt) = stmt {
-                for guarded in &try_stmt.body {
-                    if let Stmt::If(if_stmt) = guarded {
-                        for conditional in &if_stmt.body {
-                            record_stamp(&mut binding_modules, &mut binding_exports, conditional);
+        // Stamps live wherever the inlined statements were emitted — at the
+        // top level, inside stamp-guard try/except blocks (decorated
+        // definitions), and inside ordinary compound suites the module code
+        // carried (`if True: class Entry: ...` emits its stamps in the same
+        // suite): walk them all recursively
+        fn harvest_suite(
+            suite: &[Stmt],
+            binding_modules: &mut FxIndexMap<String, String>,
+            binding_exports: &mut FxIndexMap<String, String>,
+            record_stamp: &impl Fn(
+                &mut FxIndexMap<String, String>,
+                &mut FxIndexMap<String, String>,
+                &Stmt,
+            ),
+        ) {
+            for stmt in suite {
+                match stmt {
+                    Stmt::Try(try_stmt) => {
+                        // Decorated definitions carry their stamps inside a
+                        // try/except guard (decorators may return objects
+                        // rejecting attribute writes), wrapped in an identity
+                        // check
+                        for guarded in &try_stmt.body {
+                            if let Stmt::If(if_stmt) = guarded {
+                                for conditional in &if_stmt.body {
+                                    record_stamp(binding_modules, binding_exports, conditional);
+                                }
+                                continue;
+                            }
+                            record_stamp(binding_modules, binding_exports, guarded);
                         }
-                        continue;
+                        for handler in &try_stmt.handlers {
+                            let ruff_python_ast::ExceptHandler::ExceptHandler(handler) = handler;
+                            harvest_suite(
+                                &handler.body,
+                                binding_modules,
+                                binding_exports,
+                                record_stamp,
+                            );
+                        }
+                        harvest_suite(
+                            &try_stmt.orelse,
+                            binding_modules,
+                            binding_exports,
+                            record_stamp,
+                        );
+                        harvest_suite(
+                            &try_stmt.finalbody,
+                            binding_modules,
+                            binding_exports,
+                            record_stamp,
+                        );
                     }
-                    record_stamp(&mut binding_modules, &mut binding_exports, guarded);
+                    Stmt::If(if_stmt) => {
+                        harvest_suite(
+                            &if_stmt.body,
+                            binding_modules,
+                            binding_exports,
+                            record_stamp,
+                        );
+                        for clause in &if_stmt.elif_else_clauses {
+                            harvest_suite(
+                                &clause.body,
+                                binding_modules,
+                                binding_exports,
+                                record_stamp,
+                            );
+                        }
+                    }
+                    Stmt::For(for_stmt) => {
+                        harvest_suite(
+                            &for_stmt.body,
+                            binding_modules,
+                            binding_exports,
+                            record_stamp,
+                        );
+                        harvest_suite(
+                            &for_stmt.orelse,
+                            binding_modules,
+                            binding_exports,
+                            record_stamp,
+                        );
+                    }
+                    Stmt::While(while_stmt) => {
+                        harvest_suite(
+                            &while_stmt.body,
+                            binding_modules,
+                            binding_exports,
+                            record_stamp,
+                        );
+                        harvest_suite(
+                            &while_stmt.orelse,
+                            binding_modules,
+                            binding_exports,
+                            record_stamp,
+                        );
+                    }
+                    Stmt::With(with_stmt) => {
+                        harvest_suite(
+                            &with_stmt.body,
+                            binding_modules,
+                            binding_exports,
+                            record_stamp,
+                        );
+                    }
+                    Stmt::Match(match_stmt) => {
+                        for case in &match_stmt.cases {
+                            harvest_suite(
+                                &case.body,
+                                binding_modules,
+                                binding_exports,
+                                record_stamp,
+                            );
+                        }
+                    }
+                    _ => record_stamp(binding_modules, binding_exports, stmt),
                 }
-                continue;
             }
-            record_stamp(&mut binding_modules, &mut binding_exports, stmt);
         }
+        harvest_suite(
+            final_body,
+            &mut binding_modules,
+            &mut binding_exports,
+            &record_stamp,
+        );
 
         let mut exports_by_module: FxIndexMap<String, Vec<(String, String)>> =
             FxIndexMap::default();

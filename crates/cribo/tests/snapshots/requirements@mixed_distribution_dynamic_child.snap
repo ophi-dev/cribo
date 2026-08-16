@@ -1,0 +1,7 @@
+---
+source: crates/cribo/tests/test_bundling_snapshots.rs
+input_file: crates/cribo/tests/fixtures/mixed_distribution_dynamic_child/main.py
+---
+packages:
+  - mixed-package
+count: 1

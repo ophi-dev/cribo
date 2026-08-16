@@ -44,7 +44,7 @@ class _CriboPreservedLoader:
         elif self._entry[1] is not None:
             module = _globals()[self._entry[1]]
         if module is not None:
-            if _getattr(module, '_cribo_machinery_loaded', False):
+            if _getattr(module, '_cribo_machinery_loaded', False) or _getattr(module, '__initialized__', False) and _getattr(module, '_cribo_registered', False):
                 saved = _type(self)._pristine.get(_id(module))
                 fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
@@ -60,7 +60,7 @@ class _CriboPreservedLoader:
         init = self._entry[0]
         pristine = _type(self)._pristine
         key = _id(module)
-        record_snapshot = not _getattr(module, '_cribo_fresh_life', False)
+        record_snapshot = not _getattr(module, '_cribo_fresh_life', False) and not _getattr(module, '__initialized__', False) and (self._namespace is not None or self._entry[1] is not None)
         if init is None:
             if record_snapshot and key not in pristine:
                 pristine[key] = _dict(module.__dict__)
@@ -128,6 +128,7 @@ def _cribo_init___cribo_7edb2d_pkg_sub(_cribo_self, *, _cribo_getattr=getattr, _
     try:
         _cribo_self.__spec__ = None
         _sys.modules[_cribo_self.__name__] = _cribo_self
+        _cribo_self._cribo_registered = True
         VALUE = "sub value"
         _cribo_self.VALUE = VALUE
         _cribo_self.__initialized__ = True
@@ -135,8 +136,7 @@ def _cribo_init___cribo_7edb2d_pkg_sub(_cribo_self, *, _cribo_getattr=getattr, _
         return _sys.modules.get(_cribo_self.__name__, _cribo_self)
     except _cribo_base_exception:
         _cribo_self.__initializing__ = False
-        if _sys.modules.get(_cribo_self.__name__) is _cribo_self:
-            del _sys.modules[_cribo_self.__name__]
+        _sys.modules.pop(_cribo_self.__name__, None)
         raise
 pkg_sub.__init__ = _cribo_init___cribo_7edb2d_pkg_sub
 pkg = _cribo.types.SimpleNamespace(__name__='pkg', __initializing__=False, __initialized__=False, __path__=[])
@@ -152,6 +152,7 @@ def _cribo_init___cribo_3779d3_pkg(_cribo_self, *, _cribo_getattr=getattr, _crib
     try:
         _cribo_self.__spec__ = None
         _sys.modules[_cribo_self.__name__] = _cribo_self
+        _cribo_self._cribo_registered = True
         BANNER = "pkg init"
         _cribo_self.BANNER = BANNER
         _cribo_self.__initialized__ = True
@@ -159,8 +160,7 @@ def _cribo_init___cribo_3779d3_pkg(_cribo_self, *, _cribo_getattr=getattr, _crib
         return _sys.modules.get(_cribo_self.__name__, _cribo_self)
     except _cribo_base_exception:
         _cribo_self.__initializing__ = False
-        if _sys.modules.get(_cribo_self.__name__) is _cribo_self:
-            del _sys.modules[_cribo_self.__name__]
+        _sys.modules.pop(_cribo_self.__name__, None)
         raise
 pkg.__init__ = _cribo_init___cribo_3779d3_pkg
 """Ancestor packages of preserved dotted imports must reinitialize like modules.\n\nThe machinery imports `pkg` before `pkg.sub`, making the parent dynamically\nimportable too: importlib.reload must re-execute it over the RETAINED\ndictionary, and a re-import after sys.modules eviction must produce a fresh\nmodule object without the previous life's mutations.\n"""

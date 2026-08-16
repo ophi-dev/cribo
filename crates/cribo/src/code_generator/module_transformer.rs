@@ -466,7 +466,7 @@ use crate::{
 /// reject attribute assignment (`@deco` returning an int), so their stamps are
 /// wrapped in `try/except (AttributeError, TypeError)` — identity is preserved
 /// when possible without breaking valid replacement decorators.
-fn emit_identity_stamps(
+pub(crate) fn emit_identity_stamps(
     body: &mut Vec<Stmt>,
     symbol_name: &str,
     module_name: &str,

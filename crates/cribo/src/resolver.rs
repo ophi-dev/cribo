@@ -4381,6 +4381,11 @@ impl ModuleResolver {
         roots.into_iter().any(|root| {
             self.is_explicit_third_party(root)
                 || self.import_root_source_blocked(site_packages_dir, root)
+                // A module-map constraint the installed copy does not satisfy
+                // keeps the distribution external too: its emitted requirement
+                // installs a DIFFERENT version, whose own dependencies would
+                // otherwise be inlined alongside — splitting module identity
+                || self.module_map_constraint_blocks_bundling(site_packages_dir, root)
         })
     }
 

@@ -815,6 +815,10 @@ impl<'a> GraphBuilder<'a> {
             "process_statement: Processing statement type: {:?}",
             std::mem::discriminant(stmt)
         );
+        // A static import_module call is a real import in ANY expression
+        // position of ANY statement (a match subject, a while test, a raise
+        // operand); record them all so tree-shaking keeps the targets' symbols
+        self.record_static_importlib_calls_in_stmt(stmt);
         // Inside functions, process imports, functions, and classes normally
         // Skip other statements as they're tracked via eventual_read_vars
         if self
@@ -872,6 +876,10 @@ impl<'a> GraphBuilder<'a> {
             }
             Stmt::Expr(expr_stmt) => {
                 self.process_expr_stmt(&expr_stmt.value);
+                Ok(())
+            }
+            Stmt::AugAssign(aug_assign) => {
+                self.process_aug_assign(aug_assign);
                 Ok(())
             }
             Stmt::Assert(assert_stmt) => {
@@ -1572,7 +1580,6 @@ impl<'a> GraphBuilder<'a> {
 
     /// Process an expression statement
     fn process_expr_stmt(&mut self, expr: &Expr) {
-        self.record_static_importlib_calls_in_expr(expr);
         let mut read_vars = FxIndexSet::default();
         let mut attribute_accesses = FxIndexMap::default();
         self.collect_vars_in_expr_with_attrs(expr, &mut read_vars, &mut attribute_accesses);
@@ -1612,6 +1619,46 @@ impl<'a> GraphBuilder<'a> {
         };
 
         self.graph.add_item(item_data);
+    }
+
+    /// Process an augmented assignment at module level.
+    ///
+    /// The mutation reads its target AND its value: without an item,
+    /// tree-shaking cannot see either — a module mutating another module's
+    /// global (`state.ATTEMPTS[0] += 1`) must keep that global alive.
+    /// `__all__ += [...]` stays a metadata operation handled by export
+    /// analysis, exactly like the side-effect detector treats it.
+    fn process_aug_assign(&mut self, aug_assign: &ast::StmtAugAssign) {
+        if matches!(&*aug_assign.target, Expr::Name(name) if name.id.as_str() == "__all__") {
+            return;
+        }
+
+        let mut read_vars = FxIndexSet::default();
+        let mut attribute_accesses = FxIndexMap::default();
+        self.collect_vars_in_expr_with_attrs(
+            &aug_assign.value,
+            &mut read_vars,
+            &mut attribute_accesses,
+        );
+        // A name target rebinds an existing binding (read + write) but carries
+        // Store context, which the collector skips; attribute and subscript
+        // targets read their base object to mutate it
+        if let Expr::Name(name) = &*aug_assign.target {
+            read_vars.insert(name.id.to_string());
+        } else {
+            self.collect_vars_in_expr_with_attrs(
+                &aug_assign.target,
+                &mut read_vars,
+                &mut attribute_accesses,
+            );
+        }
+
+        log::debug!(
+            "Processing augmented assignment, read_vars: {read_vars:?}, attribute_accesses: \
+             {attribute_accesses:?}"
+        );
+
+        self.add_control_flow_item(ItemType::Other, read_vars, attribute_accesses, true);
     }
 
     /// Process assert statement
@@ -1658,9 +1705,25 @@ impl<'a> GraphBuilder<'a> {
 
     /// Process if statement
     fn process_if_stmt(&mut self, if_stmt: &ast::StmtIf) -> Result<()> {
-        // Process condition
+        // Every clause condition executes at module import: collect reads AND
+        // attribute accesses (a test like `state.ATTEMPTS[0] == 1` must keep
+        // the accessed global alive) from the `if` test and all `elif` tests
         let mut read_vars = FxIndexSet::default();
-        self.collect_vars_in_expr(&if_stmt.test, &mut read_vars);
+        let mut attribute_accesses = FxIndexMap::default();
+        self.collect_vars_in_expr_with_attrs(
+            &if_stmt.test,
+            &mut read_vars,
+            &mut attribute_accesses,
+        );
+        for clause in &if_stmt.elif_else_clauses {
+            if let Some(condition) = &clause.test {
+                self.collect_vars_in_expr_with_attrs(
+                    condition,
+                    &mut read_vars,
+                    &mut attribute_accesses,
+                );
+            }
+        }
 
         let item_data = ItemData {
             item_type: ItemType::If {
@@ -1676,7 +1739,7 @@ impl<'a> GraphBuilder<'a> {
             reexported_names: FxIndexSet::default(),
             defined_symbols: FxIndexSet::default(),
             symbol_dependencies: FxIndexMap::default(),
-            attribute_accesses: FxIndexMap::default(),
+            attribute_accesses,
             containing_scope: self.scope_path.clone(),
         };
 
@@ -1689,11 +1752,6 @@ impl<'a> GraphBuilder<'a> {
 
         // Process elif/else branches
         for clause in &if_stmt.elif_else_clauses {
-            if let Some(condition) = &clause.test {
-                let mut read_vars = FxIndexSet::default();
-                self.collect_vars_in_expr(condition, &mut read_vars);
-                // Could add as separate If item
-            }
             for stmt in &clause.body {
                 self.process_statement(stmt)?;
             }
@@ -1704,12 +1762,13 @@ impl<'a> GraphBuilder<'a> {
 
     /// Process for loop
     fn process_for_stmt(&mut self, for_stmt: &ast::StmtFor) -> Result<()> {
-        // The iterable may carry static import calls in a non-assignment
-        // position (`for m in [importlib.import_module("helper")]:`); record
-        // them so tree-shaking keeps the target's symbols
-        self.record_static_importlib_calls_in_expr(&for_stmt.iter);
         let mut read_vars = FxIndexSet::default();
-        self.collect_vars_in_expr(&for_stmt.iter, &mut read_vars);
+        let mut attribute_accesses = FxIndexMap::default();
+        self.collect_vars_in_expr_with_attrs(
+            &for_stmt.iter,
+            &mut read_vars,
+            &mut attribute_accesses,
+        );
 
         // Extract loop variables
         let mut write_vars = FxIndexSet::default();
@@ -1729,7 +1788,7 @@ impl<'a> GraphBuilder<'a> {
             reexported_names: FxIndexSet::default(),
             defined_symbols: FxIndexSet::default(),
             symbol_dependencies: FxIndexMap::default(),
-            attribute_accesses: FxIndexMap::default(),
+            attribute_accesses,
             containing_scope: self.scope_path.clone(),
         };
 
@@ -1751,9 +1810,14 @@ impl<'a> GraphBuilder<'a> {
     /// Process while loop
     fn process_while_stmt(&mut self, while_stmt: &ast::StmtWhile) -> Result<()> {
         let mut read_vars = FxIndexSet::default();
-        self.collect_vars_in_expr(&while_stmt.test, &mut read_vars);
+        let mut attribute_accesses = FxIndexMap::default();
+        self.collect_vars_in_expr_with_attrs(
+            &while_stmt.test,
+            &mut read_vars,
+            &mut attribute_accesses,
+        );
 
-        self.add_control_flow_item(ItemType::Other, read_vars, FxIndexMap::default(), true);
+        self.add_control_flow_item(ItemType::Other, read_vars, attribute_accesses, true);
 
         // Process body
         for stmt in &while_stmt.body {
@@ -1771,12 +1835,17 @@ impl<'a> GraphBuilder<'a> {
     /// Process with statement
     fn process_with_stmt(&mut self, with_stmt: &ast::StmtWith) -> Result<()> {
         let mut read_vars = FxIndexSet::default();
+        let mut attribute_accesses = FxIndexMap::default();
 
         for item in &with_stmt.items {
-            self.collect_vars_in_expr(&item.context_expr, &mut read_vars);
+            self.collect_vars_in_expr_with_attrs(
+                &item.context_expr,
+                &mut read_vars,
+                &mut attribute_accesses,
+            );
         }
 
-        self.add_control_flow_item(ItemType::Other, read_vars, FxIndexMap::default(), true);
+        self.add_control_flow_item(ItemType::Other, read_vars, attribute_accesses, true);
 
         // Process body
         for stmt in &with_stmt.body {
@@ -2074,22 +2143,30 @@ impl<'a> GraphBuilder<'a> {
         }
     }
 
-    /// Record every static `importlib.import_module()` call found in an
-    /// expression tree as an Import item (no alias binding).
+    /// Record every static `importlib.import_module()` call in the
+    /// statement's IMMEDIATE expressions as an Import item (no alias binding).
     ///
-    /// Assignments record their calls in `process_assign`, but a static call is
-    /// a real import in ANY position (`for m in [import_module("helper")]:`);
-    /// without an Import item tree-shaking would drop the target's symbols even
-    /// though the rewritten access needs them. Recording is conservative: an
-    /// extra edge only keeps a module alive.
-    fn record_static_importlib_calls_in_expr(&mut self, expr: &Expr) {
-        use ruff_python_ast::visitor::source_order::{SourceOrderVisitor, walk_expr};
+    /// Assignments whose VALUE is a direct static call record it with a
+    /// binding in `process_assign`, but a static call is a real import in ANY
+    /// expression position — a match subject, an `if`/`while` test, a `with`
+    /// item, a nested call argument; without an Import item tree-shaking would
+    /// drop the target's symbols even though the rewritten access needs them.
+    /// Recording is conservative: an extra edge only keeps a module alive.
+    ///
+    /// Nested statements are NOT visited: `process_statement` recurses into
+    /// them and records their expressions on its own.
+    fn record_static_importlib_calls_in_stmt(&mut self, stmt: &Stmt) {
+        use ruff_python_ast::visitor::source_order::{SourceOrderVisitor, walk_expr, walk_stmt};
 
         struct CallCollector<'v> {
             builder: &'v GraphBuilder<'v>,
             found: Vec<String>,
         }
         impl<'a> SourceOrderVisitor<'a> for CallCollector<'_> {
+            fn visit_body(&mut self, _body: &'a [Stmt]) {
+                // Nested suites are processed by process_statement recursion
+            }
+
             fn visit_expr(&mut self, expr: &'a Expr) {
                 if let Some(module_name) = self.builder.is_static_importlib_call(expr) {
                     self.found.push(module_name);
@@ -2101,7 +2178,21 @@ impl<'a> GraphBuilder<'a> {
             builder: self,
             found: Vec::new(),
         };
-        collector.visit_expr(expr);
+        if let Stmt::Assign(assign) = stmt
+            && self.is_static_importlib_call(&assign.value).is_some()
+        {
+            // A direct-call VALUE is recorded with its binding in
+            // `process_assign`; an anonymous edge on top of it would retain
+            // the whole namespace and defeat attribute-level tracking. Its
+            // arguments are literals with no calls inside, so only the
+            // targets can carry further static calls (`d[import_module(...)]
+            // = import_module(...)`)
+            for target in &assign.targets {
+                collector.visit_expr(target);
+            }
+        } else {
+            walk_stmt(&mut collector, stmt);
+        }
         let found = collector.found;
         for module_name in found {
             log::debug!(

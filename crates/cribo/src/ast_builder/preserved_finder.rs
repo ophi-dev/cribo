@@ -75,14 +75,30 @@ class _CriboPreservedLoader:
         elif self._entry[1] is not None:
             module = _globals()[self._entry[1]]
         if module is not None:
-            if _getattr(module, '_cribo_machinery_loaded', False):
-                # Eviction re-import: CPython executes a FRESH module object,
-                # and references to the EVICTED module keep observing its old
-                # namespace; rebuild from the pre-initialization snapshot so
-                # the two lives are distinct objects. The fresh life is marked
-                # so exec_module does not record ANOTHER snapshot for it: only
-                # the long-lived registered object needs one, and per-life
-                # entries would accumulate (and their ids could be reused)
+            if (
+                _getattr(module, '_cribo_machinery_loaded', False)
+                or (
+                    _getattr(module, '__initialized__', False)
+                    and _getattr(module, '_cribo_registered', False)
+                )
+            ):
+                # A PRIOR LIFE went through sys.modules — either a machinery
+                # load (marker) or a rewritten static import whose registering
+                # init put the module there (initialized + registration stamp).
+                # Reaching find_spec means the entry is GONE: after eviction,
+                # CPython executes a FRESH module, and references to the
+                # evicted module keep observing its old namespace; rebuild from
+                # the pre-initialization snapshot (or from scratch, re-running
+                # the init body) so the two lives are distinct objects. A
+                # statically initialized module that never touched sys.modules
+                # takes the plain return below instead: its first machinery
+                # import must hand back the SAME namespace, preserving the
+                # identity of the objects it already handed out (pickle
+                # resolves classes through exactly this import). The fresh
+                # life is marked so exec_module does not record ANOTHER
+                # snapshot for it: only the long-lived registered object needs
+                # one, and per-life entries would accumulate (and their ids
+                # could be reused)
                 saved = _type(self)._pristine.get(_id(module))
                 fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(
@@ -116,10 +132,20 @@ class _CriboPreservedLoader:
         # reach the shared snapshot store through the instance's own type
         pristine = _type(self)._pristine
         key = _id(module)
-        # Fresh eviction lives are transient: recording snapshots for them
-        # would grow the store per re-import (and object ids can be reused);
-        # only the long-lived registered object needs one
-        record_snapshot = not _getattr(module, '_cribo_fresh_life', False)
+        # Fresh eviction lives are transient, namespace-less inlined
+        # registrations build a NEW module on every import that create_module
+        # can never consult again, and an ALREADY-INITIALIZED namespace (a
+        # static import ran before the machinery ever saw it) carries a
+        # post-init dictionary that is not pristine — a fresh life must then
+        # re-run the body from scratch instead of inheriting stale globals.
+        # Recording any of these would poison the store or grow it per
+        # re-import (and object ids can be reused); only the long-lived
+        # registered object still holding its pre-init dictionary needs one
+        record_snapshot = (
+            not _getattr(module, '_cribo_fresh_life', False)
+            and not _getattr(module, '__initialized__', False)
+            and (self._namespace is not None or self._entry[1] is not None)
+        )
         if init is None:
             # Init-less registrations (inlined ancestors) have no initializer
             # to re-execute — their code ran at bundle load — but an eviction

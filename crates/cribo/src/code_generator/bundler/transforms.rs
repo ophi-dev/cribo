@@ -1211,6 +1211,19 @@ impl Bundler<'_> {
                             module_scope_symbols,
                             [function.name.to_string()],
                         ));
+                        // A serializable identity, exactly like top-level init
+                        // definitions: pickle resolves through
+                        // __import__(func.__module__) + getattr by
+                        // __qualname__, and a definition executed inside the
+                        // init function otherwise carries a '<locals>'
+                        // qualified name pickle refuses
+                        crate::code_generator::module_transformer::emit_identity_stamps(
+                            &mut result,
+                            function.name.as_str(),
+                            module_name,
+                            function.name.as_str(),
+                            !function.decorator_list.is_empty(),
+                        );
                     }
                 }
                 Stmt::ClassDef(class) => {
@@ -1221,11 +1234,16 @@ impl Bundler<'_> {
                             module_scope_symbols,
                             [class.name.to_string()],
                         ));
-                        result.push(statements::assign_attribute(
+                        // See the FunctionDef arm: __module__ AND __qualname__
+                        // restore the pickle identity of a class created in
+                        // the init function's local scope
+                        crate::code_generator::module_transformer::emit_identity_stamps(
+                            &mut result,
                             class.name.as_str(),
-                            "__module__",
-                            expressions::string_literal(module_name),
-                        ));
+                            module_name,
+                            class.name.as_str(),
+                            !class.decorator_list.is_empty(),
+                        );
                     }
                 }
                 Stmt::For(for_stmt) => {

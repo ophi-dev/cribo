@@ -44,7 +44,7 @@ class _CriboPreservedLoader:
         elif self._entry[1] is not None:
             module = _globals()[self._entry[1]]
         if module is not None:
-            if _getattr(module, '_cribo_machinery_loaded', False):
+            if _getattr(module, '_cribo_machinery_loaded', False) or _getattr(module, '__initialized__', False) and _getattr(module, '_cribo_registered', False):
                 saved = _type(self)._pristine.get(_id(module))
                 fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
@@ -60,7 +60,7 @@ class _CriboPreservedLoader:
         init = self._entry[0]
         pristine = _type(self)._pristine
         key = _id(module)
-        record_snapshot = not _getattr(module, '_cribo_fresh_life', False)
+        record_snapshot = not _getattr(module, '_cribo_fresh_life', False) and not _getattr(module, '__initialized__', False) and (self._namespace is not None or self._entry[1] is not None)
         if init is None:
             if record_snapshot and key not in pristine:
                 pristine[key] = _dict(module.__dict__)
@@ -128,6 +128,7 @@ def _cribo_init___cribo_da5146_alias_pkg(_cribo_self, *, _cribo_getattr=getattr,
     try:
         _cribo_self.__spec__ = None
         _sys.modules[_cribo_self.__name__] = _cribo_self
+        _cribo_self._cribo_registered = True
         """Package capturing its own module object through aliased sys.modules access."""
         loaded = _cribo.sys.modules
         _cribo_self.loaded = loaded
@@ -141,8 +142,7 @@ def _cribo_init___cribo_da5146_alias_pkg(_cribo_self, *, _cribo_getattr=getattr,
         return _sys.modules.get(_cribo_self.__name__, _cribo_self)
     except _cribo_base_exception:
         _cribo_self.__initializing__ = False
-        if _sys.modules.get(_cribo_self.__name__) is _cribo_self:
-            del _sys.modules[_cribo_self.__name__]
+        _sys.modules.pop(_cribo_self.__name__, None)
         raise
 alias_pkg.__init__ = _cribo_init___cribo_da5146_alias_pkg
 alias_pkg_system = _cribo.types.SimpleNamespace(__name__='alias_pkg.system', __initializing__=False, __initialized__=False)
@@ -158,6 +158,7 @@ def _cribo_init___cribo_447ffd_alias_pkg_system(_cribo_self, *, _cribo_getattr=g
     try:
         _cribo_self.__spec__ = None
         _sys.modules[_cribo_self.__name__] = _cribo_self
+        _cribo_self._cribo_registered = True
         system = _cribo.sys
         _cribo_self.system = system
         _cribo_self.system = system
@@ -168,8 +169,7 @@ def _cribo_init___cribo_447ffd_alias_pkg_system(_cribo_self, *, _cribo_getattr=g
         return _sys.modules.get(_cribo_self.__name__, _cribo_self)
     except _cribo_base_exception:
         _cribo_self.__initializing__ = False
-        if _sys.modules.get(_cribo_self.__name__) is _cribo_self:
-            del _sys.modules[_cribo_self.__name__]
+        _sys.modules.pop(_cribo_self.__name__, None)
         raise
 alias_pkg_system.__init__ = _cribo_init___cribo_447ffd_alias_pkg_system
 alias_pkg.system = alias_pkg_system
