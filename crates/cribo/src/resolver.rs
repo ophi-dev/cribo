@@ -2295,6 +2295,14 @@ impl ModuleResolver {
                     .insert(module_name.to_owned(), bundle_path.clone());
                 return Ok(bundle_path);
             }
+            if self.directory_has_regular_root_package(search_dir, &descriptor) {
+                // Python commits to this REGULAR parent even though it lacks
+                // the requested descendant: no portion elsewhere can win
+                self.module_cache
+                    .borrow_mut()
+                    .insert(module_name.to_owned(), None);
+                return Ok(None);
+            }
         }
 
         // Opt-in third-party bundling: fall back to virtualenv site-packages for modules
@@ -2751,8 +2759,38 @@ impl ModuleResolver {
                 }
                 return Some((directory.clone(), resolved));
             }
+            if self.directory_has_regular_root_package(directory, &descriptor) {
+                // Python commits to this REGULAR parent even though it lacks
+                // the requested descendant: the dotted import then fails
+                // instead of falling back to a namespace portion elsewhere
+                return None;
+            }
         }
         namespace_candidate
+    }
+
+    /// Return whether a directory provides a REGULAR package for the
+    /// top-level root of a DOTTED descriptor. Python commits to the first
+    /// regular package on the path: portions of the same root found in other
+    /// directories can no longer contribute the descendant, even when this
+    /// regular parent lacks it.
+    fn directory_has_regular_root_package(
+        &self,
+        directory: &Path,
+        descriptor: &ImportModuleDescriptor,
+    ) -> bool {
+        if descriptor.name_parts.len() < 2 {
+            return false;
+        }
+        let Some(root) = descriptor.name_parts.first() else {
+            return false;
+        };
+        let root_descriptor = ImportModuleDescriptor::from_module_name(root);
+        self.resolve_in_directory(directory, &root_descriptor)
+            .is_some_and(|resolved| {
+                !matches!(resolved.source, ImportSource::NamespacePackage)
+                    && !resolved.via_namespace_portion
+            })
     }
 
     fn classify_resolved_import(
@@ -2919,9 +2957,19 @@ impl ModuleResolver {
             }
         }
 
-        // No regular package anywhere: the deferred namespace portion wins
+        // No regular package anywhere: the deferred namespace portion wins —
+        // unless a regular parent in site-packages shadows the dotted
+        // descendant (Python commits to the regular parent's __path__ and the
+        // import fails at runtime; the portion must not be bundled in its
+        // place)
         if let Some((search_root, resolved)) = &located {
-            return self.classify_normal_root_import(module_name, search_root, resolved);
+            let descriptor = ImportModuleDescriptor::from_module_name(module_name);
+            let shadowed = virtualenv_dirs
+                .iter()
+                .any(|dir| self.directory_has_regular_root_package(dir, &descriptor));
+            if !shadowed {
+                return self.classify_normal_root_import(module_name, search_root, resolved);
+            }
         }
 
         if explicit_first_party {
@@ -2986,6 +3034,39 @@ impl ModuleResolver {
     /// distribution metadata at runtime (`importlib.metadata`, `pkg_resources`), which is
     /// unavailable once the source is inlined into a bundle.
     fn package_must_stay_external(&self, search_root: &Path, module_name: &str) -> bool {
+        if self.package_must_stay_external_in_root(search_root, module_name) {
+            return true;
+        }
+        // A split installation may place the module's Python source in
+        // `purelib` while the distribution's dist-info (RECORD naming native
+        // siblings, Requires-Dist edges, entry points) lives in the
+        // interpreter's distinct `platlib`: the policy facts live in the
+        // OWNING root's metadata, so every collected metadata root is
+        // consulted — but only where a distribution actually claims the
+        // import. Root-global predicates (module-map satisfaction,
+        // enumeration completeness) would otherwise mis-trip in roots that
+        // know nothing about the distribution.
+        let supplied_root = self.canonicalize_path(search_root.to_path_buf());
+        self.get_distribution_metadata_search_directories()
+            .into_iter()
+            .map(|root| self.canonicalize_path(root))
+            .filter(|root| *root != supplied_root)
+            .any(|root| {
+                self.root_has_distribution_owning_import(&root, module_name)
+                    && self.package_must_stay_external_in_root(&root, module_name)
+            })
+    }
+
+    /// Return whether any distribution indexed under this metadata root claims
+    /// the import (declared prefixes or RECORD-listed modules).
+    fn root_has_distribution_owning_import(&self, root: &Path, module_name: &str) -> bool {
+        self.with_distribution_ownership_index(root, |index| {
+            !index.owning_distributions(module_name).is_empty()
+        })
+    }
+
+    /// Apply the third-party externalization policy against ONE metadata root.
+    fn package_must_stay_external_in_root(&self, search_root: &Path, module_name: &str) -> bool {
         // When the root's metadata directory cannot be fully enumerated, the import
         // may be owned by a distribution whose policy (native artifacts, entry points,
         // Requires-Python, Requires-Dist) is unknown; keep the package external so

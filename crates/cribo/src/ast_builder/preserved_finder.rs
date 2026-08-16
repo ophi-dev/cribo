@@ -77,14 +77,17 @@ class _CriboPreservedLoader:
         if module is not None:
             if (
                 _getattr(module, '_cribo_machinery_loaded', False)
+                or _getattr(module, '_cribo_failed_life', False)
                 or (
                     _getattr(module, '__initialized__', False)
                     and _getattr(module, '_cribo_registered', False)
                 )
             ):
-                # A PRIOR LIFE went through sys.modules — either a machinery
-                # load (marker) or a rewritten static import whose registering
-                # init put the module there (initialized + registration stamp).
+                # A PRIOR LIFE went through sys.modules — a machinery load
+                # (marker), a machinery load that FAILED (Python discards the
+                # failed module and builds a distinct object for the retry),
+                # or a rewritten static import whose registering init put the
+                # module there (initialized + registration stamp).
                 # Reaching find_spec means the entry is GONE: after eviction,
                 # CPython executes a FRESH module, and references to the
                 # evicted module keep observing its old namespace; rebuild from
@@ -179,10 +182,17 @@ class _CriboPreservedLoader:
             else:
                 # Python discards a failed FIRST import entirely; a retried
                 # import must observe a fresh namespace, not the partial
-                # mutations
+                # mutations. Content is restored here for references the
+                # failing body may have leaked, and the FAILED-LIFE mark makes
+                # create_module allocate a DISTINCT module object for the
+                # retry — CPython removes the failed module and builds a new
+                # one, so a leaked reference (sys.modules[__name__] published
+                # to another module before raising) must not observe the
+                # retried life
                 module.__dict__.clear()
                 module.__dict__.update(state)
                 module.__initializing__ = False
+                module._cribo_failed_life = True
             raise
 
 
@@ -190,22 +200,51 @@ class _CriboPreservedFinder:
     def __init__(self):
         self._targets = {}
         self._namespaces = {}
+        # Registrations from BOTH finders (the local-precedence one and the
+        # appended one), shared like _namespaces: a dotted child in one finder
+        # resolves its parent registered with the other
+        self._registry = {}
         # Captured at definition time, in the bundle prelude: user code may
         # legally rebind or delete the module-level class name later
         self._loader = _CriboPreservedLoader
 
     def register(self, name, init, namespace, is_package, exports=None):
-        self._targets[name] = (init, namespace, is_package, exports or {})
+        entry = (init, namespace, is_package, exports or {})
+        self._targets[name] = entry
+        self._registry[name] = entry
 
     def bind(self, name, namespace):
         # Namespace OBJECTS are captured where they are created, so later
         # rebinding of their bundle-global names cannot break imports
         self._namespaces[name] = namespace
 
-    def find_spec(self, name, path=None, target=None):
+    def find_spec(self, name, path=None, target=None, *, _getattr=getattr, _globals=globals):
         entry = self._targets.get(name)
         if entry is None:
             return None
+        # Submodule resolution follows the ACTIVE parent: when user code
+        # replaces sys.modules['pkg'] with another module, Python resolves
+        # 'pkg.sub' through the replacement's own __path__ and raises
+        # ModuleNotFoundError when it is absent — the bundled child must not
+        # resurrect under a foreign parent. Cribo-created parent lives (the
+        # registered namespace, or a fresh post-eviction ModuleType) still
+        # legitimately own their bundled children.
+        parent_name = name.rpartition('.')[0]
+        if parent_name:
+            parent = {sys}.modules.get(parent_name)
+            expected = self._namespaces.get(parent_name)
+            if expected is None:
+                parent_entry = self._registry.get(parent_name)
+                if parent_entry is not None and parent_entry[1] is not None:
+                    expected = _globals().get(parent_entry[1])
+            if (
+                parent is not None
+                and expected is not None
+                and parent is not expected
+                and not _getattr(parent, '_cribo_fresh_life', False)
+                and not _getattr(parent, '_cribo_machinery_loaded', False)
+            ):
+                return None
         from importlib.machinery import ModuleSpec
         return ModuleSpec(
             name,
@@ -226,6 +265,7 @@ _cribo_finder = _CriboPreservedFinder()
 # win (native submodules resolve through installed parents).
 _cribo_finder_local = _CriboPreservedFinder()
 _cribo_finder_local._namespaces = _cribo_finder._namespaces
+_cribo_finder_local._registry = _cribo_finder._registry
 for _cribo_index, _cribo_meta_finder in enumerate({sys}.meta_path):
     if getattr(_cribo_meta_finder, '__name__', '') == 'PathFinder':
         {sys}.meta_path.insert(_cribo_index, _cribo_finder_local)

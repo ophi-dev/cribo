@@ -448,11 +448,12 @@ impl ExpressionRewriter {
             }
             Expr::Call(call_expr) => {
                 // Check if this is importlib.import_module() with a static string literal
-                if DynamicHandler::is_importlib_import_module_call(
+                let is_importlib_call = DynamicHandler::is_importlib_import_module_call(
                     call_expr,
                     &transformer.state.import_aliases,
                     &transformer.state.shadowed_bindings,
-                ) {
+                );
+                if is_importlib_call {
                     // Extract the state values we need to avoid borrow checker conflicts
                     let mut created_namespace_objects =
                         std::mem::take(&mut transformer.state.created_namespace_objects);
@@ -473,7 +474,15 @@ impl ExpressionRewriter {
                     transformer.state.created_namespace_objects = created_namespace_objects;
                 }
 
-                Self::transform_expr(transformer, &mut call_expr.func);
+                // A PRESERVED import_module call keeps its CALLEE verbatim:
+                // the import statement handler emits a binding for the
+                // original spelling (`il = _cribo.importlib`), while the
+                // stdlib-alias rewrite would retarget the callee to the
+                // canonical module name, which need not be bound in this
+                // scope (`import importlib as il` inside a function)
+                if !is_importlib_call {
+                    Self::transform_expr(transformer, &mut call_expr.func);
+                }
                 for arg in &mut call_expr.arguments.args {
                     Self::transform_expr(transformer, arg);
                 }

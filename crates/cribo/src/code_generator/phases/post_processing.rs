@@ -379,6 +379,58 @@ impl PostProcessingPhase {
             /// method that merely shares the `import_module` spelling
             /// (`loader.import_module("pkg.missing")`) is not an import and must
             /// not demote a bundled root behind `PathFinder`.
+            ///
+            /// Bindings are collected recursively — a function-local
+            /// `import importlib as il` dispatches just as well as a top-level
+            /// one. Tracking is sticky and name-based: over-inclusion only
+            /// keeps an installed root reachable.
+            fn track_bindings_in_suite(&mut self, suite: &[Stmt]) {
+                for stmt in suite {
+                    self.track_bindings(stmt);
+                    match stmt {
+                        Stmt::FunctionDef(function_def) => {
+                            self.track_bindings_in_suite(&function_def.body);
+                        }
+                        Stmt::ClassDef(class_def) => {
+                            self.track_bindings_in_suite(&class_def.body);
+                        }
+                        Stmt::If(if_stmt) => {
+                            self.track_bindings_in_suite(&if_stmt.body);
+                            for clause in &if_stmt.elif_else_clauses {
+                                self.track_bindings_in_suite(&clause.body);
+                            }
+                        }
+                        Stmt::For(for_stmt) => {
+                            self.track_bindings_in_suite(&for_stmt.body);
+                            self.track_bindings_in_suite(&for_stmt.orelse);
+                        }
+                        Stmt::While(while_stmt) => {
+                            self.track_bindings_in_suite(&while_stmt.body);
+                            self.track_bindings_in_suite(&while_stmt.orelse);
+                        }
+                        Stmt::With(with_stmt) => {
+                            self.track_bindings_in_suite(&with_stmt.body);
+                        }
+                        Stmt::Try(try_stmt) => {
+                            self.track_bindings_in_suite(&try_stmt.body);
+                            for handler in &try_stmt.handlers {
+                                let ruff_python_ast::ExceptHandler::ExceptHandler(handler) =
+                                    handler;
+                                self.track_bindings_in_suite(&handler.body);
+                            }
+                            self.track_bindings_in_suite(&try_stmt.orelse);
+                            self.track_bindings_in_suite(&try_stmt.finalbody);
+                        }
+                        Stmt::Match(match_stmt) => {
+                            for case in &match_stmt.cases {
+                                self.track_bindings_in_suite(&case.body);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
             fn track_bindings(&mut self, stmt: &Stmt) {
                 use ruff_python_ast::Expr;
                 match stmt {
@@ -533,13 +585,10 @@ impl PostProcessingPhase {
             importlib_names: FxIndexSet::default(),
             import_module_names: FxIndexSet::default(),
         };
-        // Bindings are tracked at the top level in source order FIRST: the
-        // walk below descends into function bodies whose calls execute after
-        // the whole module-level program has run, so a later top-level binding
-        // still applies to them
-        for stmt in final_body {
-            collector.track_bindings(stmt);
-        }
+        // Bindings are collected recursively in source order FIRST: calls in
+        // function bodies execute after the whole module-level program has
+        // run, so any binding anywhere in the bundle may serve them
+        collector.track_bindings_in_suite(final_body);
         for stmt in final_body {
             collector.visit_stmt(stmt);
         }
