@@ -3,8 +3,8 @@
 //! Also performs semantic analysis to determine import usage patterns.
 
 use ruff_python_ast::{
-    AnyNodeRef, Expr, ExprAttribute, ExprCall, ExprName, ExprStringLiteral, ExprUnaryOp, Stmt,
-    StmtImport, StmtImportFrom, UnaryOp,
+    AnyNodeRef, Expr, ExprAttribute, ExprCall, ExprName, ExprUnaryOp, Stmt, StmtImport,
+    StmtImportFrom, UnaryOp,
     visitor::source_order::{SourceOrderVisitor, TraversalSignal, walk_expr, walk_stmt},
 };
 use ruff_text_size::TextRange;
@@ -52,6 +52,11 @@ pub(crate) enum ImportType {
     Relative { level: u32 },
     /// `importlib.import_module("module`") with static string
     ImportlibStatic,
+    /// `importlib.import_module("module")` whose remaining arguments cannot be
+    /// safely discarded (e.g. a side-effectful `package=touch()` expression): the
+    /// call stays a runtime import, so its literal target must stay installed and
+    /// reach requirements generation instead of being bundled
+    ImportlibPreserved,
 }
 
 /// An import discovered during AST traversal
@@ -118,6 +123,15 @@ pub(crate) struct ImportDiscoveryVisitor<'a> {
     scope_stack: Vec<ScopeElement>,
     /// Stack of scope-local maps from imported names to their module sources
     imported_names_stack: Vec<FxIndexMap<String, String>>,
+    /// Stack of scope-local names rebound by non-import bindings (function
+    /// parameters, assignments, loop/with targets); parallel to
+    /// `imported_names_stack` so shadowing can be resolved per scope
+    shadowed_names_stack: Vec<FxIndexSet<String>>,
+    /// Names rebound only inside conditional control flow (if/try/for/while
+    /// branches) of each scope: the import binding REMAINS POSSIBLE at runtime,
+    /// so calls through such names are recorded as preserved runtime imports
+    /// instead of being ignored; parallel to `shadowed_names_stack`
+    conditionally_shadowed_names_stack: Vec<FxIndexSet<String>>,
     /// Track usage of each imported name
     name_usage: FxIndexMap<String, Vec<ImportUsage>>,
     /// Optional reference to semantic bundler for enhanced analysis
@@ -146,6 +160,8 @@ impl<'a> ImportDiscoveryVisitor<'a> {
             imports: Vec::new(),
             scope_stack: Vec::new(),
             imported_names_stack: vec![FxIndexMap::default()],
+            shadowed_names_stack: vec![FxIndexSet::default()],
+            conditionally_shadowed_names_stack: vec![FxIndexSet::default()],
             name_usage: FxIndexMap::default(),
             _semantic_bundler: None,
             _module_id: None,
@@ -164,6 +180,8 @@ impl<'a> ImportDiscoveryVisitor<'a> {
             imports: Vec::new(),
             scope_stack: Vec::new(),
             imported_names_stack: vec![FxIndexMap::default()],
+            shadowed_names_stack: vec![FxIndexSet::default()],
+            conditionally_shadowed_names_stack: vec![FxIndexSet::default()],
             name_usage: FxIndexMap::default(),
             _semantic_bundler: Some(conflict_resolver),
             _module_id: Some(module_id),
@@ -175,6 +193,16 @@ impl<'a> ImportDiscoveryVisitor<'a> {
 
     #[inline]
     fn insert_imported_name(&mut self, name: String, module_key: String) {
+        // A live import binding replaces any pending body-wide shadow for the name
+        // in this scope: usage AFTER the import statement resolves to it (source
+        // order), while usage before it still sees the shadow (UnboundLocalError
+        // semantics for function scopes)
+        if let Some(top) = self.shadowed_names_stack.last_mut() {
+            top.shift_remove(&name);
+        }
+        if let Some(top) = self.conditionally_shadowed_names_stack.last_mut() {
+            top.shift_remove(&name);
+        }
         if let Some(top) = self.imported_names_stack.last_mut() {
             top.insert(name, module_key);
         }
@@ -188,6 +216,144 @@ impl<'a> ImportDiscoveryVisitor<'a> {
             }
         }
         None
+    }
+
+    /// Install a function's binding scope: scope stack element, fresh
+    /// scope-local import map, and the body-wide shadow set. Python scoping
+    /// makes any name assigned in the function local for the WHOLE body, so a
+    /// call before the assignment must not be attributed to an enclosing
+    /// import either (it raises `UnboundLocalError` at runtime). This includes
+    /// IMPORT bindings: `import json as importlib` later in the body makes
+    /// earlier uses of `importlib` unbound too — the shadow is lifted when the
+    /// import statement itself is reached (see `insert_imported_name`). Names
+    /// declared `global` rebind the module scope instead of shadowing.
+    fn enter_function_scope(&mut self, func: &ruff_python_ast::StmtFunctionDef) {
+        self.scope_stack
+            .push(ScopeElement::Function(func.name.to_string()));
+        self.imported_names_stack.push(FxIndexMap::default());
+        // Parameters rebind their names for the function body, shadowing any
+        // same-named import from an enclosing scope
+        let mut parameter_names = FxIndexSet::default();
+        for param in func
+            .parameters
+            .posonlyargs
+            .iter()
+            .chain(&func.parameters.args)
+            .chain(&func.parameters.kwonlyargs)
+        {
+            parameter_names.insert(param.parameter.name.as_str().to_owned());
+        }
+        if let Some(vararg) = &func.parameters.vararg {
+            parameter_names.insert(vararg.name.as_str().to_owned());
+        }
+        if let Some(kwarg) = &func.parameters.kwarg {
+            parameter_names.insert(kwarg.name.as_str().to_owned());
+        }
+        {
+            let scope_globals = crate::visitors::collect_scope_global_declarations(&func.body);
+            crate::visitors::LocalVarCollector::new(&mut parameter_names, &scope_globals)
+                .collect_from_stmts(&func.body);
+        }
+        self.shadowed_names_stack.push(parameter_names);
+        self.conditionally_shadowed_names_stack
+            .push(FxIndexSet::default());
+    }
+
+    #[inline]
+    fn insert_shadowed_name(&mut self, name: String) {
+        // A rebinding inside conditional control flow (if/try/for/while branch)
+        // may not execute: the import binding remains POSSIBLE, so the name is
+        // recorded as conditionally shadowed instead of dead
+        if self.in_conditional_context() {
+            if let Some(top) = self.conditionally_shadowed_names_stack.last_mut() {
+                top.insert(name);
+            }
+            return;
+        }
+        if let Some(top) = self.shadowed_names_stack.last_mut() {
+            top.insert(name);
+        }
+    }
+
+    /// Return whether the traversal is inside conditional control flow of the
+    /// CURRENT binding scope: any if/try/for/while element after the innermost
+    /// function or class scope. `with` bodies always execute and are not
+    /// conditional.
+    fn in_conditional_context(&self) -> bool {
+        self.scope_stack
+            .iter()
+            .rev()
+            .take_while(|element| {
+                !matches!(element, ScopeElement::Function(_) | ScopeElement::Class(_))
+            })
+            .any(|element| {
+                matches!(
+                    element,
+                    ScopeElement::If | ScopeElement::While | ScopeElement::For | ScopeElement::Try
+                )
+            })
+    }
+
+    /// Return whether a name's import binding is rebound ONLY inside conditional
+    /// control flow: the binding remains possible at runtime, so calls through
+    /// the name must be preserved verbatim with their targets kept importable.
+    fn is_name_conditionally_shadowed(&self, name: &str) -> bool {
+        for (conditionally_shadowed, imported) in self
+            .conditionally_shadowed_names_stack
+            .iter()
+            .rev()
+            .zip(self.imported_names_stack.iter().rev())
+        {
+            if conditionally_shadowed.contains(name) {
+                return true;
+            }
+            if imported.contains_key(name) {
+                return false;
+            }
+        }
+        false
+    }
+
+    /// Return whether a non-import binding (function parameter, assignment, loop or
+    /// with-statement target) rebinds a name before any import of it is reached when
+    /// walking scopes innermost-first: such a name must not be treated as `importlib`
+    /// or one of its aliases.
+    fn is_name_shadowed(&self, name: &str) -> bool {
+        for (shadowed, imported) in self
+            .shadowed_names_stack
+            .iter()
+            .rev()
+            .zip(self.imported_names_stack.iter().rev())
+        {
+            if shadowed.contains(name) {
+                return true;
+            }
+            if imported.contains_key(name) {
+                return false;
+            }
+        }
+        false
+    }
+
+    /// Collect plain names bound by an assignment-like target expression (a name, or
+    /// tuple/list destructuring with optional starred elements). Attribute and
+    /// subscript targets do not rebind a plain name.
+    fn collect_binding_names(target: &Expr, record: &mut impl FnMut(String)) {
+        match target {
+            Expr::Name(name) => record(name.id.as_str().to_owned()),
+            Expr::Tuple(tuple) => {
+                for element in &tuple.elts {
+                    Self::collect_binding_names(element, record);
+                }
+            }
+            Expr::List(list) => {
+                for element in &list.elts {
+                    Self::collect_binding_names(element, record);
+                }
+            }
+            Expr::Starred(starred) => Self::collect_binding_names(&starred.value, record),
+            _ => {}
+        }
     }
 
     /// Get all discovered imports
@@ -368,7 +534,11 @@ impl<'a> ImportDiscoveryVisitor<'a> {
         ) || module_name.starts_with('_')
     }
 
-    /// Check if this is a static `importlib.import_module` call
+    /// Check if this is a static `importlib.import_module` call.
+    ///
+    /// A callee whose base name is rebound by a local binding (function parameter,
+    /// assignment, loop variable) is not recognized: the call dispatches to that
+    /// binding's own `import_module` at runtime, not to `importlib`.
     fn is_static_importlib_call(&self, call: &ExprCall) -> bool {
         match &*call.func {
             // importlib.import_module(...) or il.import_module(...) where il is an alias
@@ -377,6 +547,9 @@ impl<'a> ImportDiscoveryVisitor<'a> {
                     && let Expr::Name(ExprName { id, .. }) = &**value
                 {
                     let name = id.as_str();
+                    if self.is_name_shadowed(name) {
+                        return false;
+                    }
                     // Check if it's importlib directly or an alias to importlib
                     return name == "importlib"
                         || self
@@ -387,6 +560,9 @@ impl<'a> ImportDiscoveryVisitor<'a> {
             // import_module(...) or im(...) where im is an alias
             Expr::Name(ExprName { id, .. }) => {
                 let name = id.as_str();
+                if self.is_name_shadowed(name) {
+                    return false;
+                }
                 // Direct check for import_module
                 if name == "import_module" && self.has_importlib {
                     return true;
@@ -411,25 +587,100 @@ impl<'a> ImportDiscoveryVisitor<'a> {
         false
     }
 
-    /// Extract literal module name from `importlib.import_module` call
-    fn extract_literal_module_name(&self, call: &ExprCall) -> Option<String> {
-        // Only handle static string literals
-        if let Some(arg) = call.arguments.args.first()
-            && let Expr::StringLiteral(ExprStringLiteral { value, .. }) = arg
-        {
-            return Some(value.to_str().to_owned());
+    /// Return whether a call WOULD be a static `importlib.import_module` call
+    /// except that its base name is rebound inside conditional control flow.
+    ///
+    /// The import binding remains possible at runtime (`import importlib; if
+    /// use_custom: importlib = custom; importlib.import_module("helper")` with
+    /// the branch not taken), so the call must stay verbatim while its literal
+    /// target is recorded as a preserved runtime dependency.
+    fn is_conditionally_shadowed_importlib_call(&self, call: &ExprCall) -> bool {
+        let base_name = match &*call.func {
+            Expr::Attribute(ExprAttribute { attr, value, .. })
+                if attr.as_str() == "import_module" =>
+            {
+                let Expr::Name(ExprName { id, .. }) = &**value else {
+                    return false;
+                };
+                id.as_str()
+            }
+            Expr::Name(ExprName { id, .. }) => id.as_str(),
+            _ => return false,
+        };
+        // A hard (unconditional) rebinding kills the alias outright
+        if self.is_name_shadowed(base_name) || !self.is_name_conditionally_shadowed(base_name) {
+            return false;
         }
-        None
+        match &*call.func {
+            Expr::Attribute(_) => {
+                base_name == "importlib"
+                    || self
+                        .lookup_imported_name(base_name)
+                        .is_some_and(|module| module == "importlib")
+            }
+            Expr::Name(_) => {
+                (base_name == "import_module" && self.has_importlib)
+                    || self.imports.iter().any(|imp| {
+                        imp.import_type == ImportType::From
+                            && imp.module_name.as_deref() == Some("importlib")
+                            && imp.names.iter().any(|(orig, alias)| {
+                                orig == "import_module"
+                                    && (alias.as_deref() == Some(base_name)
+                                        || (alias.is_none() && base_name == "import_module"))
+                            })
+                    })
+            }
+            _ => false,
+        }
     }
 
-    fn extract_package_context(&self, call: &ExprCall) -> Option<String> {
-        // Extract the second argument if it exists (package context for relative imports)
-        if call.arguments.args.len() >= 2
-            && let Expr::StringLiteral(ExprStringLiteral { value, .. }) = &call.arguments.args[1]
-        {
-            return Some(value.to_str().to_owned());
+    /// Extract literal module name from `importlib.import_module` call.
+    ///
+    /// Only string literals are recognized, supplied either as the first positional
+    /// argument or as the `name=` keyword argument.
+    fn extract_literal_module_name(&self, call: &ExprCall) -> Option<String> {
+        crate::python::importlib_call::literal_module_name(call).map(ToOwned::to_owned)
+    }
+
+    /// Resolve a dynamic `import_module` name argument of the form
+    /// `<imported module>.__name__` (first positional or `name=` keyword): the
+    /// value is statically known through this module's import bindings, so the
+    /// target can be recorded as a preserved runtime dependency even though the
+    /// call itself stays verbatim.
+    fn resolve_imported_dunder_name_argument(&self, call: &ExprCall) -> Option<String> {
+        let argument = call.arguments.args.first().or_else(|| {
+            call.arguments
+                .keywords
+                .iter()
+                .find(|keyword| {
+                    keyword
+                        .arg
+                        .as_ref()
+                        .is_some_and(|argument| argument.as_str() == "name")
+                })
+                .map(|keyword| &keyword.value)
+        })?;
+        let Expr::Attribute(attribute) = argument else {
+            return None;
+        };
+        if attribute.attr.as_str() != "__name__" {
+            return None;
         }
-        None
+        let Expr::Name(base) = &*attribute.value else {
+            return None;
+        };
+        if self.is_name_shadowed(base.id.as_str()) {
+            return None;
+        }
+        self.lookup_imported_name(base.id.as_str()).cloned()
+    }
+
+    /// Extract the package context of a static `importlib.import_module` call.
+    ///
+    /// Only string-literal contexts are recognized, supplied either as the second
+    /// positional argument or as the `package=` keyword argument.
+    fn extract_package_context(&self, call: &ExprCall) -> Option<String> {
+        crate::python::importlib_call::literal_package_context(call).map(ToOwned::to_owned)
     }
 
     /// Record an import statement
@@ -528,26 +779,39 @@ impl<'a> ImportDiscoveryVisitor<'a> {
 impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
     fn enter_node(&mut self, node: AnyNodeRef<'a>) -> TraversalSignal {
         match node {
-            // Handle scope-creating nodes
-            AnyNodeRef::StmtFunctionDef(func) => {
-                self.scope_stack
-                    .push(ScopeElement::Function(func.name.to_string()));
-                self.imported_names_stack.push(FxIndexMap::default());
-            }
+            // Handle scope-creating nodes. StmtFunctionDef is fully handled in
+            // `visit_stmt` (definition-time expressions must be visited in the
+            // enclosing scope before the body-wide shadow set is installed).
             AnyNodeRef::StmtClassDef(class) => {
                 self.scope_stack
                     .push(ScopeElement::Class(class.name.to_string()));
                 self.imported_names_stack.push(FxIndexMap::default());
+                self.shadowed_names_stack.push(FxIndexSet::default());
+                self.conditionally_shadowed_names_stack
+                    .push(FxIndexSet::default());
+            }
+            // Non-import bindings (assignments) are recorded in leave_node, after
+            // the value expression is visited: Python evaluates the right-hand side
+            // through the OLD binding before rebinding the target.
+            AnyNodeRef::StmtFor(for_stmt) => {
+                self.scope_stack.push(ScopeElement::For);
+                Self::collect_binding_names(&for_stmt.target, &mut |name| {
+                    self.insert_shadowed_name(name);
+                });
+            }
+            AnyNodeRef::StmtWith(with_stmt) => {
+                self.scope_stack.push(ScopeElement::With);
+                for item in &with_stmt.items {
+                    if let Some(optional_vars) = &item.optional_vars {
+                        Self::collect_binding_names(optional_vars, &mut |name| {
+                            self.insert_shadowed_name(name);
+                        });
+                    }
+                }
             }
             // If handling moved to visit_stmt to distinguish body vs orelse TYPE_CHECKING
             AnyNodeRef::StmtWhile(_) => {
                 self.scope_stack.push(ScopeElement::While);
-            }
-            AnyNodeRef::StmtFor(_) => {
-                self.scope_stack.push(ScopeElement::For);
-            }
-            AnyNodeRef::StmtWith(_) => {
-                self.scope_stack.push(ScopeElement::With);
             }
             AnyNodeRef::StmtTry(_) => {
                 self.scope_stack.push(ScopeElement::Try);
@@ -559,14 +823,46 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
 
     fn leave_node(&mut self, node: AnyNodeRef<'a>) {
         match node {
-            // Clean up scope stack when leaving scope-creating nodes
-            AnyNodeRef::StmtFunctionDef(_) => {
+            // Clean up scope stack when leaving scope-creating nodes. The
+            // definition's NAME then rebinds in the enclosing scope (recorded
+            // after the definition-time expressions were visited): a later
+            // `class importlib: ...` kills an earlier import alias.
+            // StmtFunctionDef is fully handled in `visit_stmt`.
+            AnyNodeRef::StmtClassDef(class) => {
                 self.scope_stack.pop();
                 self.imported_names_stack.pop();
+                self.shadowed_names_stack.pop();
+                self.conditionally_shadowed_names_stack.pop();
+                self.insert_shadowed_name(class.name.to_string());
             }
-            AnyNodeRef::StmtClassDef(_) => {
-                self.scope_stack.pop();
-                self.imported_names_stack.pop();
+            // Non-import bindings rebind names in the current scope. Recorded on
+            // LEAVE, after the value expression is visited: Python evaluates the
+            // right-hand side through the OLD binding before rebinding the target,
+            // so `importlib = importlib.import_module("helper")` at module or
+            // class scope must still discover `helper`. Function scopes are
+            // unaffected: their body-wide shadows are precomputed on scope entry.
+            AnyNodeRef::StmtAssign(assign) => {
+                for target in &assign.targets {
+                    Self::collect_binding_names(target, &mut |name| {
+                        self.insert_shadowed_name(name);
+                    });
+                }
+            }
+            AnyNodeRef::StmtAnnAssign(assign) => {
+                if assign.value.is_some() {
+                    Self::collect_binding_names(&assign.target, &mut |name| {
+                        self.insert_shadowed_name(name);
+                    });
+                }
+            }
+            // `del name` kills the binding: later uses raise NameError, so the
+            // name must no longer be treated as an import alias
+            AnyNodeRef::StmtDelete(delete_stmt) => {
+                for target in &delete_stmt.targets {
+                    Self::collect_binding_names(target, &mut |name| {
+                        self.insert_shadowed_name(name);
+                    });
+                }
             }
             // If handling moved to visit_stmt
             AnyNodeRef::StmtWhile(_)
@@ -581,9 +877,88 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
 
     fn visit_stmt(&mut self, stmt: &'a Stmt) {
         match stmt {
+            // Definition-time expressions of a `def` (decorators, parameter
+            // defaults and annotations, return annotation) evaluate in the
+            // ENCLOSING scope when the statement executes, BEFORE the function
+            // scope exists: `def f(importlib=importlib.import_module("helper"))`
+            // resolves `importlib` through the enclosing import. Visit them
+            // before installing the body-wide shadow set, mirroring the Lambda
+            // handling in `visit_expr`.
+            Stmt::FunctionDef(func) => {
+                for decorator in &func.decorator_list {
+                    self.visit_expr(&decorator.expression);
+                }
+                if let Some(type_params) = &func.type_params {
+                    for type_param in type_params.iter() {
+                        match type_param {
+                            ruff_python_ast::TypeParam::TypeVar(tv) => {
+                                if let Some(bound) = &tv.bound {
+                                    self.visit_expr(bound);
+                                }
+                                if let Some(default) = &tv.default {
+                                    self.visit_expr(default);
+                                }
+                            }
+                            ruff_python_ast::TypeParam::ParamSpec(ps) => {
+                                if let Some(default) = &ps.default {
+                                    self.visit_expr(default);
+                                }
+                            }
+                            ruff_python_ast::TypeParam::TypeVarTuple(tvt) => {
+                                if let Some(default) = &tvt.default {
+                                    self.visit_expr(default);
+                                }
+                            }
+                        }
+                    }
+                }
+                for param in func
+                    .parameters
+                    .posonlyargs
+                    .iter()
+                    .chain(&func.parameters.args)
+                    .chain(&func.parameters.kwonlyargs)
+                {
+                    if let Some(annotation) = &param.parameter.annotation {
+                        self.visit_expr(annotation);
+                    }
+                    if let Some(default) = &param.default {
+                        self.visit_expr(default);
+                    }
+                }
+                if let Some(vararg) = &func.parameters.vararg
+                    && let Some(annotation) = &vararg.annotation
+                {
+                    self.visit_expr(annotation);
+                }
+                if let Some(kwarg) = &func.parameters.kwarg
+                    && let Some(annotation) = &kwarg.annotation
+                {
+                    self.visit_expr(annotation);
+                }
+                if let Some(returns) = &func.returns {
+                    self.visit_expr(returns);
+                }
+                self.enter_function_scope(func);
+                for body_stmt in &func.body {
+                    self.visit_stmt(body_stmt);
+                }
+                self.scope_stack.pop();
+                self.imported_names_stack.pop();
+                self.shadowed_names_stack.pop();
+                self.conditionally_shadowed_names_stack.pop();
+                // The definition's NAME rebinds in the enclosing scope: a later
+                // `def importlib(): ...` kills an earlier import alias
+                self.insert_shadowed_name(func.name.to_string());
+                return;
+            }
             Stmt::If(if_stmt) => {
                 // Determine which branch (if any) is TYPE_CHECKING
                 let branch = Self::type_checking_branch(&if_stmt.test);
+
+                // The test expression evaluates unconditionally (it may contain
+                // walrus-bound import calls) — visit it OUTSIDE the branch scope
+                self.visit_expr(&if_stmt.test);
 
                 // Visit IF body
                 self.scope_stack.push(ScopeElement::If);
@@ -602,6 +977,12 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
                 // Visit ELIF/ELSE clauses
                 for clause in &if_stmt.elif_else_clauses {
                     self.scope_stack.push(ScopeElement::If);
+
+                    // elif tests evaluate only when earlier branches fail:
+                    // visit them inside the conditional scope
+                    if let Some(clause_test) = &clause.test {
+                        self.visit_expr(clause_test);
+                    }
 
                     // Check if this is an elif with TYPE_CHECKING condition
                     let elif_branch = clause.test.as_ref().and_then(Self::type_checking_branch);
@@ -652,41 +1033,166 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
     fn visit_expr(&mut self, expr: &'a Expr) {
         match expr {
             Expr::Call(call) => {
-                // Check for importlib.import_module("literal")
-                if self.is_static_importlib_call(call)
-                    && let Some(module_name) = self.extract_literal_module_name(call)
+                // Check for importlib.import_module("literal"). Two statically
+                // resolvable shapes bundle their target: fully discardable arguments
+                // (the call is replaced by module access) and the evaluable-package
+                // form (`import_module("pkg", package=touch())`, rewritten so the
+                // extra argument is still evaluated). Opaque argument shapes with a
+                // literal absolute name keep the call verbatim but record the target
+                // as a preserved runtime dependency.
+                if self.is_static_importlib_call(call) {
+                    if crate::python::importlib_call::arguments_safely_discardable(call)
+                        || crate::python::importlib_call::evaluable_package_argument(call).is_some()
+                    {
+                        if let Some(module_name) = self.extract_literal_module_name(call) {
+                            let package_context = self.extract_package_context(call);
+                            log::debug!(
+                                "Found static importlib call for module: {module_name}, package: \
+                                 {package_context:?}"
+                            );
+
+                            // Determine import level for relative imports
+                            let level = if module_name.starts_with('.') {
+                                module_name.chars().take_while(|&c| c == '.').count() as u32
+                            } else {
+                                0
+                            };
+
+                            // Track this as an import
+                            let import = DiscoveredImport {
+                                module_name: Some(module_name),
+                                names: vec![], // No specific names for direct module import
+                                location: self.current_location(),
+                                range: call.range,
+                                level,
+                                import_type: ImportType::ImportlibStatic,
+                                execution_contexts: FxIndexSet::default(),
+                                is_used_in_init: false,
+                                is_movable: false,
+                                is_type_checking_only: self.in_type_checking(),
+                                package_context,
+                            };
+                            self.imports.push(import);
+
+                            // Do not add to imported_names: importlib.import_module returns a
+                            // value assigned to a variable, but it does not bind `module_name`
+                            // in scope.
+                        } else if let Some(module_name) =
+                            self.resolve_imported_dunder_name_argument(call)
+                        {
+                            // `import_module(provider.__name__)` where `provider` is
+                            // import-bound: the target is statically known even though
+                            // the call stays verbatim, so record it as a preserved
+                            // runtime dependency (bundled targets are then registered
+                            // with the meta-path finder)
+                            log::debug!(
+                                "Found preserved importlib call resolving an imported module's \
+                                 __name__: {module_name}"
+                            );
+                            let import = DiscoveredImport {
+                                module_name: Some(module_name),
+                                names: vec![],
+                                location: self.current_location(),
+                                range: call.range,
+                                level: 0,
+                                import_type: ImportType::ImportlibPreserved,
+                                execution_contexts: FxIndexSet::default(),
+                                is_used_in_init: false,
+                                is_movable: false,
+                                is_type_checking_only: self.in_type_checking(),
+                                package_context: None,
+                            };
+                            self.imports.push(import);
+                        }
+                    } else if !crate::python::importlib_call::statically_raises_type_error(call)
+                        && let Some(module_name) = self
+                            .extract_literal_module_name(call)
+                            .or_else(|| self.resolve_imported_dunder_name_argument(call))
+                    {
+                        // Opaque argument shapes (e.g. `import_module("pkg", **kw)`)
+                        // keep the call verbatim, but the target is still a runtime
+                        // dependency: it must stay installed and reach requirements
+                        // generation. The target is known for absolute literals AND
+                        // for `import_module(provider.__name__)` where `provider`
+                        // is import-bound; RELATIVE literals record their level and
+                        // package context so extraction can resolve the absolute
+                        // candidate (a bundled backend must register with the
+                        // finder or an isolated deployment fails). Calls statically
+                        // known to raise TypeError never import their target and
+                        // record nothing.
+                        log::debug!(
+                            "Found preserved importlib call for module: {module_name} (arguments \
+                             not safely discardable)"
+                        );
+                        let level = module_name.chars().take_while(|&c| c == '.').count() as u32;
+                        let package_context = if level > 0 {
+                            self.extract_package_context(call)
+                        } else {
+                            None
+                        };
+                        if level > 0
+                            && package_context.is_none()
+                            && !crate::python::importlib_call::package_argument_is_dunder_package(
+                                call,
+                            )
+                        {
+                            // A relative target with an OPAQUE anchor that is
+                            // not provably __package__: the runtime call may
+                            // anchor at ANY package, so no static candidate
+                            // exists — registering the containing package's
+                            // guess would resolve the WRONG module. The call
+                            // stays verbatim and unresolved.
+                            log::debug!(
+                                "Skipping preserved relative importlib call '{module_name}': its \
+                                 package anchor is opaque and not __package__"
+                            );
+                        } else {
+                            let import = DiscoveredImport {
+                                module_name: Some(module_name),
+                                names: vec![],
+                                location: self.current_location(),
+                                range: call.range,
+                                level,
+                                import_type: ImportType::ImportlibPreserved,
+                                execution_contexts: FxIndexSet::default(),
+                                is_used_in_init: false,
+                                is_movable: false,
+                                is_type_checking_only: self.in_type_checking(),
+                                package_context,
+                            };
+                            self.imports.push(import);
+                        }
+                    }
+                } else if self.is_conditionally_shadowed_importlib_call(call)
+                    && !crate::python::importlib_call::statically_raises_type_error(call)
+                    && let Some(module_name) = self
+                        .extract_literal_module_name(call)
+                        .or_else(|| self.resolve_imported_dunder_name_argument(call))
+                    && !module_name.starts_with('.')
                 {
-                    let package_context = self.extract_package_context(call);
+                    // The importlib binding is rebound only inside conditional
+                    // control flow, so it remains possible at runtime: keep the
+                    // call verbatim but record its literal target as a preserved
+                    // runtime dependency (bundled targets are registered with
+                    // the meta-path finder, external ones reach requirements)
                     log::debug!(
-                        "Found static importlib call for module: {module_name}, package: \
-                         {package_context:?}"
+                        "Found preserved importlib call for module: {module_name} (importlib \
+                         binding conditionally rebound)"
                     );
-
-                    // Determine import level for relative imports
-                    let level = if module_name.starts_with('.') {
-                        module_name.chars().take_while(|&c| c == '.').count() as u32
-                    } else {
-                        0
-                    };
-
-                    // Track this as an import
                     let import = DiscoveredImport {
                         module_name: Some(module_name),
-                        names: vec![], // No specific names for direct module import
+                        names: vec![],
                         location: self.current_location(),
                         range: call.range,
-                        level,
-                        import_type: ImportType::ImportlibStatic,
+                        level: 0,
+                        import_type: ImportType::ImportlibPreserved,
                         execution_contexts: FxIndexSet::default(),
                         is_used_in_init: false,
                         is_movable: false,
                         is_type_checking_only: self.in_type_checking(),
-                        package_context,
+                        package_context: None,
                     };
                     self.imports.push(import);
-
-                    // Do not add to imported_names: importlib.import_module returns a value
-                    // assigned to a variable, but it does not bind `module_name` in scope.
                 }
             }
             Expr::Name(ExprName { id, range, .. }) => {
@@ -727,6 +1233,116 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
                         }
                     }
                 }
+            }
+            // Lambda parameters bind their own function scope: defaults evaluate in
+            // the ENCLOSING scope, while the body must not resolve a parameter name
+            // to an enclosing import (`lambda importlib: importlib.import_module(x)`
+            // dispatches to the argument at runtime)
+            Expr::Lambda(lambda) => {
+                if let Some(parameters) = &lambda.parameters {
+                    for param in parameters
+                        .posonlyargs
+                        .iter()
+                        .chain(&parameters.args)
+                        .chain(&parameters.kwonlyargs)
+                    {
+                        if let Some(default) = &param.default {
+                            self.visit_expr(default);
+                        }
+                    }
+                }
+                let mut parameter_names = FxIndexSet::default();
+                if let Some(parameters) = &lambda.parameters {
+                    for param in parameters
+                        .posonlyargs
+                        .iter()
+                        .chain(&parameters.args)
+                        .chain(&parameters.kwonlyargs)
+                    {
+                        parameter_names.insert(param.parameter.name.as_str().to_owned());
+                    }
+                    if let Some(vararg) = &parameters.vararg {
+                        parameter_names.insert(vararg.name.as_str().to_owned());
+                    }
+                    if let Some(kwarg) = &parameters.kwarg {
+                        parameter_names.insert(kwarg.name.as_str().to_owned());
+                    }
+                }
+                // A walrus target anywhere in the body is LOCAL for the whole
+                // lambda scope (a read before the assignment raises
+                // UnboundLocalError, never resolving an enclosing import):
+                // pre-collect those bindings like the parameters
+                {
+                    let mut walrus_targets: Vec<String> = Vec::new();
+                    crate::visitors::utils::collect_lambda_scope_walrus_targets(
+                        &lambda.body,
+                        &mut walrus_targets,
+                    );
+                    parameter_names.extend(walrus_targets);
+                }
+                self.imported_names_stack.push(FxIndexMap::default());
+                self.shadowed_names_stack.push(parameter_names);
+                self.conditionally_shadowed_names_stack
+                    .push(FxIndexSet::default());
+                self.visit_expr(&lambda.body);
+                self.imported_names_stack.pop();
+                self.shadowed_names_stack.pop();
+                self.conditionally_shadowed_names_stack.pop();
+                return;
+            }
+            // Comprehension targets bind their own function scope. Python
+            // evaluates the FIRST iterable in the enclosing scope, so imports
+            // referenced there resolve to enclosing bindings; targets are then
+            // introduced sequentially, each visible to the following clauses
+            Expr::ListComp(_) | Expr::SetComp(_) | Expr::DictComp(_) | Expr::Generator(_) => {
+                let generators = match expr {
+                    Expr::ListComp(comp) => &comp.generators,
+                    Expr::SetComp(comp) => &comp.generators,
+                    Expr::DictComp(comp) => &comp.generators,
+                    Expr::Generator(comp) => &comp.generators,
+                    _ => unreachable!("matched comprehension variants only"),
+                };
+                // First iterable: enclosing scope
+                if let Some(first) = generators.first() {
+                    self.visit_expr(&first.iter);
+                }
+                self.imported_names_stack.push(FxIndexMap::default());
+                self.shadowed_names_stack.push(FxIndexSet::default());
+                self.conditionally_shadowed_names_stack
+                    .push(FxIndexSet::default());
+                for (index, comprehension) in generators.iter().enumerate() {
+                    // Later iterables see the targets bound so far
+                    if index > 0 {
+                        self.visit_expr(&comprehension.iter);
+                    }
+                    let mut target_names: Vec<String> = Vec::new();
+                    Self::collect_binding_names(&comprehension.target, &mut |name| {
+                        target_names.push(name);
+                    });
+                    if let Some(top) = self.shadowed_names_stack.last_mut() {
+                        top.extend(target_names);
+                    }
+                    for if_clause in &comprehension.ifs {
+                        self.visit_expr(if_clause);
+                    }
+                }
+                // Element expressions see every target
+                match expr {
+                    Expr::ListComp(comp) => self.visit_expr(&comp.elt),
+                    Expr::SetComp(comp) => self.visit_expr(&comp.elt),
+                    Expr::DictComp(comp) => {
+                        if let Some(key) = &comp.key {
+                            self.visit_expr(key);
+                        }
+                        self.visit_expr(&comp.value);
+                    }
+                    Expr::Generator(comp) => self.visit_expr(&comp.elt),
+                    _ => unreachable!("matched comprehension variants only"),
+                }
+                self.imported_names_stack.pop();
+                self.shadowed_names_stack.pop();
+                self.conditionally_shadowed_names_stack.pop();
+                return;
             }
             _ => {}
         }
@@ -1036,5 +1652,51 @@ from ...package import sibling
             imports[2].import_type,
             ImportType::Relative { level: 3 }
         ));
+    }
+
+    /// The package context of static `importlib.import_module` relative imports is
+    /// captured from both the positional and the keyword `package=` argument forms,
+    /// and the module name from both the positional and the keyword `name=` forms.
+    #[test]
+    fn test_importlib_static_package_context_positional_and_keyword() {
+        let source = "\
+import importlib
+importlib.import_module('.positional', 'pkg_positional')
+importlib.import_module('.keyword', package='pkg_keyword')
+importlib.import_module(name='.kwname', package='pkg_kwname')
+";
+        let parsed = parse_module(source).expect("Failed to parse test module");
+        let mut visitor = ImportDiscoveryVisitor::new();
+        for stmt in &parsed.syntax().body {
+            visitor.visit_stmt(stmt);
+        }
+        let imports = visitor.into_imports();
+
+        let static_imports: Vec<_> = imports
+            .iter()
+            .filter(|import| matches!(import.import_type, ImportType::ImportlibStatic))
+            .collect();
+        assert_eq!(static_imports.len(), 3);
+
+        assert_eq!(
+            static_imports[0].module_name.as_deref(),
+            Some(".positional")
+        );
+        assert_eq!(
+            static_imports[0].package_context.as_deref(),
+            Some("pkg_positional")
+        );
+
+        assert_eq!(static_imports[1].module_name.as_deref(), Some(".keyword"));
+        assert_eq!(
+            static_imports[1].package_context.as_deref(),
+            Some("pkg_keyword")
+        );
+
+        assert_eq!(static_imports[2].module_name.as_deref(), Some(".kwname"));
+        assert_eq!(
+            static_imports[2].package_context.as_deref(),
+            Some("pkg_kwname")
+        );
     }
 }

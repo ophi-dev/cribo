@@ -1,0 +1,9 @@
+---
+source: crates/cribo/tests/test_bundling_snapshots.rs
+input_file: crates/cribo/tests/fixtures/importlib_preserved_namespace_collision/main.py
+---
+ExecutionResults {
+    status: Success,
+    stdout: "collision_target imported\nVALUE: object-captured\nglobal: sentinel",
+    stderr: "",
+}

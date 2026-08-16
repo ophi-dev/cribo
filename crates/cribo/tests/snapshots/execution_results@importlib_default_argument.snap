@@ -1,0 +1,9 @@
+---
+source: crates/cribo/tests/test_bundling_snapshots.rs
+input_file: crates/cribo/tests/fixtures/importlib_default_argument/main.py
+---
+ExecutionResults {
+    status: Success,
+    stdout: "effectful_helper body runs\nloaded: hello from helper",
+    stderr: "",
+}

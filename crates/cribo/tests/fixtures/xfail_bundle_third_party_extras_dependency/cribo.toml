@@ -1,0 +1,2 @@
+[requirements]
+module-map = { native_pkg = "native-pkg[speed]" }

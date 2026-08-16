@@ -1,4 +1,4 @@
-use ruff_python_ast::{ExprContext, Stmt};
+use ruff_python_ast::{Expr, ExprContext, Stmt};
 
 use crate::{
     ast_builder::{expressions, statements},
@@ -72,6 +72,22 @@ pub(crate) fn create_wrapper_module(
     );
     stmts.push(namespace_stmt);
 
+    // 1b. Capture the namespace OBJECT in the meta-path finder: runtime imports
+    // must resolve it even when user code later rebinds the bundle-global name
+    // (`globals()["helper"] = sentinel` before a preserved import)
+    stmts.push(statements::expr(expressions::call(
+        expressions::attribute(
+            expressions::name("_cribo_finder", ExprContext::Load),
+            "bind",
+            ExprContext::Load,
+        ),
+        vec![
+            expressions::string_literal(module_name),
+            expressions::name(&module_var, ExprContext::Load),
+        ],
+        vec![],
+    )));
+
     // 2. Add the init function definition and __init__ assignment if provided
     if let Some(init_body) = init_function_body {
         let init_stmts = create_init_function_statements(module_name, init_func_name, init_body);
@@ -106,5 +122,97 @@ pub(crate) fn create_wrapper_module_init_call(module_name: &str) -> Stmt {
             vec![expressions::name(module_name, ExprContext::Load)],
             vec![],
         ),
+    )
+}
+
+/// Wrap a bundled-module access expression with a `sys.modules` consult:
+///
+/// ```python
+/// _cribo.importlib.import_module("pkg.sub") \
+///     if "pkg" in _cribo.sys.modules or "pkg.sub" in _cribo.sys.modules \
+///     else <access>
+/// ```
+///
+/// CPython's `_find_and_load` returns an existing `sys.modules` entry before
+/// invoking any finder or loader, and resolves DOTTED names through the
+/// parent's `__path__` — so a preloaded replacement of the target OR of any
+/// ancestor package must route through the real machinery rather than the
+/// bundled access. When no component is preloaded, the direct bundled access
+/// is used. The conditional (rather than `or`) also honors falsy replacement
+/// objects.
+pub(crate) fn sys_modules_consult_or(module_name: &str, access: Expr) -> Expr {
+    use ruff_python_ast::BoolOp;
+
+    let cribo_attribute = |attribute: &str| {
+        expressions::attribute(
+            expressions::name(super::CRIBO_PREFIX, ExprContext::Load),
+            attribute,
+            ExprContext::Load,
+        )
+    };
+    let sys_modules =
+        || expressions::attribute(cribo_attribute("sys"), "modules", ExprContext::Load);
+
+    // "pkg" in _cribo.sys.modules or "pkg.mid" in ... or "pkg.mid.sub" in ...
+    let mut component_tests = Vec::new();
+    let mut boundary = 0_usize;
+    loop {
+        match module_name[boundary..].find('.') {
+            Some(offset) => boundary += offset,
+            None => boundary = module_name.len(),
+        }
+        component_tests.push(expressions::in_op(
+            expressions::string_literal(&module_name[..boundary]),
+            sys_modules(),
+        ));
+        if boundary == module_name.len() {
+            break;
+        }
+        boundary += 1;
+    }
+    let any_component_preloaded = if component_tests.len() == 1 {
+        component_tests
+            .pop()
+            .expect("one component test must exist")
+    } else {
+        expressions::bool_op(BoolOp::Or, component_tests)
+    };
+
+    expressions::if_exp(
+        any_component_preloaded,
+        expressions::call(
+            expressions::attribute(
+                cribo_attribute("importlib"),
+                "import_module",
+                ExprContext::Load,
+            ),
+            vec![expressions::string_literal(module_name)],
+            vec![],
+        ),
+        access,
+    )
+}
+
+/// Creates a wrapper module initialization call that honors preloaded
+/// `sys.modules` entries, for modules whose entries consumer code observably
+/// manipulates:
+///
+/// `module = <consult> else module.__init__(module)`
+pub(crate) fn create_wrapper_module_init_call_honoring_sys_modules(
+    module_var: &str,
+    original_module_name: &str,
+) -> Stmt {
+    let init_call = expressions::call(
+        expressions::attribute(
+            expressions::name(module_var, ExprContext::Load),
+            MODULE_INIT_ATTR,
+            ExprContext::Load,
+        ),
+        vec![expressions::name(module_var, ExprContext::Load)],
+        vec![],
+    );
+    statements::assign(
+        vec![expressions::name(module_var, ExprContext::Store)],
+        sys_modules_consult_or(original_module_name, init_call),
     )
 }

@@ -100,6 +100,956 @@ fn collect_names_recursive<'a>(expr: &'a Expr, out: &mut Vec<&'a str>) {
     }
 }
 
+/// Return whether a statement body accesses its OWN `sys.modules` entry — e.g.
+/// `sys.modules[__name__]`, `__name__ in sys.modules`, or
+/// `sys.modules.get(__name__)` — through `sys.modules`, an aliased `sys` import
+/// (`import sys as system`), a dotted access ending in `.sys.modules` (the bundled
+/// `_cribo.sys.modules` rewrite), or a possibly aliased `from sys import modules`
+/// binding (`from sys import modules as loaded`).
+///
+/// Such modules rely on being registered with the import machinery under their
+/// original name, so the bundler wraps them and their init registers the wrapper
+/// namespace in `sys.modules`. Registration is scoped to exactly this self-access
+/// pattern: registering modules that merely look up OTHER names in `sys.modules`
+/// (or registering every bundled module) would shadow installed distributions whose
+/// native extensions re-import their package while the bundled copy is still
+/// initializing.
+pub(crate) fn accesses_own_sys_modules_entry(body: &[ruff_python_ast::Stmt]) -> bool {
+    use ruff_python_ast::{
+        CmpOp, Stmt,
+        visitor::{Visitor, walk_expr, walk_stmt},
+    };
+
+    use crate::types::FxIndexSet;
+
+    /// Collect every alias bound to `sys` or to `sys.modules`, anywhere in the body
+    /// (aliases may be imported after the use site inside functions). Assignment-
+    /// derived aliases (`loaded = sys.modules`, `system = sys`) rebind the same
+    /// objects under new names, so they propagate too (fixpoint over chains).
+    struct AliasCollector {
+        sys_aliases: FxIndexSet<String>,
+        modules_aliases: FxIndexSet<String>,
+        changed: bool,
+    }
+
+    impl AliasCollector {
+        /// Whether an expression denotes the `sys.modules` object through the
+        /// collected aliases.
+        fn value_is_sys_modules(&self, expr: &Expr) -> bool {
+            match expr {
+                Expr::Attribute(attribute) if attribute.attr.as_str() == "modules" => {
+                    matches!(&*attribute.value, Expr::Name(name) if self.sys_aliases.contains(name.id.as_str()))
+                }
+                Expr::Name(name) => self.modules_aliases.contains(name.id.as_str()),
+                _ => false,
+            }
+        }
+
+        fn record_assignment_alias(&mut self, targets: &[Expr], value: &Expr) {
+            let is_modules = self.value_is_sys_modules(value);
+            let is_sys = !is_modules
+                && matches!(value, Expr::Name(name) if self.sys_aliases.contains(name.id.as_str()));
+            if !is_modules && !is_sys {
+                return;
+            }
+            for target in targets {
+                let Expr::Name(target_name) = target else {
+                    continue;
+                };
+                let inserted = if is_modules {
+                    self.modules_aliases
+                        .insert(target_name.id.as_str().to_owned())
+                } else {
+                    self.sys_aliases.insert(target_name.id.as_str().to_owned())
+                };
+                if inserted {
+                    self.changed = true;
+                }
+            }
+        }
+    }
+
+    impl<'ast> Visitor<'ast> for AliasCollector {
+        fn visit_stmt(&mut self, stmt: &'ast Stmt) {
+            match stmt {
+                Stmt::Import(import_stmt) => {
+                    for alias in &import_stmt.names {
+                        if alias.name.as_str() == "sys" {
+                            let bound_name = alias
+                                .asname
+                                .as_ref()
+                                .map_or_else(|| alias.name.as_str(), |name| name.as_str());
+                            if self.sys_aliases.insert(bound_name.to_owned()) {
+                                self.changed = true;
+                            }
+                        }
+                    }
+                }
+                Stmt::ImportFrom(import_from)
+                    if import_from.level == 0 && import_from.module.as_deref() == Some("sys") =>
+                {
+                    for alias in &import_from.names {
+                        if alias.name.as_str() == "modules" {
+                            let bound_name = alias
+                                .asname
+                                .as_ref()
+                                .map_or_else(|| alias.name.as_str(), |name| name.as_str());
+                            if self.modules_aliases.insert(bound_name.to_owned()) {
+                                self.changed = true;
+                            }
+                        }
+                    }
+                }
+                // `loaded = sys.modules` / `system = sys` rebind the same
+                // objects under new names (conservative over-approximation)
+                Stmt::Assign(assign) => {
+                    self.record_assignment_alias(&assign.targets, &assign.value);
+                }
+                Stmt::AnnAssign(ann_assign) => {
+                    if let Some(value) = &ann_assign.value {
+                        self.record_assignment_alias(
+                            std::slice::from_ref(&*ann_assign.target),
+                            value,
+                        );
+                    }
+                }
+                _ => {}
+            }
+            walk_stmt(self, stmt);
+        }
+    }
+
+    struct SelfEntryDetector {
+        found: bool,
+        sys_aliases: FxIndexSet<String>,
+        modules_aliases: FxIndexSet<String>,
+    }
+
+    impl SelfEntryDetector {
+        fn is_sys_modules(&self, expr: &Expr) -> bool {
+            match expr {
+                Expr::Attribute(attribute) if attribute.attr.as_str() == "modules" => {
+                    match &*attribute.value {
+                        Expr::Name(name) => self.sys_aliases.contains(name.id.as_str()),
+                        // Dotted access ending in `.sys.modules` (e.g. the bundled
+                        // `_cribo.sys.modules` rewrite)
+                        Expr::Attribute(inner) => inner.attr.as_str() == "sys",
+                        _ => false,
+                    }
+                }
+                Expr::Name(name) => self.modules_aliases.contains(name.id.as_str()),
+                _ => false,
+            }
+        }
+    }
+
+    fn is_dunder_name(expr: &Expr) -> bool {
+        matches!(expr, Expr::Name(name) if name.id.as_str() == "__name__")
+    }
+
+    impl<'ast> Visitor<'ast> for SelfEntryDetector {
+        fn visit_expr(&mut self, expr: &'ast Expr) {
+            if self.found {
+                return;
+            }
+            match expr {
+                // sys.modules[__name__]
+                Expr::Subscript(subscript)
+                    if self.is_sys_modules(&subscript.value)
+                        && is_dunder_name(&subscript.slice) =>
+                {
+                    self.found = true;
+                    return;
+                }
+                // __name__ in sys.modules / __name__ not in sys.modules
+                Expr::Compare(compare)
+                    if is_dunder_name(&compare.left)
+                        && compare.ops.iter().zip(compare.comparators.iter()).any(
+                            |(op, comparator)| {
+                                matches!(op, CmpOp::In | CmpOp::NotIn)
+                                    && self.is_sys_modules(comparator)
+                            },
+                        ) =>
+                {
+                    self.found = true;
+                    return;
+                }
+                // sys.modules.get(__name__), .setdefault(__name__, ...), .pop(__name__)
+                Expr::Call(call) => {
+                    if let Expr::Attribute(method) = &*call.func
+                        && matches!(method.attr.as_str(), "get" | "setdefault" | "pop")
+                        && self.is_sys_modules(&method.value)
+                        && call.arguments.args.first().is_some_and(is_dunder_name)
+                    {
+                        self.found = true;
+                        return;
+                    }
+                }
+                _ => {}
+            }
+            walk_expr(self, expr);
+        }
+    }
+
+    // Aliases may be bound after the use site (inside functions), so collect them
+    // over the whole body first
+    let mut alias_collector = AliasCollector {
+        sys_aliases: FxIndexSet::default(),
+        modules_aliases: FxIndexSet::default(),
+        changed: false,
+    };
+    // `sys` itself is always recognized: the bundled rewrite may reference it
+    // without a surviving import statement
+    alias_collector.sys_aliases.insert("sys".to_owned());
+    // Alias chains (`loaded = sys.modules; registry = loaded`) may appear in any
+    // source order, so run to fixpoint (bounded)
+    for _ in 0..16 {
+        alias_collector.changed = false;
+        for stmt in body {
+            alias_collector.visit_stmt(stmt);
+        }
+        if !alias_collector.changed {
+            break;
+        }
+    }
+
+    let mut detector = SelfEntryDetector {
+        found: false,
+        sys_aliases: alias_collector.sys_aliases,
+        modules_aliases: alias_collector.modules_aliases,
+    };
+    for stmt in body {
+        use ruff_python_ast::visitor::Visitor as _;
+        detector.visit_stmt(stmt);
+    }
+    detector.found
+}
+
+/// Collect the module names whose `sys.modules` entries a CONSUMER module
+/// observes: literal keys (`sys.modules["dep"]`) and import-resolved dynamic
+/// keys (`sys.modules[dep.__name__]` where `dep` is bound by `import dep`),
+/// through subscripts, `in`/`not in` membership, and `.get`/`.setdefault`/
+/// `.pop` calls on `sys.modules` (including aliased forms).
+///
+/// Bundled modules observed this way must register in `sys.modules` when their
+/// init runs: static imports call the generated initializer directly rather
+/// than the import machinery, so nothing else would populate the entry.
+pub(crate) fn sys_modules_observed_module_names(
+    body: &[ruff_python_ast::Stmt],
+) -> crate::types::FxIndexSet<String> {
+    use ruff_python_ast::{
+        CmpOp, Stmt,
+        visitor::{Visitor, walk_expr, walk_stmt},
+    };
+
+    use crate::types::FxIndexSet;
+
+    /// Collect `sys`/`sys.modules` aliases plus import bindings (name -> module),
+    /// including assignment-derived aliases (`loaded = sys.modules`,
+    /// `alias = provider`): rebinding an object serves the same observations as
+    /// the original name.
+    struct ConsumerAliasCollector {
+        sys_aliases: FxIndexSet<String>,
+        modules_aliases: FxIndexSet<String>,
+        import_bindings: crate::types::FxIndexMap<String, String>,
+        changed: bool,
+    }
+
+    impl ConsumerAliasCollector {
+        /// Whether an expression denotes the `sys.modules` object through the
+        /// collected aliases.
+        fn value_is_sys_modules(&self, expr: &Expr) -> bool {
+            use ruff_python_ast::Expr;
+            match expr {
+                Expr::Attribute(attribute) if attribute.attr.as_str() == "modules" => {
+                    matches!(&*attribute.value, Expr::Name(name) if self.sys_aliases.contains(name.id.as_str()))
+                }
+                Expr::Name(name) => self.modules_aliases.contains(name.id.as_str()),
+                _ => false,
+            }
+        }
+
+        fn record_assignment_alias(&mut self, targets: &[Expr], value: &Expr) {
+            use ruff_python_ast::Expr;
+            enum AliasKind {
+                SysModules,
+                Sys,
+                Module(String),
+            }
+            let kind = if self.value_is_sys_modules(value) {
+                AliasKind::SysModules
+            } else {
+                match value {
+                    Expr::Name(name) if self.sys_aliases.contains(name.id.as_str()) => {
+                        AliasKind::Sys
+                    }
+                    Expr::Name(name) => match self.import_bindings.get(name.id.as_str()) {
+                        Some(module) => AliasKind::Module(module.clone()),
+                        None => return,
+                    },
+                    _ => return,
+                }
+            };
+            for target in targets {
+                let Expr::Name(target_name) = target else {
+                    continue;
+                };
+                let inserted = match &kind {
+                    AliasKind::SysModules => self
+                        .modules_aliases
+                        .insert(target_name.id.as_str().to_owned()),
+                    AliasKind::Sys => self.sys_aliases.insert(target_name.id.as_str().to_owned()),
+                    AliasKind::Module(module) => {
+                        self.import_bindings
+                            .insert(target_name.id.as_str().to_owned(), module.clone())
+                            .as_deref()
+                            != Some(module)
+                    }
+                };
+                if inserted {
+                    self.changed = true;
+                }
+            }
+        }
+    }
+
+    impl<'ast> Visitor<'ast> for ConsumerAliasCollector {
+        fn visit_stmt(&mut self, stmt: &'ast Stmt) {
+            match stmt {
+                Stmt::Import(import_stmt) => {
+                    for alias in &import_stmt.names {
+                        let module_name = alias.name.as_str();
+                        if module_name == "sys" {
+                            let bound_name = alias
+                                .asname
+                                .as_ref()
+                                .map_or_else(|| alias.name.as_str(), |name| name.as_str());
+                            self.sys_aliases.insert(bound_name.to_owned());
+                            continue;
+                        }
+                        if let Some(asname) = &alias.asname {
+                            self.import_bindings
+                                .insert(asname.as_str().to_owned(), module_name.to_owned());
+                        } else {
+                            let top_level = module_name.split('.').next().unwrap_or(module_name);
+                            self.import_bindings
+                                .insert(top_level.to_owned(), top_level.to_owned());
+                        }
+                    }
+                }
+                Stmt::ImportFrom(import_from) if import_from.level == 0 => {
+                    if let Some(module) = import_from.module.as_deref() {
+                        for alias in &import_from.names {
+                            if alias.name.as_str() == "*" {
+                                continue;
+                            }
+                            let bound_name = alias
+                                .asname
+                                .as_ref()
+                                .map_or_else(|| alias.name.as_str(), |name| name.as_str());
+                            if module == "sys" && alias.name.as_str() == "modules" {
+                                self.modules_aliases.insert(bound_name.to_owned());
+                                continue;
+                            }
+                            // `from pkg import sub` may bind the submodule
+                            self.import_bindings.insert(
+                                bound_name.to_owned(),
+                                format!("{module}.{}", alias.name.as_str()),
+                            );
+                        }
+                    }
+                }
+                // `loaded = sys.modules` / `alias = provider` rebind the same
+                // objects under new names (conservative over-approximation)
+                Stmt::Assign(assign) => {
+                    self.record_assignment_alias(&assign.targets, &assign.value);
+                }
+                Stmt::AnnAssign(ann_assign) => {
+                    if let Some(value) = &ann_assign.value {
+                        self.record_assignment_alias(
+                            std::slice::from_ref(&*ann_assign.target),
+                            value,
+                        );
+                    }
+                }
+                _ => {}
+            }
+            walk_stmt(self, stmt);
+        }
+    }
+
+    struct ObservedKeyCollector {
+        observed: FxIndexSet<String>,
+        sys_aliases: FxIndexSet<String>,
+        modules_aliases: FxIndexSet<String>,
+        import_bindings: crate::types::FxIndexMap<String, String>,
+    }
+
+    impl ObservedKeyCollector {
+        fn is_sys_modules(&self, expr: &Expr) -> bool {
+            match expr {
+                Expr::Attribute(attribute) if attribute.attr.as_str() == "modules" => {
+                    match &*attribute.value {
+                        Expr::Name(name) => self.sys_aliases.contains(name.id.as_str()),
+                        Expr::Attribute(inner) => inner.attr.as_str() == "sys",
+                        _ => false,
+                    }
+                }
+                Expr::Name(name) => self.modules_aliases.contains(name.id.as_str()),
+                _ => false,
+            }
+        }
+
+        /// A mapping view over `sys.modules` (`sys.modules.keys()`): membership
+        /// tests through it observe the same entries as the mapping itself.
+        fn is_sys_modules_view(&self, expr: &Expr) -> bool {
+            let Expr::Call(call) = expr else {
+                return false;
+            };
+            call.arguments.args.is_empty()
+                && call.arguments.keywords.is_empty()
+                && matches!(&*call.func, Expr::Attribute(method)
+                    if method.attr.as_str() == "keys" && self.is_sys_modules(&method.value))
+        }
+
+        /// Resolve a key expression to a module name: a string literal, or an
+        /// `<import binding>.__name__` chain.
+        fn resolve_key(&self, expr: &Expr) -> Option<String> {
+            match expr {
+                Expr::StringLiteral(literal) => Some(literal.value.to_str().to_owned()),
+                Expr::Attribute(attribute) if attribute.attr.as_str() == "__name__" => {
+                    let mut segments: Vec<&str> = Vec::new();
+                    let mut current = &*attribute.value;
+                    loop {
+                        match current {
+                            Expr::Attribute(inner) => {
+                                segments.push(inner.attr.as_str());
+                                current = &inner.value;
+                            }
+                            Expr::Name(name) => {
+                                let base = self.import_bindings.get(name.id.as_str())?;
+                                let mut path = base.clone();
+                                for segment in segments.iter().rev() {
+                                    path.push('.');
+                                    path.push_str(segment);
+                                }
+                                return Some(path);
+                            }
+                            _ => return None,
+                        }
+                    }
+                }
+                _ => None,
+            }
+        }
+
+        fn record_key(&mut self, expr: &Expr) {
+            if let Some(name) = self.resolve_key(expr) {
+                self.observed.insert(name);
+            }
+        }
+    }
+
+    impl<'ast> Visitor<'ast> for ObservedKeyCollector {
+        fn visit_expr(&mut self, expr: &'ast Expr) {
+            match expr {
+                Expr::Subscript(subscript) if self.is_sys_modules(&subscript.value) => {
+                    self.record_key(&subscript.slice);
+                }
+                Expr::Compare(compare) => {
+                    for (op, comparator) in compare.ops.iter().zip(compare.comparators.iter()) {
+                        if matches!(op, CmpOp::In | CmpOp::NotIn)
+                            && (self.is_sys_modules(comparator)
+                                || self.is_sys_modules_view(comparator))
+                        {
+                            self.record_key(&compare.left);
+                        }
+                    }
+                }
+                Expr::Call(call) => {
+                    if let Expr::Attribute(method) = &*call.func
+                        && matches!(method.attr.as_str(), "get" | "setdefault" | "pop")
+                        && self.is_sys_modules(&method.value)
+                        && let Some(key) = call.arguments.args.first()
+                    {
+                        self.record_key(key);
+                    }
+                }
+                _ => {}
+            }
+            walk_expr(self, expr);
+        }
+    }
+
+    let mut alias_collector = ConsumerAliasCollector {
+        sys_aliases: FxIndexSet::default(),
+        modules_aliases: FxIndexSet::default(),
+        import_bindings: crate::types::FxIndexMap::default(),
+        changed: false,
+    };
+    alias_collector.sys_aliases.insert("sys".to_owned());
+    // Alias chains (`m = sys.modules; loaded = m`) resolve iteratively; textual
+    // order does not bound the chain depth, so run to fixpoint (bounded)
+    for _ in 0..16 {
+        alias_collector.changed = false;
+        for stmt in body {
+            alias_collector.visit_stmt(stmt);
+        }
+        if !alias_collector.changed {
+            break;
+        }
+    }
+
+    let mut collector = ObservedKeyCollector {
+        observed: FxIndexSet::default(),
+        sys_aliases: alias_collector.sys_aliases,
+        modules_aliases: alias_collector.modules_aliases,
+        import_bindings: alias_collector.import_bindings,
+    };
+    for stmt in body {
+        collector.visit_stmt(stmt);
+    }
+    collector.observed
+}
+
+/// Collect the module names of IMPORTED modules whose filesystem/import-spec
+/// globals a consumer reads: `provider.__file__`, `provider.__spec__.origin`,
+/// `provider.__loader__`, `provider.__cached__`, `provider.__path__`.
+///
+/// A bundled provider's generated namespace carries no faithful values for
+/// these, so observed targets must keep their installed module identity.
+pub(crate) fn imported_module_dunder_read_targets(
+    body: &[ruff_python_ast::Stmt],
+) -> crate::types::FxIndexSet<String> {
+    use ruff_python_ast::{
+        Stmt,
+        visitor::{Visitor, walk_expr, walk_stmt},
+    };
+
+    use crate::types::{FxIndexMap, FxIndexSet};
+
+    /// Collect import bindings (name -> module) over the whole body,
+    /// including assignment-derived aliases (`alias = provider`): a rebound
+    /// module object serves the same dunder reads as the import binding.
+    struct ImportBindingCollector {
+        bindings: FxIndexMap<String, String>,
+        /// Binding names known to hold WHOLE MODULE OBJECTS (`import X`,
+        /// `import a.b as m`, and aliases thereof): identity-sensitive
+        /// contexts (hashing) only apply to these, because from-imported
+        /// names are usually plain values
+        whole_module_bindings: FxIndexSet<String>,
+        changed: bool,
+    }
+
+    impl<'ast> Visitor<'ast> for ImportBindingCollector {
+        fn visit_stmt(&mut self, stmt: &'ast Stmt) {
+            match stmt {
+                Stmt::Import(import_stmt) => {
+                    for alias in &import_stmt.names {
+                        let module_name = alias.name.as_str();
+                        if let Some(asname) = &alias.asname {
+                            self.insert(asname.as_str(), module_name.to_owned(), true);
+                        } else {
+                            let top_level = module_name.split('.').next().unwrap_or(module_name);
+                            self.insert(top_level, top_level.to_owned(), true);
+                        }
+                    }
+                }
+                Stmt::ImportFrom(import_from) if import_from.level == 0 => {
+                    if let Some(module) = import_from.module.as_deref() {
+                        for alias in &import_from.names {
+                            if alias.name.as_str() == "*" {
+                                continue;
+                            }
+                            let bound_name = alias
+                                .asname
+                                .as_ref()
+                                .map_or_else(|| alias.name.as_str(), |name| name.as_str());
+                            // `from pkg import sub` may bind the submodule
+                            self.insert(
+                                bound_name,
+                                format!("{module}.{}", alias.name.as_str()),
+                                false,
+                            );
+                        }
+                    }
+                }
+                // `alias = provider` rebinds the module object under a new
+                // name; conservative over-approximation ignores control flow
+                // and later reassignments
+                Stmt::Assign(assign) => {
+                    if let Expr::Name(value) = &*assign.value
+                        && let Some(module) = self.bindings.get(value.id.as_str()).cloned()
+                    {
+                        let whole = self.whole_module_bindings.contains(value.id.as_str());
+                        for target in &assign.targets {
+                            if let Expr::Name(target_name) = target {
+                                self.insert(target_name.id.as_str(), module.clone(), whole);
+                            }
+                        }
+                    }
+                }
+                Stmt::AnnAssign(ann_assign) => {
+                    if let Some(value) = &ann_assign.value
+                        && let Expr::Name(value_name) = &**value
+                        && let Some(module) = self.bindings.get(value_name.id.as_str()).cloned()
+                        && let Expr::Name(target_name) = &*ann_assign.target
+                    {
+                        let whole = self.whole_module_bindings.contains(value_name.id.as_str());
+                        self.insert(target_name.id.as_str(), module, whole);
+                    }
+                }
+                _ => {}
+            }
+            walk_stmt(self, stmt);
+        }
+    }
+
+    impl ImportBindingCollector {
+        fn insert(&mut self, name: &str, module: String, whole_module: bool) {
+            if self.bindings.get(name) != Some(&module) {
+                self.bindings.insert(name.to_owned(), module);
+                self.changed = true;
+            }
+            if whole_module && self.whole_module_bindings.insert(name.to_owned()) {
+                self.changed = true;
+            }
+        }
+    }
+
+    struct DunderReadCollector {
+        observed: FxIndexSet<String>,
+        bindings: FxIndexMap<String, String>,
+        whole_module_bindings: FxIndexSet<String>,
+    }
+
+    /// Inspect APIs that need a REAL module object: source-inspection needs an
+    /// on-disk source file, `ismodule` tests the object's TYPE, and `getmodule`
+    /// returns `None` for anything that is not a `ModuleType` — a generated
+    /// `SimpleNamespace` fails all of them.
+    const SOURCE_INSPECTION_APIS: [&str; 8] = [
+        "getsource",
+        "getsourcefile",
+        "getsourcelines",
+        "getfile",
+        "getabsfile",
+        "findsource",
+        "ismodule",
+        "getmodule",
+    ];
+
+    impl DunderReadCollector {
+        /// Return whether a call invokes a source-inspection API, through the
+        /// inspect module (or an alias) or a from-imported function.
+        fn is_source_inspection_call(&self, call: &ruff_python_ast::ExprCall) -> bool {
+            match &*call.func {
+                Expr::Attribute(attribute) => {
+                    SOURCE_INSPECTION_APIS.contains(&attribute.attr.as_str())
+                        && matches!(&*attribute.value, Expr::Name(base)
+                            if self.bindings.get(base.id.as_str()).is_some_and(|module| module == "inspect"))
+                }
+                Expr::Name(name) => self.bindings.get(name.id.as_str()).is_some_and(|module| {
+                    module
+                        .strip_prefix("inspect.")
+                        .is_some_and(|function| SOURCE_INSPECTION_APIS.contains(&function))
+                }),
+                _ => false,
+            }
+        }
+
+        /// Return whether an expression statically denotes `types.ModuleType`:
+        /// an attribute through the imported `types` module (or an alias) or a
+        /// from-imported `ModuleType` binding.
+        fn is_module_type_expr(&self, expr: &Expr) -> bool {
+            match expr {
+                Expr::Attribute(attribute) => {
+                    attribute.attr.as_str() == "ModuleType"
+                        && matches!(&*attribute.value, Expr::Name(base)
+                            if self.bindings.get(base.id.as_str()).is_some_and(|module| module == "types"))
+                }
+                Expr::Name(name) => self
+                    .bindings
+                    .get(name.id.as_str())
+                    .is_some_and(|module| module == "types.ModuleType"),
+                _ => false,
+            }
+        }
+
+        /// Return whether a call is `isinstance(x, types.ModuleType)` (with the
+        /// class argument possibly inside a tuple): the type test distinguishes
+        /// real module objects from generated namespaces, so its import-bound
+        /// subject must stay a real installed module.
+        fn is_module_type_check(&self, call: &ruff_python_ast::ExprCall) -> bool {
+            let Expr::Name(callee) = &*call.func else {
+                return false;
+            };
+            if callee.id.as_str() != "isinstance" {
+                return false;
+            }
+            match call.arguments.args.get(1) {
+                Some(Expr::Tuple(tuple)) => tuple
+                    .elts
+                    .iter()
+                    .any(|element| self.is_module_type_expr(element)),
+                Some(class_expr) => self.is_module_type_expr(class_expr),
+                None => false,
+            }
+        }
+
+        /// The inspected object of an inspect API call: the first positional
+        /// argument or the `object=` keyword (CPython's parameter name).
+        fn first_or_object_argument(call: &ruff_python_ast::ExprCall) -> Option<&Expr> {
+            call.arguments.args.first().or_else(|| {
+                call.arguments
+                    .keywords
+                    .iter()
+                    .find(|keyword| {
+                        keyword
+                            .arg
+                            .as_ref()
+                            .is_some_and(|name| name.as_str() == "object")
+                    })
+                    .map(|keyword| &keyword.value)
+            })
+        }
+
+        /// The plain name whose module identity an expression exposes:
+        /// `type(name)` calls and `name.__class__` attributes.
+        fn module_typed_subject(expr: &Expr) -> Option<&str> {
+            match expr {
+                Expr::Call(call) => {
+                    let Expr::Name(callee) = &*call.func else {
+                        return None;
+                    };
+                    if callee.id.as_str() != "type" || call.arguments.args.len() != 1 {
+                        return None;
+                    }
+                    match call.arguments.args.first() {
+                        Some(Expr::Name(name)) => Some(name.id.as_str()),
+                        _ => None,
+                    }
+                }
+                Expr::Attribute(attribute) if attribute.attr.as_str() == "__class__" => {
+                    match &*attribute.value {
+                        Expr::Name(name) => Some(name.id.as_str()),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            }
+        }
+
+        /// Return whether a call creates a weak reference (`weakref.ref`,
+        /// `weakref.proxy`, or their from-imported forms).
+        fn is_weakref_call(&self, call: &ruff_python_ast::ExprCall) -> bool {
+            match &*call.func {
+                Expr::Attribute(attribute) => {
+                    matches!(attribute.attr.as_str(), "ref" | "proxy")
+                        && matches!(&*attribute.value, Expr::Name(base)
+                            if self.bindings.get(base.id.as_str()).is_some_and(|module| module == "weakref"))
+                }
+                Expr::Name(name) => self
+                    .bindings
+                    .get(name.id.as_str())
+                    .is_some_and(|module| module == "weakref.ref" || module == "weakref.proxy"),
+                _ => false,
+            }
+        }
+    }
+
+    impl<'ast> Visitor<'ast> for DunderReadCollector {
+        fn visit_expr(&mut self, expr: &'ast Expr) {
+            if let Expr::Attribute(attribute) = expr
+                && matches!(
+                    attribute.attr.as_str(),
+                    "__file__" | "__spec__" | "__loader__" | "__cached__" | "__path__" | "__dict__"
+                )
+                && let Expr::Name(base) = &*attribute.value
+                && let Some(module_name) = self.bindings.get(base.id.as_str())
+            {
+                // __dict__ (and vars() below) exposes the COMPLETE module
+                // dictionary including private bindings; generated namespaces
+                // hold only referenced exports, so the provider must stay real
+                self.observed.insert(module_name.clone());
+            }
+            // vars(provider) reads the module dictionary exactly like
+            // provider.__dict__
+            if let Expr::Call(call) = expr
+                && matches!(&*call.func, Expr::Name(callee) if callee.id.as_str() == "vars")
+                && let Some(Expr::Name(argument)) = call.arguments.args.first()
+                && let Some(module_name) = self.bindings.get(argument.id.as_str())
+            {
+                self.observed.insert(module_name.clone());
+            }
+            // inspect.getsource(provider) and friends need a real module with a
+            // source file; record import-bound arguments
+            if let Expr::Call(call) = expr
+                && self.is_source_inspection_call(call)
+                && let Some(Expr::Name(argument)) = Self::first_or_object_argument(call)
+                && let Some(module_name) = self.bindings.get(argument.id.as_str())
+                && module_name != "inspect"
+            {
+                self.observed.insert(module_name.clone());
+            }
+            // isinstance(provider, types.ModuleType) distinguishes real module
+            // objects from generated namespaces; record import-bound subjects
+            if let Expr::Call(call) = expr
+                && self.is_module_type_check(call)
+                && let Some(Expr::Name(subject)) = call.arguments.args.first()
+                && let Some(module_name) = self.bindings.get(subject.id.as_str())
+                && module_name != "types"
+            {
+                self.observed.insert(module_name.clone());
+            }
+            // Exact module-type identity checks (`type(provider) is
+            // types.ModuleType`, `provider.__class__ is types.ModuleType`)
+            // observe the same distinction
+            if let Expr::Compare(compare) = expr {
+                let operands: Vec<&Expr> = std::iter::once(&*compare.left)
+                    .chain(compare.comparators.iter())
+                    .collect();
+                for pair in operands.windows(2) {
+                    let subject = if self.is_module_type_expr(pair[0]) {
+                        pair[1]
+                    } else if self.is_module_type_expr(pair[1]) {
+                        pair[0]
+                    } else {
+                        continue;
+                    };
+                    if let Some(name) = Self::module_typed_subject(subject)
+                        && let Some(module_name) = self.bindings.get(name)
+                        && module_name != "types"
+                    {
+                        self.observed.insert(module_name.clone());
+                    }
+                }
+            }
+            // weakref.ref(provider) / weakref.proxy(provider): Python modules
+            // support weak references, a generated SimpleNamespace does not
+            if let Expr::Call(call) = expr
+                && Self::is_weakref_call(self, call)
+                && let Some(Expr::Name(argument)) = call.arguments.args.first()
+                && let Some(module_name) = self.bindings.get(argument.id.as_str())
+                && module_name != "weakref"
+            {
+                self.observed.insert(module_name.clone());
+            }
+            // Hash-requiring contexts: real modules are identity-hashable but a
+            // generated SimpleNamespace is not, so an imported provider used as
+            // a dict key, set element, hash() argument, or subscript key must
+            // stay a real installed module. Only WHOLE-MODULE bindings
+            // (`import provider`, `import a.b as m`, and aliases) are
+            // recorded: from-imported names are usually plain values, and
+            // subscripting by them is pervasive.
+            let module_binding = |name: &str| {
+                self.whole_module_bindings
+                    .contains(name)
+                    .then(|| self.bindings.get(name).cloned())
+                    .flatten()
+            };
+            match expr {
+                Expr::Dict(dict) => {
+                    for item in &dict.items {
+                        if let Some(Expr::Name(key)) = item.key.as_ref()
+                            && let Some(module_name) = module_binding(key.id.as_str())
+                        {
+                            self.observed.insert(module_name);
+                        }
+                    }
+                }
+                Expr::Set(set) => {
+                    for element in &set.elts {
+                        if let Expr::Name(name) = element
+                            && let Some(module_name) = module_binding(name.id.as_str())
+                        {
+                            self.observed.insert(module_name);
+                        }
+                    }
+                }
+                Expr::Call(call) if matches!(&*call.func, Expr::Name(callee) if callee.id.as_str() == "hash") => {
+                    if let Some(Expr::Name(argument)) = call.arguments.args.first()
+                        && let Some(module_name) = module_binding(argument.id.as_str())
+                    {
+                        self.observed.insert(module_name);
+                    }
+                }
+                // Subscript accesses like `registry[provider]` hash the key
+                Expr::Subscript(subscript) => {
+                    if let Expr::Name(key) = &*subscript.slice
+                        && let Some(module_name) = module_binding(key.id.as_str())
+                    {
+                        self.observed.insert(module_name);
+                    }
+                }
+                _ => {}
+            }
+            walk_expr(self, expr);
+        }
+    }
+
+    let mut binding_collector = ImportBindingCollector {
+        bindings: FxIndexMap::default(),
+        whole_module_bindings: FxIndexSet::default(),
+        changed: false,
+    };
+    // Alias chains (`a = provider; b = a`) resolve iteratively; textual order
+    // does not bound the chain depth, so run to fixpoint (bounded for safety)
+    for _ in 0..16 {
+        binding_collector.changed = false;
+        for stmt in body {
+            binding_collector.visit_stmt(stmt);
+        }
+        if !binding_collector.changed {
+            break;
+        }
+    }
+    let mut collector = DunderReadCollector {
+        observed: FxIndexSet::default(),
+        bindings: binding_collector.bindings,
+        whole_module_bindings: binding_collector.whole_module_bindings,
+    };
+    for stmt in body {
+        collector.visit_stmt(stmt);
+    }
+    collector.observed
+}
+
+/// Collect walrus targets in a lambda body into `names`, without entering
+/// NESTED lambda bodies (their walrus targets bind the nested scope). A walrus
+/// target is local to the lambda for its entire body: reads before the
+/// assignment raise `UnboundLocalError` rather than resolving enclosing
+/// bindings.
+pub(crate) fn collect_lambda_scope_walrus_targets(expr: &Expr, names: &mut Vec<String>) {
+    use ruff_python_ast::{
+        AnyNodeRef,
+        visitor::source_order::{SourceOrderVisitor, TraversalSignal, walk_expr},
+    };
+
+    struct WalrusCollector<'names> {
+        names: &'names mut Vec<String>,
+    }
+    impl<'a> SourceOrderVisitor<'a> for WalrusCollector<'_> {
+        fn enter_node(&mut self, node: AnyNodeRef<'a>) -> TraversalSignal {
+            if matches!(node, AnyNodeRef::ExprLambda(_)) {
+                TraversalSignal::Skip
+            } else {
+                TraversalSignal::Traverse
+            }
+        }
+
+        fn visit_expr(&mut self, expr: &'a Expr) {
+            if let Expr::Named(named) = expr
+                && let Expr::Name(target) = &*named.target
+            {
+                self.names.push(target.id.to_string());
+            }
+            walk_expr(self, expr);
+        }
+    }
+    let mut collector = WalrusCollector { names };
+    collector.visit_expr(expr);
+}
+
 #[cfg(test)]
 mod tests {
     use ruff_python_parser::parse_module;

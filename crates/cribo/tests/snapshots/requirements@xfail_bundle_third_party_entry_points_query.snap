@@ -1,0 +1,7 @@
+---
+source: crates/cribo/tests/test_bundling_snapshots.rs
+input_file: crates/cribo/tests/fixtures/xfail_bundle_third_party_entry_points_query/main.py
+---
+packages:
+  - provider==1.0
+count: 1

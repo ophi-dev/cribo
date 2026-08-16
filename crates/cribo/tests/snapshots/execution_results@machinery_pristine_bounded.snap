@@ -1,0 +1,9 @@
+---
+source: crates/cribo/tests/test_bundling_snapshots.rs
+input_file: crates/cribo/tests/fixtures/machinery_pristine_bounded/main.py
+---
+ExecutionResults {
+    status: Success,
+    stdout: "counter loaded\ncounter loaded\ncounter loaded\ncounter loaded\nbounded: True",
+    stderr: "",
+}

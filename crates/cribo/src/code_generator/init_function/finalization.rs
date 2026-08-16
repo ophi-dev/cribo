@@ -8,6 +8,7 @@ use ruff_text_size::TextRange;
 use super::{TransformError, state::InitFunctionState};
 use crate::{
     ast_builder,
+    ast_builder::{CRIBO_PREFIX, CRIBO_SYS_ALIAS},
     code_generator::{
         bundler::Bundler, context::ModuleTransformContext, module_transformer::SELF_PARAM,
     },
@@ -90,12 +91,41 @@ impl FinalizationPhase {
             node_index: AtomicNodeIndex::NONE,
         };
 
+        // Builtins used by the generated guards are captured as keyword-only
+        // parameter DEFAULTS at definition time (bundle prelude): the init runs
+        // lazily, after user code may have legally rebound `getattr` or
+        // `BaseException` in the bundle's global namespace
+        let captured_builtin =
+            |param_name: &str, builtin_name: &str| ruff_python_ast::ParameterWithDefault {
+                range: TextRange::default(),
+                parameter: ruff_python_ast::Parameter {
+                    range: TextRange::default(),
+                    name: Identifier::new(param_name, TextRange::default()),
+                    annotation: None,
+                    node_index: AtomicNodeIndex::NONE,
+                },
+                default: Some(Box::new(ast_builder::expressions::name(
+                    builtin_name,
+                    ExprContext::Load,
+                ))),
+                node_index: AtomicNodeIndex::NONE,
+            };
+
         let parameters = ruff_python_ast::Parameters {
             node_index: AtomicNodeIndex::NONE,
             posonlyargs: vec![].into(),
             args: vec![self_param].into(),
             vararg: None,
-            kwonlyargs: vec![].into(),
+            kwonlyargs: vec![
+                captured_builtin(super::CAPTURED_GETATTR, "getattr"),
+                captured_builtin(super::CAPTURED_BASE_EXCEPTION, "BaseException"),
+                // Generated support globals resolve through the SAME names as
+                // parameters, so the lazily executed body picks the captured
+                // values even if user entry code rebinds `_cribo`/`_sys` later
+                captured_builtin(CRIBO_PREFIX, CRIBO_PREFIX),
+                captured_builtin(CRIBO_SYS_ALIAS, CRIBO_SYS_ALIAS),
+            ]
+            .into(),
             kwarg: None,
             range: TextRange::default(),
         };

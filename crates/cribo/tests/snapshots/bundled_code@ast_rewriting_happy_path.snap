@@ -10,24 +10,130 @@ import sys as _sys
 import importlib as _importlib
 class _CriboModule():
 
-    def __init__(self, m, p):
-        self._m, self._p = m, p
+    def __init__(_cribo_self, m, p):
+        _cribo_self._m, _cribo_self._p = m, p
 
-    def __getattr__(self, n):
-        f = self._p + '.' + n
+    def __getattr__(_cribo_self, n, *, _getattr=getattr):
+        f = _cribo_self._p + '.' + n
         try:
             return _CriboModule(_importlib.import_module(f), f)
         except ImportError:
-            return getattr(self._m, n)
+            return _getattr(_cribo_self._m, n)
 
-    def __getattribute__(self, n):
-        return object.__getattribute__(self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else getattr(object.__getattribute__(self, '_m'), n)
+    def __getattribute__(_cribo_self, n, *, _getattr=getattr, _object=object):
+        return _object.__getattribute__(_cribo_self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else _getattr(_object.__getattribute__(_cribo_self, '_m'), n)
 class _Cribo():
 
-    def __getattr__(self, n):
+    def __getattr__(_cribo_self, n):
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
+_cribo_captured = {}
+class _CriboPreservedLoader:
+    _pristine = {}
+
+    def __init__(self, entry, namespace=None, reload_target=None):
+        self._entry = entry
+        self._namespace = namespace
+        self._reload_target = reload_target
+
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
+        module = None
+        if self._namespace is not None:
+            module = self._namespace
+        elif self._entry[1] is not None:
+            module = _globals()[self._entry[1]]
+        if module is not None:
+            if _getattr(module, '_cribo_machinery_loaded', False) or _getattr(module, '_cribo_failed_life', False) or _getattr(module, '__initialized__', False) and _getattr(module, '_cribo_registered', False):
+                saved = _type(self)._pristine.get(_id(module))
+                fresh = _ModuleType(spec.name)
+                fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
+                fresh._cribo_fresh_life = True
+                return fresh
+            return module
+        module = _ModuleType(spec.name)
+        for export, binding in self._entry[3].items():
+            _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
+        return module
+
+    def exec_module(self, module, *, _BaseException=BaseException, _dict=dict, _getattr=getattr, _globals=globals, _id=id, _type=type):
+        init = self._entry[0]
+        pristine = _type(self)._pristine
+        key = _id(module)
+        record_snapshot = not _getattr(module, '_cribo_fresh_life', False) and not _getattr(module, '__initialized__', False) and (self._namespace is not None or self._entry[1] is not None)
+        if init is None:
+            if record_snapshot and key not in pristine:
+                pristine[key] = _dict(module.__dict__)
+            module._cribo_machinery_loaded = True
+            return
+        is_reload = self._reload_target is module
+        if is_reload:
+            module.__initialized__ = False
+            module.__initializing__ = False
+        state = _dict(module.__dict__)
+        if record_snapshot and key not in pristine:
+            pristine[key] = _dict(state)
+        try:
+            _globals()[init](module)
+            module._cribo_machinery_loaded = True
+        except _BaseException:
+            if is_reload:
+                module.__initializing__ = False
+            else:
+                module.__dict__.clear()
+                module.__dict__.update(state)
+                module.__initializing__ = False
+                module._cribo_failed_life = True
+            raise
+class _CriboPreservedFinder:
+
+    def __init__(self):
+        self._targets = {}
+        self._namespaces = {}
+        self._registry = {}
+        self._loader = _CriboPreservedLoader
+
+    def register(self, name, init, namespace, is_package, exports=None):
+        entry = init, namespace, is_package, exports or {}
+        self._targets[name] = entry
+        self._registry[name] = entry
+
+    def bind(self, name, namespace):
+        self._namespaces[name] = namespace
+
+    def find_spec(self, name, path=None, target=None, *, _getattr=getattr, _globals=globals):
+        entry = self._targets.get(name)
+        if entry is None:
+            return None
+        parent_name = name.rpartition('.')[0]
+        if parent_name:
+            parent = _sys.modules.get(parent_name)
+            expected = self._namespaces.get(parent_name)
+            if expected is None:
+                parent_entry = self._registry.get(parent_name)
+                if parent_entry is not None and parent_entry[1] is not None:
+                    expected = _globals().get(parent_entry[1])
+            if parent is not None and expected is not None and parent is not expected and not _getattr(parent, '_cribo_fresh_life', False) and not _getattr(parent, '_cribo_machinery_loaded', False):
+                return None
+        from importlib.machinery import ModuleSpec
+        return ModuleSpec(name, self._loader(entry, self._namespaces.get(name), target), is_package=entry[2])
+_cribo_finder = _CriboPreservedFinder()
+_sys.meta_path.append(_cribo_finder)
+_cribo_finder_local = _CriboPreservedFinder()
+_cribo_finder_local._namespaces = _cribo_finder._namespaces
+_cribo_finder_local._registry = _cribo_finder._registry
+for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
+    if getattr(_cribo_meta_finder, '__name__', '') == 'PathFinder':
+        _sys.meta_path.insert(_cribo_index, _cribo_finder_local)
+        break
+else:
+    _sys.meta_path.insert(0, _cribo_finder_local)
+_cribo_finder_local.register('utils', None, 'utils', True)
+_cribo_finder_local.register('models', None, 'models', True)
+_cribo_finder_local.register('services', None, 'services', True)
+_cribo_finder.register('utils.helpers', None, None, False, {'format_message': 'format_message', 'calculate_total': 'calculate_total'})
+_cribo_finder.register('models.user', None, None, False, {'UserRole': 'UserRole', 'User': 'User'})
+_cribo_finder.register('services.database', None, None, False, {'DatabaseConnection': 'DatabaseConnection', 'DatabaseService': 'DatabaseService'})
 utils_helpers = _cribo.types.SimpleNamespace(__name__='utils.helpers', __doc__="\nUtility helper functions for the happy path test.\nThese functions have unique names that shouldn't conflict.\n")
 utils = _cribo.types.SimpleNamespace(__name__='utils', __initializing__=False, __initialized__=False, __path__=[])
 utils.helpers = utils_helpers
@@ -35,9 +141,11 @@ utils.helpers = utils_helpers
 def format_message(greeting: str, name: str) -> str:
     """Format a greeting message."""
     return f"{greeting}, {name}!"
+format_message.__module__ = 'utils.helpers'
 def calculate_total(values: _cribo.typing.List[int]) -> int:
     """Calculate the sum of a list of integers."""
     return sum(values)
+calculate_total.__module__ = 'utils.helpers'
 utils_helpers.calculate_total = calculate_total
 utils_helpers.format_message = format_message
 models_user = _cribo.types.SimpleNamespace(__name__='models.user', __doc__='\nUser model with role enumeration.\nNo naming conflicts with other modules.\n')
@@ -53,22 +161,27 @@ UserRole.__module__ = 'models.user'
 class User:
     """Simple user model."""
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'models.user'), _cribo_f)[1])
     def __init__(self, name: str, email: str, role: UserRole=UserRole.USER):
         self.name = name
         self.email = email
         self.role = role
         self.active = True
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'models.user'), _cribo_f)[1])
     def __str__(self) -> str:
         return f"User(name='{self.name}', email='{self.email}', role={self.role.value})"
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'models.user'), _cribo_f)[1])
     def __repr__(self) -> str:
         return self.__str__()
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'models.user'), _cribo_f)[1])
     def activate(self) -> None:
         """Activate the user."""
         self.active = True
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'models.user'), _cribo_f)[1])
     def deactivate(self) -> None:
         """Deactivate the user."""
         self.active = False
@@ -82,15 +195,18 @@ services.database = services_database
 class DatabaseConnection:
     """Represents a database connection."""
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'services.database'), _cribo_f)[1])
     def __init__(self, connection_string: str):
         self.connection_string = connection_string
         self.is_connected = False
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'services.database'), _cribo_f)[1])
     def connect(self) -> bool:
         """Connect to the database."""
         self.is_connected = True
         return True
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'services.database'), _cribo_f)[1])
     def disconnect(self) -> None:
         """Disconnect from the database."""
         self.is_connected = False
@@ -98,27 +214,37 @@ DatabaseConnection.__module__ = 'services.database'
 class DatabaseService:
     """Service for database operations."""
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'services.database'), _cribo_f)[1])
     def __init__(self, database_path: str):
         self.connection_string = f"sqlite://{database_path}"
         self.connection = DatabaseConnection(self.connection_string)
         self.cache: _cribo.typing.Dict[str, _cribo.typing.Any] = {}
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'services.database'), _cribo_f)[1])
     def connect(self) -> bool:
         """Connect to the database."""
         return self.connection.connect()
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'services.database'), _cribo_f)[1])
     def query(self, sql: str) -> _cribo.typing.Optional[_cribo.typing.Dict[str, _cribo.typing.Any]]:
         """Execute a query."""
         if not self.connection.is_connected:
             self.connect()
         return {"result": f"Executed: {sql}"}
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'services.database'), _cribo_f)[1])
     def close(self) -> None:
         """Close the database connection."""
         self.connection.disconnect()
 DatabaseService.__module__ = 'services.database'
 services_database.DatabaseConnection = DatabaseConnection
 services_database.DatabaseService = DatabaseService
+_cribo_captured['format_message'] = format_message
+_cribo_captured['calculate_total'] = calculate_total
+_cribo_captured['UserRole'] = UserRole
+_cribo_captured['User'] = User
+_cribo_captured['DatabaseConnection'] = DatabaseConnection
+_cribo_captured['DatabaseService'] = DatabaseService
 """\nHappy path main module that uses multiple nested modules without name collisions.\nThis should bundle cleanly without any AST rewriting for conflicts.\n"""
 def main():
     user = User("Alice", "alice@example.com", UserRole.ADMIN)

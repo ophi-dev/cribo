@@ -1,0 +1,6 @@
+---
+source: crates/cribo/tests/test_bundling_snapshots.rs
+input_file: crates/cribo/tests/fixtures/importlib_preserved_first_party/main.py
+---
+packages: []
+count: 0

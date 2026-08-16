@@ -1,0 +1,9 @@
+---
+source: crates/cribo/tests/test_bundling_snapshots.rs
+input_file: crates/cribo/tests/fixtures/inlined_class_method_identity/main.py
+---
+ExecutionResults {
+    status: Success,
+    stdout: "init module: records\nmeta method: records\nobserved: ['records']\nentry:x",
+    stderr: "",
+}

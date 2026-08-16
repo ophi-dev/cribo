@@ -71,6 +71,12 @@ struct Cli {
     /// Disable tree-shaking optimization (tree-shaking is enabled by default)
     #[arg(long = "no-tree-shake", default_value_t = true, action = clap::ArgAction::SetFalse)]
     tree_shake: bool,
+
+    /// Bundle third-party (site-packages) dependencies into the output.
+    /// Packages with native extensions (.so/.pyd) automatically stay external
+    /// and are emitted into requirements.txt
+    #[arg(long)]
+    bundle_third_party: bool,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -112,6 +118,11 @@ fn main() -> anyhow::Result<()> {
 
     // Override tree-shake from CLI
     config.tree_shake = cli.tree_shake;
+
+    // Enable third-party bundling from CLI (opt-in; config file/env can also enable it)
+    if cli.bundle_third_party {
+        config.bundle_third_party = Some(true);
+    }
 
     debug!("Configuration: {config:?}");
 

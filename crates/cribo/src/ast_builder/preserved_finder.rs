@@ -1,0 +1,403 @@
+//! Meta-path finder serving bundled modules to REAL runtime imports.
+//!
+//! Preserved calls (opaque arguments such as `**options`) stay verbatim in the
+//! bundle and execute as REAL runtime imports, and external consumers such as
+//! `pickle` resolve classes through `__import__(cls.__module__)`. Bundled
+//! modules are made reachable through Python's own import machinery: a
+//! `sys.meta_path` finder maps their original names to the bundled init
+//! functions and namespace objects, so runtime imports keep exact Python
+//! semantics — arguments are evaluated and validated by `import_module`
+//! itself, parent packages are initialized by the machinery in order,
+//! `sys.modules` is populated (and cleaned up on failure) by the machinery,
+//! and nothing executes until the import actually runs.
+//!
+//! The finder is APPENDED to `sys.meta_path`: modules importable from the
+//! environment win, exactly like before the finder existed — hijacking them
+//! would break native submodules resolved through their installed parent
+//! (e.g. `yaml._yaml` under a bundled `yaml`). In isolated deployments — the
+//! environments bundles actually target — nothing else provides the bundled
+//! names and the finder serves them.
+//!
+//! Three registration forms exist:
+//! - wrapper modules: init-function plus namespace-variable NAMES, resolved
+//!   through `globals()` at import time (registrations may precede the
+//!   definitions they refer to); the loader resets the wrapper state when the
+//!   init fails so a retried import re-executes the body, like Python
+//! - inlined modules with classes: an EXPORTS map from original attribute
+//!   names to bundle-global binding names; the loader builds a namespace on
+//!   demand exposing the very same objects (pickle identity)
+//! - inlined ancestor packages: a namespace-variable name only; their code
+//!   already ran at bundle load
+
+use ruff_python_ast::Stmt;
+
+use super::CRIBO_SYS_ALIAS;
+
+/// Python source of the finder infrastructure; parsed at generation time.
+///
+/// `{sys}` is replaced with the bundle's private `sys` alias.
+const PRESERVED_FINDER_SOURCE: &str = r#"
+# Export VALUES captured at the end of the module-definition section, BEFORE
+# entry statements run: entry code may legally delete or rebind the bundle
+# globals that inlined-module registrations refer to, while a real module's
+# namespace would retain the original objects
+_cribo_captured = {}
+
+
+class _CriboPreservedLoader:
+    # Pre-initialization namespace snapshots, keyed by namespace object id:
+    # after sys.modules eviction, CPython executes a FRESH module, so the
+    # re-import must not observe globals left over from the previous life
+    _pristine = {}
+
+    def __init__(self, entry, namespace=None, reload_target=None):
+        self._entry = entry
+        self._namespace = namespace
+        # PEP 451: find_spec receives the existing module as `target` during
+        # importlib.reload (plain imports pass None) — the one reliable signal
+        # separating "re-execute over the RETAINED dictionary" (reload) from
+        # "first machinery load" and "fresh life after eviction"
+        self._reload_target = reload_target
+
+    def create_module(
+        self, spec, *,
+        _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type,
+        _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured,
+    ):
+        # Builtins, globals() and the module CONSTRUCTOR are captured as
+        # parameter DEFAULTS at definition time (in the bundle prelude): these
+        # methods run lazily, after user code may have legally rebound any of
+        # those names — including `_cribo` itself — in the bundle's global
+        # namespace
+        module = None
+        if self._namespace is not None:
+            module = self._namespace
+        elif self._entry[1] is not None:
+            module = _globals()[self._entry[1]]
+        if module is not None:
+            if (
+                _getattr(module, '_cribo_machinery_loaded', False)
+                or _getattr(module, '_cribo_failed_life', False)
+                or (
+                    _getattr(module, '__initialized__', False)
+                    and _getattr(module, '_cribo_registered', False)
+                )
+            ):
+                # A PRIOR LIFE went through sys.modules — a machinery load
+                # (marker), a machinery load that FAILED (Python discards the
+                # failed module and builds a distinct object for the retry),
+                # or a rewritten static import whose registering init put the
+                # module there (initialized + registration stamp).
+                # Reaching find_spec means the entry is GONE: after eviction,
+                # CPython executes a FRESH module, and references to the
+                # evicted module keep observing its old namespace; rebuild from
+                # the pre-initialization snapshot (or from scratch, re-running
+                # the init body) so the two lives are distinct objects. A
+                # statically initialized module that never touched sys.modules
+                # takes the plain return below instead: its first machinery
+                # import must hand back the SAME namespace, preserving the
+                # identity of the objects it already handed out (pickle
+                # resolves classes through exactly this import). The fresh
+                # life is marked so exec_module does not record ANOTHER
+                # snapshot for it: only the long-lived registered object needs
+                # one, and per-life entries would accumulate (and their ids
+                # could be reused)
+                saved = _type(self)._pristine.get(_id(module))
+                fresh = _ModuleType(spec.name)
+                fresh.__dict__.update(
+                    saved if saved is not None else {'__name__': spec.name}
+                )
+                fresh._cribo_fresh_life = True
+                return fresh
+            return module
+        # A REAL module object: inspect.ismodule, isinstance checks against
+        # types.ModuleType, hashing, and weak references must behave exactly
+        # like the original import
+        module = _ModuleType(spec.name)
+        for export, binding in self._entry[3].items():
+            # Prefer the value captured before entry code could delete or
+            # rebind the bundle global; fall back to the live global for
+            # imports that run during the module-definition section
+            _setattr(
+                module,
+                export,
+                _captured[binding] if binding in _captured else _globals()[binding],
+            )
+        return module
+
+    def exec_module(
+        self, module, *,
+        _BaseException=BaseException, _dict=dict, _getattr=getattr, _globals=globals,
+        _id=id, _type=type,
+    ):
+        init = self._entry[0]
+        # The class GLOBAL may be legally rebound or deleted by user code;
+        # reach the shared snapshot store through the instance's own type
+        pristine = _type(self)._pristine
+        key = _id(module)
+        # Fresh eviction lives are transient, namespace-less inlined
+        # registrations build a NEW module on every import that create_module
+        # can never consult again, and an ALREADY-INITIALIZED namespace (a
+        # static import ran before the machinery ever saw it) carries a
+        # post-init dictionary that is not pristine — a fresh life must then
+        # re-run the body from scratch instead of inheriting stale globals.
+        # Recording any of these would poison the store or grow it per
+        # re-import (and object ids can be reused); only the long-lived
+        # registered object still holding its pre-init dictionary needs one
+        record_snapshot = (
+            not _getattr(module, '_cribo_fresh_life', False)
+            and not _getattr(module, '__initialized__', False)
+            and (self._namespace is not None or self._entry[1] is not None)
+        )
+        if init is None:
+            # Init-less registrations (inlined ancestors) have no initializer
+            # to re-execute — their code ran at bundle load — but an eviction
+            # re-import must still observe a DISTINCT fresh life, so record the
+            # snapshot and the marker consumed by create_module
+            if record_snapshot and key not in pristine:
+                pristine[key] = _dict(module.__dict__)
+            module._cribo_machinery_loaded = True
+            return
+        is_reload = self._reload_target is module
+        if is_reload:
+            # RELOAD: Python re-executes the body over the RETAINED module
+            # dictionary (state such as counters guarded by try/except
+            # survives), so only the init guards are reset — the eviction
+            # re-import path never reaches here, because create_module already
+            # produced a fresh namespace for it
+            module.__initialized__ = False
+            module.__initializing__ = False
+        state = _dict(module.__dict__)
+        if record_snapshot and key not in pristine:
+            pristine[key] = _dict(state)
+        try:
+            _globals()[init](module)
+            module._cribo_machinery_loaded = True
+        except _BaseException:
+            if is_reload:
+                # A failed reload leaves partial mutations in place, exactly
+                # like CPython's exec(code, module.__dict__); only unwind the
+                # guard so a later attempt can run
+                module.__initializing__ = False
+            else:
+                # Python discards a failed FIRST import entirely; a retried
+                # import must observe a fresh namespace, not the partial
+                # mutations. Content is restored here for references the
+                # failing body may have leaked, and the FAILED-LIFE mark makes
+                # create_module allocate a DISTINCT module object for the
+                # retry — CPython removes the failed module and builds a new
+                # one, so a leaked reference (sys.modules[__name__] published
+                # to another module before raising) must not observe the
+                # retried life
+                module.__dict__.clear()
+                module.__dict__.update(state)
+                module.__initializing__ = False
+                module._cribo_failed_life = True
+            raise
+
+
+class _CriboPreservedFinder:
+    def __init__(self):
+        self._targets = {}
+        self._namespaces = {}
+        # Registrations from BOTH finders (the local-precedence one and the
+        # appended one), shared like _namespaces: a dotted child in one finder
+        # resolves its parent registered with the other
+        self._registry = {}
+        # Captured at definition time, in the bundle prelude: user code may
+        # legally rebind or delete the module-level class name later
+        self._loader = _CriboPreservedLoader
+
+    def register(self, name, init, namespace, is_package, exports=None):
+        entry = (init, namespace, is_package, exports or {})
+        self._targets[name] = entry
+        self._registry[name] = entry
+
+    def bind(self, name, namespace):
+        # Namespace OBJECTS are captured where they are created, so later
+        # rebinding of their bundle-global names cannot break imports
+        self._namespaces[name] = namespace
+
+    def find_spec(self, name, path=None, target=None, *, _getattr=getattr, _globals=globals):
+        entry = self._targets.get(name)
+        if entry is None:
+            return None
+        # Submodule resolution follows the ACTIVE parent: when user code
+        # replaces sys.modules['pkg'] with another module, Python resolves
+        # 'pkg.sub' through the replacement's own __path__ and raises
+        # ModuleNotFoundError when it is absent — the bundled child must not
+        # resurrect under a foreign parent. Cribo-created parent lives (the
+        # registered namespace, or a fresh post-eviction ModuleType) still
+        # legitimately own their bundled children.
+        parent_name = name.rpartition('.')[0]
+        if parent_name:
+            parent = {sys}.modules.get(parent_name)
+            expected = self._namespaces.get(parent_name)
+            if expected is None:
+                parent_entry = self._registry.get(parent_name)
+                if parent_entry is not None and parent_entry[1] is not None:
+                    expected = _globals().get(parent_entry[1])
+            if (
+                parent is not None
+                and expected is not None
+                and parent is not expected
+                and not _getattr(parent, '_cribo_fresh_life', False)
+                and not _getattr(parent, '_cribo_machinery_loaded', False)
+            ):
+                return None
+        from importlib.machinery import ModuleSpec
+        return ModuleSpec(
+            name,
+            self._loader(entry, self._namespaces.get(name), target),
+            is_package=entry[2],
+        )
+
+
+_cribo_finder = _CriboPreservedFinder()
+{sys}.meta_path.append(_cribo_finder)
+# BUNDLED top-level modules and packages take precedence over installed
+# distributions: the bundle stamps their original names on the objects it
+# carries (`__module__` on classes and functions), so `pickle`/`multiprocessing`
+# resolving those names MUST receive the bundled namespaces holding the very
+# same objects — an installed copy would yield different identities. Their
+# finder sits in FRONT of PathFinder (behind the builtin/frozen importers).
+# Dotted submodules stay in the APPENDED finder, where installed distributions
+# win (native submodules resolve through installed parents).
+_cribo_finder_local = _CriboPreservedFinder()
+_cribo_finder_local._namespaces = _cribo_finder._namespaces
+_cribo_finder_local._registry = _cribo_finder._registry
+for _cribo_index, _cribo_meta_finder in enumerate({sys}.meta_path):
+    if getattr(_cribo_meta_finder, '__name__', '') == 'PathFinder':
+        {sys}.meta_path.insert(_cribo_index, _cribo_finder_local)
+        break
+else:
+    {sys}.meta_path.insert(0, _cribo_finder_local)
+"#;
+
+/// Generate the finder class, loader class, instance, and `sys.meta_path`
+/// registration. Emitted once, only when bundled modules are registered.
+pub(crate) fn generate_preserved_import_finder() -> Vec<Stmt> {
+    use cow_utils::CowUtils;
+
+    let source = PRESERVED_FINDER_SOURCE.cow_replace("{sys}", CRIBO_SYS_ALIAS);
+    let parsed =
+        ruff_python_parser::parse_module(&source).expect("preserved-finder source is valid Python");
+    parsed.into_syntax().body.into_iter().collect()
+}
+
+/// Generate `_cribo_finder.register("name", "init_name", "namespace_name",
+/// is_package)`. Names are strings resolved lazily through `globals()` by the
+/// loader, so registrations may precede the definitions they refer to.
+///
+/// `init_function_name` is `None` for modules without an init function
+/// (inlined ancestors of a registered module): their code already ran at
+/// bundle load, so the loader only needs to hand their namespace to the
+/// machinery.
+///
+/// `local_precedence` selects the finder: bundled TOP-LEVEL modules and
+/// packages register with the finder in front of `PathFinder` (bundled
+/// objects are stamped with these names, so identity lookups by
+/// `pickle`/`multiprocessing` must resolve the bundled namespaces even when
+/// an installed copy exists); dotted submodules and roots with external
+/// submodules register with the appended one (installed distributions win).
+pub(crate) fn generate_preserved_target_registration(
+    module_name: &str,
+    init_function_name: Option<&str>,
+    namespace_variable: &str,
+    is_package: bool,
+    local_precedence: bool,
+) -> Stmt {
+    use ruff_python_ast::ExprContext;
+
+    use super::{expressions, statements};
+
+    statements::expr(expressions::call(
+        expressions::attribute(
+            expressions::name(finder_variable(local_precedence), ExprContext::Load),
+            "register",
+            ExprContext::Load,
+        ),
+        vec![
+            expressions::string_literal(module_name),
+            init_function_name.map_or_else(expressions::none_literal, expressions::string_literal),
+            expressions::string_literal(namespace_variable),
+            expressions::bool_literal(is_package),
+        ],
+        vec![],
+    ))
+}
+
+/// The bundle-global name of the finder serving a registration.
+const fn finder_variable(local_precedence: bool) -> &'static str {
+    if local_precedence {
+        "_cribo_finder_local"
+    } else {
+        "_cribo_finder"
+    }
+}
+
+/// Generate `_cribo_finder.register("name", None, None, is_package,
+/// {"Export": "bundle_binding", ...})` for an INLINED module: the loader
+/// builds a namespace on demand exposing the same top-level objects (class
+/// identity for pickle and friends), since inlined code has no init function
+/// or eager namespace object.
+pub(crate) fn generate_inlined_module_registration(
+    module_name: &str,
+    exports: &[(String, String)],
+    is_package: bool,
+    local_precedence: bool,
+) -> Stmt {
+    use ruff_python_ast::{AtomicNodeIndex, DictItem, Expr, ExprContext, ExprDict};
+    use ruff_text_size::TextRange;
+
+    use super::{expressions, statements};
+
+    let items = exports
+        .iter()
+        .map(|(export, binding)| DictItem {
+            key: Some(expressions::string_literal(export)),
+            value: expressions::string_literal(binding),
+        })
+        .collect();
+    let exports_dict = Expr::Dict(ExprDict {
+        node_index: AtomicNodeIndex::NONE,
+        range: TextRange::default(),
+        items,
+    });
+
+    statements::expr(expressions::call(
+        expressions::attribute(
+            expressions::name(finder_variable(local_precedence), ExprContext::Load),
+            "register",
+            ExprContext::Load,
+        ),
+        vec![
+            expressions::string_literal(module_name),
+            expressions::none_literal(),
+            expressions::none_literal(),
+            expressions::bool_literal(is_package),
+            exports_dict,
+        ],
+        vec![],
+    ))
+}
+
+/// Generate `_cribo_captured['binding'] = binding` — an export-value capture
+/// emitted at the module/entry boundary (after all module definitions, before
+/// entry statements): the lazy loader prefers these captured objects, so entry
+/// code deleting or rebinding a bundle global cannot break later runtime
+/// imports of the inlined module.
+pub(crate) fn generate_export_capture(binding: &str) -> Stmt {
+    use ruff_python_ast::ExprContext;
+
+    use super::{expressions, statements};
+
+    statements::assign(
+        vec![expressions::subscript(
+            expressions::name("_cribo_captured", ExprContext::Load),
+            expressions::string_literal(binding),
+            ExprContext::Store,
+        )],
+        expressions::name(binding, ExprContext::Load),
+    )
+}

@@ -131,7 +131,7 @@ impl<'a> RequirementResolver<'a> {
     }
 
     /// Return whether an import is equal to or nested below a configured prefix.
-    fn matches_prefix(prefix: &str, import_name: &str) -> bool {
+    pub(crate) fn matches_prefix(prefix: &str, import_name: &str) -> bool {
         import_name == prefix
             || import_name
                 .strip_prefix(prefix)

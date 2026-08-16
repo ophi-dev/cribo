@@ -13,6 +13,43 @@ use ruff_python_ast::{
 
 use crate::{types::FxIndexSet, visitors::patterns};
 
+/// Collect the names declared `global` in one scope's statements, skipping nested
+/// function and class bodies (their declarations bind those scopes, not this one).
+///
+/// Shadow analyses must exclude these names: assigning a `global`-declared name
+/// rebinds the MODULE binding instead of creating a scope-local shadow.
+pub(crate) fn collect_scope_global_declarations(stmts: &[Stmt]) -> FxIndexSet<String> {
+    struct GlobalCollector {
+        globals: FxIndexSet<String>,
+    }
+
+    impl<'a> SourceOrderVisitor<'a> for GlobalCollector {
+        fn enter_node(&mut self, node: AnyNodeRef<'a>) -> TraversalSignal {
+            match node {
+                AnyNodeRef::StmtFunctionDef(_) | AnyNodeRef::StmtClassDef(_) => {
+                    TraversalSignal::Skip
+                }
+                _ => TraversalSignal::Traverse,
+            }
+        }
+
+        fn visit_stmt(&mut self, stmt: &'a Stmt) {
+            if let Stmt::Global(global_stmt) = stmt {
+                for name in &global_stmt.names {
+                    self.globals.insert(name.to_string());
+                }
+            }
+            walk_stmt(self, stmt);
+        }
+    }
+
+    let mut collector = GlobalCollector {
+        globals: FxIndexSet::default(),
+    };
+    source_order::walk_body(&mut collector, stmts);
+    collector.globals
+}
+
 /// Visitor that collects local variable names at module level,
 /// excluding names declared as `global`, and treating `nonlocal` names as locals
 pub(crate) struct LocalVarCollector<'a> {
@@ -91,6 +128,32 @@ impl<'a> SourceOrderVisitor<'a> for LocalVarCollector<'a> {
         }
     }
 
+    fn visit_expr(&mut self, expr: &'a Expr) {
+        match expr {
+            // PEP 572: a walrus target binds in the CONTAINING scope (also from
+            // inside comprehensions, whose iteration variables stay scoped to the
+            // comprehension and are deliberately not collected)
+            Expr::Named(named) => {
+                if let Expr::Name(target) = &*named.target {
+                    self.insert_if_not_global(&target.id);
+                }
+                source_order::walk_expr(self, expr);
+            }
+            // A lambda BODY is its own scope (walrus there binds the lambda, not
+            // this scope), but parameter defaults evaluate in the enclosing scope
+            Expr::Lambda(lambda) => {
+                if let Some(parameters) = &lambda.parameters {
+                    for param in parameters {
+                        if let Some(default) = param.default() {
+                            self.visit_expr(default);
+                        }
+                    }
+                }
+            }
+            _ => source_order::walk_expr(self, expr),
+        }
+    }
+
     fn visit_stmt(&mut self, stmt: &'a Stmt) {
         // Process statements to collect variable bindings
         match stmt {
@@ -104,6 +167,14 @@ impl<'a> SourceOrderVisitor<'a> for LocalVarCollector<'a> {
             }
             Stmt::AugAssign(aug_assign) => {
                 self.collect_from_target(&aug_assign.target);
+            }
+            Stmt::Delete(delete_stmt) => {
+                // `del x` unbinds the name: in a function it makes x local for the
+                // whole body (UnboundLocalError before it), and at any scope the
+                // binding is dead afterwards
+                for target in &delete_stmt.targets {
+                    self.collect_from_target(target);
+                }
             }
             Stmt::For(for_stmt) => {
                 self.collect_from_target(&for_stmt.target);

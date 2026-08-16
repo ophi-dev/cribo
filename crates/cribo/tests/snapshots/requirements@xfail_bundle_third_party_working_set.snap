@@ -1,0 +1,8 @@
+---
+source: crates/cribo/tests/test_bundling_snapshots.rs
+input_file: crates/cribo/tests/fixtures/xfail_bundle_third_party_working_set/main.py
+---
+packages:
+  - pkg-resources
+  - provider==1.0
+count: 2

@@ -24,23 +24,48 @@ use tempfile::TempDir;
 
 static FIXTURE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-/// Run cribo with given arguments and return (stdout, stderr, `exit_code`)
-fn run_cribo(args: &[&str]) -> (String, String, i32) {
+/// Run cribo with given arguments and return (stdout, stderr, `exit_code`).
+/// When a fixture provides a fake virtual environment, it is exposed via `VIRTUAL_ENV`.
+fn run_cribo(args: &[&str], virtualenv: Option<&Path>) -> (String, String, i32) {
     let cribo_exe = env!("CARGO_BIN_EXE_cribo");
 
-    let output = Command::new(cribo_exe)
+    let mut command = Command::new(cribo_exe);
+    command
         .args(args)
         .env("RUST_LOG", "off")
         .env("CARGO_TERM_COLOR", "never")
-        .env("NO_COLOR", "1")
-        .output()
-        .expect("Failed to execute cribo");
+        .env("NO_COLOR", "1");
+    if let Some(venv) = virtualenv {
+        command.env("VIRTUAL_ENV", venv);
+    }
+    let output = command.output().expect("Failed to execute cribo");
 
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     let exit_code = output.status.code().unwrap_or(-1);
 
     (stdout, stderr, exit_code)
+}
+
+/// Collect the site-packages directories of a fixture's fake virtual environment.
+fn fake_venv_site_packages(venv: &Path) -> Vec<std::path::PathBuf> {
+    let mut site_packages = Vec::new();
+    let lib_dir = venv.join("lib");
+    if let Ok(entries) = fs::read_dir(&lib_dir) {
+        for entry in entries.flatten() {
+            let candidate = entry.path().join("site-packages");
+            if candidate.is_dir() {
+                site_packages.push(candidate);
+            }
+        }
+    }
+    // read_dir order is unspecified; sort for deterministic PYTHONPATH ordering
+    site_packages.sort();
+    let windows_layout = venv.join("Lib").join("site-packages");
+    if windows_layout.is_dir() {
+        site_packages.push(windows_layout);
+    }
+    site_packages
 }
 
 #[derive(Default)]
@@ -209,11 +234,25 @@ fn test_bundling_fixtures() {
         // Get Python executable once for the entire test
         let python_cmd = common::get_python_executable();
 
+        // Fixture-provided fake virtual environment (fake-venv/) opts the fixture into
+        // third-party bundling: cribo locates it via VIRTUAL_ENV, while the original
+        // execution reaches its site-packages through PYTHONPATH
+        let fake_venv_dir = fixture_dir.join("fake-venv");
+        let fake_venv = fake_venv_dir.is_dir().then_some(fake_venv_dir);
+        let original_pythonpath = fake_venv.as_ref().map_or_else(
+            || fixture_dir.as_os_str().to_owned(),
+            |venv| {
+                let mut paths = vec![fixture_dir.to_path_buf()];
+                paths.extend(fake_venv_site_packages(venv));
+                env::join_paths(paths).expect("fixture paths must be joinable")
+            },
+        );
+
         // First, run the original fixture to ensure it's valid Python code
         let original_output = Command::new(&python_cmd)
             .arg(path)
             .current_dir(fixture_dir)
-            .env("PYTHONPATH", fixture_dir)
+            .env("PYTHONPATH", &original_pythonpath)
             .env("PYTHONIOENCODING", "utf-8")
             .env("PYTHONLEGACYWINDOWSSTDIO", "utf-8")
             .stdout(std::process::Stdio::piped())
@@ -283,13 +322,27 @@ fn test_bundling_fixtures() {
         let bundle_path = temp_dir.path().join("bundled.py");
 
         // Bundle the fixture with requirements generation using the cribo binary
-        let (_bundle_stdout, bundle_stderr, bundle_exit_code) = run_cribo(&[
+        let mut cribo_args = vec![
             "--entry",
             path.to_str().unwrap(),
             "--output",
             bundle_path.to_str().unwrap(),
             "--emit-requirements",
-        ]);
+        ];
+        if fake_venv.is_some() {
+            cribo_args.push("--bundle-third-party");
+        }
+        // A fixture-level cribo.toml supplies configuration (e.g. module-map entries)
+        let fixture_config = fixture_dir.join("cribo.toml");
+        let fixture_config_str = fixture_config.to_str().map(ToOwned::to_owned);
+        if fixture_config.is_file()
+            && let Some(config_path) = fixture_config_str.as_deref()
+        {
+            cribo_args.push("--config");
+            cribo_args.push(config_path);
+        }
+        let (_bundle_stdout, bundle_stderr, bundle_exit_code) =
+            run_cribo(&cribo_args, fake_venv.as_deref());
 
         // Check if bundling failed
         if bundle_exit_code != 0 {
@@ -603,6 +656,7 @@ fn check_for_duplicate_lines_with_result(
             || trimmed_no_indent == "break"
             || trimmed_no_indent.starts_with("def __")  // Any dunder method
             || (trimmed_no_indent.starts_with("self.") && !trimmed_line.contains("sys.modules"))   // Common in class methods
+            || (trimmed_no_indent.starts_with("_cribo_self.") && !trimmed_line.contains("sys.modules"))   // Init function module attribute stamps
             || (trimmed_no_indent.starts_with("return ") && !trimmed_line.contains("sys.modules"))
         // Return statements
         {
@@ -623,8 +677,12 @@ fn check_for_duplicate_lines_with_result(
             // Only report duplicates that are likely to be actual issues
             occurrences.len() > 1
                 && (
-                    // Definitely report duplicate sys.modules assignments
-                    line.contains("sys.modules[") ||
+                    // Definitely report duplicate sys.modules assignments, except the
+                    // per-init registration/cleanup idioms every self-registering
+                    // wrapper module emits
+                    (line.contains("sys.modules[")
+                        && line.trim_start() != "_sys.modules[_cribo_self.__name__] = _cribo_self"
+                        && line.trim_start() != "del _sys.modules[_cribo_self.__name__]") ||
                 // Report duplicate imports
                 line.trim_start().starts_with("import ") ||
                 line.trim_start().starts_with("from ") ||

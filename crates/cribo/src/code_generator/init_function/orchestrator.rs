@@ -123,6 +123,150 @@ impl<'a> InitFunctionBuilder<'a> {
         CleanupPhase::execute(self.bundler, self.ctx, &mut state);
 
         // Phase 11: Finalization
-        FinalizationPhase::build_function_stmt(self.bundler, self.ctx, state)
+        let registers_in_sys_modules = state.registers_in_sys_modules;
+        let function_stmt = FinalizationPhase::build_function_stmt(self.bundler, self.ctx, state)?;
+
+        // For modules registered in sys.modules, mirror Python's failure semantics:
+        // an exception during module execution unregisters the module and clears the
+        // initializing guard so a later import retries instead of observing a stale,
+        // partially initialized namespace
+        Ok(Self::wrap_registered_init_with_failure_cleanup(
+            function_stmt,
+            registers_in_sys_modules,
+        ))
+    }
+
+    /// Wrap an init function's body (everything after the guard prologue) in
+    /// `try/except BaseException` that resets `__initializing__` and re-raises,
+    /// mirroring Python's failure semantics: a later import retries the module
+    /// body instead of observing a stale, partially initialized namespace. For
+    /// modules registered in `sys.modules`, the cleanup also removes the entry
+    /// when it still points to `self`, and the success path honors the final
+    /// `sys.modules` entry.
+    fn wrap_registered_init_with_failure_cleanup(
+        mut function_stmt: Stmt,
+        registers_in_sys_modules: bool,
+    ) -> Stmt {
+        use ruff_python_ast::{ExceptHandler, ExceptHandlerExceptHandler, ExprContext};
+
+        use crate::{
+            ast_builder::{CRIBO_SYS_ALIAS, expressions, statements},
+            code_generator::module_transformer::SELF_PARAM,
+        };
+
+        let Stmt::FunctionDef(function_def) = &mut function_stmt else {
+            return function_stmt;
+        };
+        // The guard prologue: __initialized__ guard, __initializing__ guard,
+        // __initializing__ = True — plus, for registered modules, __spec__ =
+        // None and the sys.modules registration
+        let prologue_statements: usize = if registers_in_sys_modules { 5 } else { 3 };
+        if function_def.body.len() <= prologue_statements {
+            return function_stmt;
+        }
+        let mut guarded_body: Vec<Stmt> = function_def
+            .body
+            .split_off(prologue_statements)
+            .into_iter()
+            .collect();
+
+        if !registers_in_sys_modules {
+            // self.__initializing__ = False
+            // raise
+            let cleanup = vec![
+                statements::assign_attribute(
+                    SELF_PARAM,
+                    "__initializing__",
+                    expressions::bool_literal(false),
+                ),
+                statements::raise(None, None),
+            ];
+            let handler = ExceptHandler::ExceptHandler(ExceptHandlerExceptHandler {
+                node_index: ruff_python_ast::AtomicNodeIndex::NONE,
+                type_: Some(Box::new(expressions::name(
+                    super::CAPTURED_BASE_EXCEPTION,
+                    ExprContext::Load,
+                ))),
+                name: None,
+                body: cleanup.into(),
+                range: ruff_text_size::TextRange::default(),
+            });
+            function_def.body.push(statements::try_stmt(
+                guarded_body,
+                vec![handler],
+                vec![],
+                vec![],
+            ));
+            return function_stmt;
+        }
+
+        let sys_modules = || {
+            expressions::attribute(
+                expressions::name(CRIBO_SYS_ALIAS, ExprContext::Load),
+                "modules",
+                ExprContext::Load,
+            )
+        };
+        let self_name_attribute = || {
+            expressions::attribute(
+                expressions::name(SELF_PARAM, ExprContext::Load),
+                "__name__",
+                ExprContext::Load,
+            )
+        };
+        // On success, honor the final sys.modules entry: a module may deliberately
+        // replace itself (`sys.modules[__name__] = replacement`), and Python's import
+        // machinery returns that replacement to importers.
+        // return _sys.modules.get(self.__name__, self)
+        if matches!(guarded_body.last(), Some(Stmt::Return(_))) {
+            guarded_body.pop();
+        }
+        guarded_body.push(statements::return_stmt(Some(expressions::call(
+            expressions::attribute(sys_modules(), "get", ExprContext::Load),
+            vec![
+                self_name_attribute(),
+                expressions::name(SELF_PARAM, ExprContext::Load),
+            ],
+            vec![],
+        ))));
+        // self.__initializing__ = False
+        // _sys.modules.pop(self.__name__, None)
+        // raise
+        //
+        // CPython removes the NAME from sys.modules when module execution
+        // fails, regardless of whether the entry still points to the executing
+        // module — a replacement installed before the failure is removed too,
+        // so a later import retries the body instead of observing it
+        let unregister = statements::expr(expressions::call(
+            expressions::attribute(sys_modules(), "pop", ExprContext::Load),
+            vec![self_name_attribute(), expressions::none_literal()],
+            vec![],
+        ));
+        let cleanup = vec![
+            statements::assign_attribute(
+                SELF_PARAM,
+                "__initializing__",
+                expressions::bool_literal(false),
+            ),
+            unregister,
+            statements::raise(None, None),
+        ];
+        let handler = ExceptHandler::ExceptHandler(ExceptHandlerExceptHandler {
+            node_index: ruff_python_ast::AtomicNodeIndex::NONE,
+            type_: Some(Box::new(expressions::name(
+                super::CAPTURED_BASE_EXCEPTION,
+                ExprContext::Load,
+            ))),
+            name: None,
+            body: cleanup.into(),
+            range: ruff_text_size::TextRange::default(),
+        });
+        function_def.body.push(statements::try_stmt(
+            guarded_body,
+            vec![handler],
+            vec![],
+            vec![],
+        ));
+        function_stmt
     }
 }

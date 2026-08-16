@@ -206,7 +206,28 @@ impl<'a> ModuleClassifier<'a> {
             let has_invalid_identifier =
                 !ruff_python_stdlib::identifiers::is_identifier(module_base_name);
 
-            if has_side_effects || has_invalid_identifier || needs_wrapping_for_circular {
+            // Modules inspecting sys.modules (e.g. `sys.modules[__name__]`, even
+            // inside function bodies) need a real module object registered under
+            // their original name: the wrapper approach provides one and its init
+            // registers it in sys.modules. Targets of preserved import_module calls
+            // need the same registration so the runtime call resolves them, and so
+            // do modules whose sys.modules entry a CONSUMER observes
+            // (`sys.modules[dep.__name__]`). ANCESTOR packages of preserved dotted
+            // targets are imported by the machinery too (parents load before
+            // children), so they need a real init for reload/eviction semantics.
+            let accesses_own_sys_modules =
+                crate::visitors::utils::accesses_own_sys_modules_entry(&ast.body)
+                    || self.resolver.is_preserved_importlib_target(&module_name)
+                    || self
+                        .resolver
+                        .is_preserved_importlib_target_ancestor(&module_name)
+                    || self.resolver.is_sys_modules_observed_target(&module_name);
+
+            if has_side_effects
+                || has_invalid_identifier
+                || needs_wrapping_for_circular
+                || accesses_own_sys_modules
+            {
                 if has_invalid_identifier {
                     debug!(
                         "Module '{module_name}' has invalid Python identifier - using wrapper \
@@ -216,8 +237,13 @@ impl<'a> ModuleClassifier<'a> {
                     debug!(
                         "Module '{module_name}' is in circular dependency - using wrapper approach"
                     );
-                } else {
+                } else if has_side_effects {
                     debug!("Module '{module_name}' has side effects - using wrapper approach");
+                } else {
+                    debug!(
+                        "Module '{module_name}' inspects sys.modules - using wrapper approach so \
+                         it is registered under its original name"
+                    );
                 }
 
                 wrapper_modules.push((

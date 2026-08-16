@@ -1,0 +1,9 @@
+---
+source: crates/cribo/tests/test_bundling_snapshots.rs
+input_file: crates/cribo/tests/fixtures/bundle_third_party_namespace_portion_fallback/main.py
+---
+ExecutionResults {
+    status: Success,
+    stdout: "VALUE: regular package wins over the namespace portion\nPACKAGE: regular",
+    stderr: "",
+}

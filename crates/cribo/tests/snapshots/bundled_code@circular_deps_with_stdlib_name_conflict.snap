@@ -10,323 +10,504 @@ import sys as _sys
 import importlib as _importlib
 class _CriboModule():
 
-    def __init__(self, m, p):
-        self._m, self._p = m, p
+    def __init__(_cribo_self, m, p):
+        _cribo_self._m, _cribo_self._p = m, p
 
-    def __getattr__(self, n):
-        f = self._p + '.' + n
+    def __getattr__(_cribo_self, n, *, _getattr=getattr):
+        f = _cribo_self._p + '.' + n
         try:
             return _CriboModule(_importlib.import_module(f), f)
         except ImportError:
-            return getattr(self._m, n)
+            return _getattr(_cribo_self._m, n)
 
-    def __getattribute__(self, n):
-        return object.__getattribute__(self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else getattr(object.__getattribute__(self, '_m'), n)
+    def __getattribute__(_cribo_self, n, *, _getattr=getattr, _object=object):
+        return _object.__getattribute__(_cribo_self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else _getattr(_object.__getattribute__(_cribo_self, '_m'), n)
 class _Cribo():
 
-    def __getattr__(self, n):
+    def __getattr__(_cribo_self, n):
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
+_cribo_captured = {}
+class _CriboPreservedLoader:
+    _pristine = {}
+
+    def __init__(self, entry, namespace=None, reload_target=None):
+        self._entry = entry
+        self._namespace = namespace
+        self._reload_target = reload_target
+
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
+        module = None
+        if self._namespace is not None:
+            module = self._namespace
+        elif self._entry[1] is not None:
+            module = _globals()[self._entry[1]]
+        if module is not None:
+            if _getattr(module, '_cribo_machinery_loaded', False) or _getattr(module, '_cribo_failed_life', False) or _getattr(module, '__initialized__', False) and _getattr(module, '_cribo_registered', False):
+                saved = _type(self)._pristine.get(_id(module))
+                fresh = _ModuleType(spec.name)
+                fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
+                fresh._cribo_fresh_life = True
+                return fresh
+            return module
+        module = _ModuleType(spec.name)
+        for export, binding in self._entry[3].items():
+            _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
+        return module
+
+    def exec_module(self, module, *, _BaseException=BaseException, _dict=dict, _getattr=getattr, _globals=globals, _id=id, _type=type):
+        init = self._entry[0]
+        pristine = _type(self)._pristine
+        key = _id(module)
+        record_snapshot = not _getattr(module, '_cribo_fresh_life', False) and not _getattr(module, '__initialized__', False) and (self._namespace is not None or self._entry[1] is not None)
+        if init is None:
+            if record_snapshot and key not in pristine:
+                pristine[key] = _dict(module.__dict__)
+            module._cribo_machinery_loaded = True
+            return
+        is_reload = self._reload_target is module
+        if is_reload:
+            module.__initialized__ = False
+            module.__initializing__ = False
+        state = _dict(module.__dict__)
+        if record_snapshot and key not in pristine:
+            pristine[key] = _dict(state)
+        try:
+            _globals()[init](module)
+            module._cribo_machinery_loaded = True
+        except _BaseException:
+            if is_reload:
+                module.__initializing__ = False
+            else:
+                module.__dict__.clear()
+                module.__dict__.update(state)
+                module.__initializing__ = False
+                module._cribo_failed_life = True
+            raise
+class _CriboPreservedFinder:
+
+    def __init__(self):
+        self._targets = {}
+        self._namespaces = {}
+        self._registry = {}
+        self._loader = _CriboPreservedLoader
+
+    def register(self, name, init, namespace, is_package, exports=None):
+        entry = init, namespace, is_package, exports or {}
+        self._targets[name] = entry
+        self._registry[name] = entry
+
+    def bind(self, name, namespace):
+        self._namespaces[name] = namespace
+
+    def find_spec(self, name, path=None, target=None, *, _getattr=getattr, _globals=globals):
+        entry = self._targets.get(name)
+        if entry is None:
+            return None
+        parent_name = name.rpartition('.')[0]
+        if parent_name:
+            parent = _sys.modules.get(parent_name)
+            expected = self._namespaces.get(parent_name)
+            if expected is None:
+                parent_entry = self._registry.get(parent_name)
+                if parent_entry is not None and parent_entry[1] is not None:
+                    expected = _globals().get(parent_entry[1])
+            if parent is not None and expected is not None and parent is not expected and not _getattr(parent, '_cribo_fresh_life', False) and not _getattr(parent, '_cribo_machinery_loaded', False):
+                return None
+        from importlib.machinery import ModuleSpec
+        return ModuleSpec(name, self._loader(entry, self._namespaces.get(name), target), is_package=entry[2])
+_cribo_finder = _CriboPreservedFinder()
+_sys.meta_path.append(_cribo_finder)
+_cribo_finder_local = _CriboPreservedFinder()
+_cribo_finder_local._namespaces = _cribo_finder._namespaces
+_cribo_finder_local._registry = _cribo_finder._registry
+for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
+    if getattr(_cribo_meta_finder, '__name__', '') == 'PathFinder':
+        _sys.meta_path.insert(_cribo_index, _cribo_finder_local)
+        break
+else:
+    _sys.meta_path.insert(0, _cribo_finder_local)
+_cribo_finder.register('pkg.abc', '_cribo_init___cribo_5f60be_pkg_abc', 'pkg_abc', False)
+_cribo_finder.register('pkg.pretty', '_cribo_init___cribo_2353ad_pkg_pretty', 'pkg_pretty', False)
+_cribo_finder_local.register('pkg', '_cribo_init___cribo_6b1af6_pkg', 'pkg', True)
+_cribo_finder.register('pkg.console', '_cribo_init___cribo_f0224b_pkg_console', 'pkg_console', False)
+_cribo_finder.register('pkg.color', '_cribo_init___cribo_02808e_pkg_color', 'pkg_color', False)
+_cribo_finder.register('pkg.style', '_cribo_init___cribo_4c91ba_pkg_style', 'pkg_style', False)
 pkg = _cribo.types.SimpleNamespace(__name__='pkg', __initializing__=False, __initialized__=False, __path__=[])
+_cribo_finder.bind('pkg', pkg)
 pkg_abc = _cribo.types.SimpleNamespace(__name__='pkg.abc', __initializing__=False, __initialized__=False)
+_cribo_finder.bind('pkg.abc', pkg_abc)
 pkg.abc = pkg_abc
 pkg_color = _cribo.types.SimpleNamespace(__name__='pkg.color', __initializing__=False, __initialized__=False)
+_cribo_finder.bind('pkg.color', pkg_color)
 pkg.color = pkg_color
 pkg_console = _cribo.types.SimpleNamespace(__name__='pkg.console', __initializing__=False, __initialized__=False)
+_cribo_finder.bind('pkg.console', pkg_console)
 pkg.console = pkg_console
 pkg_pretty = _cribo.types.SimpleNamespace(__name__='pkg.pretty', __initializing__=False, __initialized__=False)
+_cribo_finder.bind('pkg.pretty', pkg_pretty)
 pkg.pretty = pkg_pretty
 pkg_style = _cribo.types.SimpleNamespace(__name__='pkg.style', __initializing__=False, __initialized__=False)
+_cribo_finder.bind('pkg.style', pkg_style)
 pkg.style = pkg_style
-def _cribo_init___cribo_6b1af6_pkg(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    global pkg_abc, pkg_console, pkg_pretty
-    """Package with circular dependencies and stdlib-conflicting module names."""
-    pkg_console = _cribo_init___cribo_f0224b_pkg_console(pkg_console)
-    Console = pkg_console.Console
-    self.Console = Console
-    self.Console = Console
-    pkg_pretty = _cribo_init___cribo_2353ad_pkg_pretty(pkg_pretty)
-    PrettyPrinter = pkg_pretty.PrettyPrinter
-    self.PrettyPrinter = PrettyPrinter
-    self.PrettyPrinter = PrettyPrinter
-    pkg_abc = _cribo_init___cribo_5f60be_pkg_abc(pkg_abc)
-    RichRenderable = pkg_abc.RichRenderable
-    self.RichRenderable = RichRenderable
-    self.RichRenderable = RichRenderable
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+def _cribo_init___cribo_6b1af6_pkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
+    if _cribo_getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if _cribo_getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    try:
+        _cribo_self.__package__ = 'pkg'
+        _cribo_self.__doc__ = 'Package with circular dependencies and stdlib-conflicting module names.'
+        global pkg_abc, pkg_console, pkg_pretty
+        """Package with circular dependencies and stdlib-conflicting module names."""
+        pkg_console = _cribo_init___cribo_f0224b_pkg_console(pkg_console)
+        Console = pkg_console.Console
+        _cribo_self.Console = Console
+        _cribo_self.Console = Console
+        pkg_pretty = _cribo_init___cribo_2353ad_pkg_pretty(pkg_pretty)
+        PrettyPrinter = pkg_pretty.PrettyPrinter
+        _cribo_self.PrettyPrinter = PrettyPrinter
+        _cribo_self.PrettyPrinter = PrettyPrinter
+        pkg_abc = _cribo_init___cribo_5f60be_pkg_abc(pkg_abc)
+        RichRenderable = pkg_abc.RichRenderable
+        _cribo_self.RichRenderable = RichRenderable
+        _cribo_self.RichRenderable = RichRenderable
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 pkg.__init__ = _cribo_init___cribo_6b1af6_pkg
-def _cribo_init___cribo_5f60be_pkg_abc(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    global pkg_console
-    """Module with stdlib-conflicting name that imports from stdlib abc."""
-    ABC = _cribo.abc.ABC
-    self.ABC = ABC
-    abstractmethod = _cribo.abc.abstractmethod
-    self.abstractmethod = abstractmethod
+def _cribo_init___cribo_5f60be_pkg_abc(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
+    if _cribo_getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if _cribo_getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    try:
+        _cribo_self.__package__ = 'pkg'
+        _cribo_self.__doc__ = 'Module with stdlib-conflicting name that imports from stdlib abc.'
+        global pkg_console
+        """Module with stdlib-conflicting name that imports from stdlib abc."""
+        ABC = _cribo.abc.ABC
+        _cribo_self.ABC = ABC
+        abstractmethod = _cribo.abc.abstractmethod
+        _cribo_self.abstractmethod = abstractmethod
 
-    class RichRenderable(_cribo.abc.ABC):
-        """Abstract base class for renderables."""
+        class RichRenderable(_cribo.abc.ABC):
+            """Abstract base class for renderables."""
 
-        @_cribo.abc.abstractmethod
-        def render(self, console):
-            """Render this object to the console."""
-            pass
+            @_cribo.abc.abstractmethod
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.abc'), _cribo_f)[1])
+            def render(self, console):
+                """Render this object to the console."""
+                pass
 
-        @classmethod
-        def __subclasshook__(cls, other):
-            """Check if a class implements the render protocol."""
-            return hasattr(other, "render")
-    RichRenderable.__module__ = 'pkg.abc'
-    self.RichRenderable = RichRenderable
-    pkg_console = _cribo_init___cribo_f0224b_pkg_console(pkg_console)
-    ConsoleBase = pkg.console.ConsoleBase
-    self.ConsoleBase = ConsoleBase
-    self.ConsoleBase = ConsoleBase
+            @classmethod
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.abc'), _cribo_f)[1])
+            def __subclasshook__(cls, other):
+                """Check if a class implements the render protocol."""
+                return hasattr(other, "render")
+        RichRenderable.__module__ = 'pkg.abc'
+        RichRenderable.__qualname__ = 'RichRenderable'
+        _cribo_self.RichRenderable = RichRenderable
+        pkg_console = _cribo_init___cribo_f0224b_pkg_console(pkg_console)
+        ConsoleBase = pkg.console.ConsoleBase
+        _cribo_self.ConsoleBase = ConsoleBase
+        _cribo_self.ConsoleBase = ConsoleBase
 
-    class RenderableWithConsole(RichRenderable):
-        """A renderable that needs a console reference."""
+        class RenderableWithConsole(RichRenderable):
+            """A renderable that needs a console reference."""
 
-        def __init__(self, console: ConsoleBase):
-            self.console = console
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.abc'), _cribo_f)[1])
+            def __init__(self, console: ConsoleBase):
+                self.console = console
 
-        def render(self, console):
-            return f"Rendering with {console}"
-    RenderableWithConsole.__module__ = 'pkg.abc'
-    self.RenderableWithConsole = RenderableWithConsole
-    self.ABC = _cribo.abc.ABC
-    self.abstractmethod = _cribo.abc.abstractmethod
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.abc'), _cribo_f)[1])
+            def render(self, console):
+                return f"Rendering with {console}"
+        RenderableWithConsole.__module__ = 'pkg.abc'
+        RenderableWithConsole.__qualname__ = 'RenderableWithConsole'
+        _cribo_self.RenderableWithConsole = RenderableWithConsole
+        _cribo_self.ABC = _cribo.abc.ABC
+        _cribo_self.abstractmethod = _cribo.abc.abstractmethod
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 pkg_abc.__init__ = _cribo_init___cribo_5f60be_pkg_abc
-def _cribo_init___cribo_02808e_pkg_color(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    """Color module that participates in circular dependencies."""
-    typing = _cribo.typing
-    self.typing = typing
-    self.typing = typing
-    Optional = _cribo.typing.Optional
-    self.Optional = Optional
-    Tuple = _cribo.typing.Tuple
-    self.Tuple = Tuple
+def _cribo_init___cribo_02808e_pkg_color(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
+    if _cribo_getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if _cribo_getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    try:
+        _cribo_self.__package__ = 'pkg'
+        _cribo_self.__doc__ = 'Color module that participates in circular dependencies.'
+        """Color module that participates in circular dependencies."""
+        typing = _cribo.typing
+        _cribo_self.typing = typing
+        _cribo_self.typing = typing
+        Optional = _cribo.typing.Optional
+        _cribo_self.Optional = Optional
+        Tuple = _cribo.typing.Tuple
+        _cribo_self.Tuple = Tuple
 
-    class Color:
-        """Color representation for console output."""
+        class Color:
+            """Color representation for console output."""
 
-        def __init__(self, r: int=0, g: int=0, b: int=0):
-            self.r = r
-            self.g = g
-            self.b = b
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.color'), _cribo_f)[1])
+            def __init__(self, r: int=0, g: int=0, b: int=0):
+                self.r = r
+                self.g = g
+                self.b = b
 
-        def to_rgb(self) -> _cribo.typing.Tuple[int, int, int]:
-            """Convert to RGB tuple."""
-            return self.r, self.g, self.b
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.color'), _cribo_f)[1])
+            def to_rgb(self) -> _cribo.typing.Tuple[int, int, int]:
+                """Convert to RGB tuple."""
+                return self.r, self.g, self.b
 
-        def to_hex(self) -> str:
-            """Convert to hex string."""
-            return f"#{self.r:02x}{self.g:02x}{self.b:02x}"
-    Color.__module__ = 'pkg.color'
-    self.Color = Color
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.color'), _cribo_f)[1])
+            def to_hex(self) -> str:
+                """Convert to hex string."""
+                return f"#{self.r:02x}{self.g:02x}{self.b:02x}"
+        Color.__module__ = 'pkg.color'
+        Color.__qualname__ = 'Color'
+        _cribo_self.Color = Color
 
-    def color_from_style(style) -> "Color":
-        """Create a color from a style."""
-        Style = _cribo_init___cribo_4c91ba_pkg_style(globals()['pkg_style']).Style
-        if style.color == "red":
-            return Color(255, 0, 0)
-        elif style.color == "green":
-            return Color(0, 255, 0)
-        elif style.color == "blue":
-            return Color(0, 0, 255)
-        return Color()
-    self.color_from_style = color_from_style
+        def color_from_style(style) -> "Color":
+            """Create a color from a style."""
+            Style = _cribo_init___cribo_4c91ba_pkg_style(globals()['pkg_style']).Style
+            if style.color == "red":
+                return Color(255, 0, 0)
+            elif style.color == "green":
+                return Color(0, 255, 0)
+            elif style.color == "blue":
+                return Color(0, 0, 255)
+            return Color()
+        color_from_style.__module__ = 'pkg.color'
+        color_from_style.__qualname__ = 'color_from_style'
+        _cribo_self.color_from_style = color_from_style
 
-    def apply_color_to_console(console, color: Color) -> None:
-        """Apply color to console."""
-        ConsoleBase = _cribo_init___cribo_f0224b_pkg_console(globals()['pkg_console']).ConsoleBase
-        pass
-    self.apply_color_to_console = apply_color_to_console
-    self.Optional = _cribo.typing.Optional
-    self.Tuple = _cribo.typing.Tuple
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+        def apply_color_to_console(console, color: Color) -> None:
+            """Apply color to console."""
+            ConsoleBase = _cribo_init___cribo_f0224b_pkg_console(globals()['pkg_console']).ConsoleBase
+            pass
+        apply_color_to_console.__module__ = 'pkg.color'
+        apply_color_to_console.__qualname__ = 'apply_color_to_console'
+        _cribo_self.apply_color_to_console = apply_color_to_console
+        _cribo_self.Optional = _cribo.typing.Optional
+        _cribo_self.Tuple = _cribo.typing.Tuple
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 pkg_color.__init__ = _cribo_init___cribo_02808e_pkg_color
-def _cribo_init___cribo_f0224b_pkg_console(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    global pkg_abc, pkg_color, pkg_pretty, pkg_style
-    """Console module that has circular dependencies with abc and pretty."""
-    sys = _cribo.sys
-    self.sys = sys
-    self.sys = sys
-    Any = _cribo.typing.Any
-    self.Any = Any
-    Optional = _cribo.typing.Optional
-    self.Optional = Optional
+def _cribo_init___cribo_f0224b_pkg_console(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
+    if _cribo_getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if _cribo_getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    try:
+        _cribo_self.__package__ = 'pkg'
+        _cribo_self.__doc__ = 'Console module that has circular dependencies with abc and pretty.'
+        global pkg_abc, pkg_color, pkg_pretty, pkg_style
+        """Console module that has circular dependencies with abc and pretty."""
+        sys = _cribo.sys
+        _cribo_self.sys = sys
+        _cribo_self.sys = sys
+        Any = _cribo.typing.Any
+        _cribo_self.Any = Any
+        Optional = _cribo.typing.Optional
+        _cribo_self.Optional = Optional
 
-    class ConsoleBase:
-        """Base console class for type checking."""
-        pass
-    ConsoleBase.__module__ = 'pkg.console'
-    self.ConsoleBase = ConsoleBase
-    pkg_abc = _cribo_init___cribo_5f60be_pkg_abc(pkg_abc)
-    RichRenderable = pkg.abc.RichRenderable
-    self.RichRenderable = RichRenderable
-    self.RichRenderable = RichRenderable
-    pkg_style = _cribo_init___cribo_4c91ba_pkg_style(pkg_style)
-    Style = pkg.style.Style
-    self.Style = Style
-    self.Style = Style
-    pkg_color = _cribo_init___cribo_02808e_pkg_color(pkg_color)
-    Color = pkg.color.Color
-    self.Color = Color
-    self.Color = Color
+        class ConsoleBase:
+            """Base console class for type checking."""
+            pass
+        ConsoleBase.__module__ = 'pkg.console'
+        ConsoleBase.__qualname__ = 'ConsoleBase'
+        _cribo_self.ConsoleBase = ConsoleBase
+        pkg_abc = _cribo_init___cribo_5f60be_pkg_abc(pkg_abc)
+        RichRenderable = pkg.abc.RichRenderable
+        _cribo_self.RichRenderable = RichRenderable
+        _cribo_self.RichRenderable = RichRenderable
+        pkg_style = _cribo_init___cribo_4c91ba_pkg_style(pkg_style)
+        Style = pkg.style.Style
+        _cribo_self.Style = Style
+        _cribo_self.Style = Style
+        pkg_color = _cribo_init___cribo_02808e_pkg_color(pkg_color)
+        Color = pkg.color.Color
+        _cribo_self.Color = Color
+        _cribo_self.Color = Color
 
-    class Console(ConsoleBase):
-        """Main console class with complex dependencies."""
+        class Console(ConsoleBase):
+            """Main console class with complex dependencies."""
 
-        def __init__(self, force_terminal: _cribo.typing.Optional[bool]=None):
-            self.force_terminal = force_terminal
-            self._style = Style()
-            self._color = Color()
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.console'), _cribo_f)[1])
+            def __init__(self, force_terminal: _cribo.typing.Optional[bool]=None):
+                self.force_terminal = force_terminal
+                self._style = Style()
+                self._color = Color()
 
-        def print(self, *objects: _cribo.typing.Any, **kwargs) -> None:
-            """Print objects to console."""
-            for obj in objects:
-                if isinstance(obj, RichRenderable):
-                    output = obj.render(self)
-                else:
-                    output = str(obj)
-                print(output, **kwargs)
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.console'), _cribo_f)[1])
+            def print(self, *objects: _cribo.typing.Any, **kwargs) -> None:
+                """Print objects to console."""
+                for obj in objects:
+                    if isinstance(obj, RichRenderable):
+                        output = obj.render(self)
+                    else:
+                        output = str(obj)
+                    print(output, **kwargs)
 
-        def is_renderable(self, obj: _cribo.typing.Any) -> bool:
-            """Check if object is renderable."""
-            return isinstance(obj, RichRenderable)
-    Console.__module__ = 'pkg.console'
-    self.Console = Console
-    pkg_pretty = _cribo_init___cribo_2353ad_pkg_pretty(pkg_pretty)
-    format_pretty = pkg.pretty.format_pretty
-    self.format_pretty = format_pretty
-    self.format_pretty = format_pretty
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.console'), _cribo_f)[1])
+            def is_renderable(self, obj: _cribo.typing.Any) -> bool:
+                """Check if object is renderable."""
+                return isinstance(obj, RichRenderable)
+        Console.__module__ = 'pkg.console'
+        Console.__qualname__ = 'Console'
+        _cribo_self.Console = Console
+        pkg_pretty = _cribo_init___cribo_2353ad_pkg_pretty(pkg_pretty)
+        format_pretty = pkg.pretty.format_pretty
+        _cribo_self.format_pretty = format_pretty
+        _cribo_self.format_pretty = format_pretty
 
-    def format_with_pretty(console: Console, obj: _cribo.typing.Any) -> str:
-        """Format object using pretty printer."""
-        return format_pretty(obj, console)
-    self.format_with_pretty = format_with_pretty
-    self.Any = _cribo.typing.Any
-    self.Optional = _cribo.typing.Optional
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+        def format_with_pretty(console: Console, obj: _cribo.typing.Any) -> str:
+            """Format object using pretty printer."""
+            return format_pretty(obj, console)
+        format_with_pretty.__module__ = 'pkg.console'
+        format_with_pretty.__qualname__ = 'format_with_pretty'
+        _cribo_self.format_with_pretty = format_with_pretty
+        _cribo_self.Any = _cribo.typing.Any
+        _cribo_self.Optional = _cribo.typing.Optional
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 pkg_console.__init__ = _cribo_init___cribo_f0224b_pkg_console
-def _cribo_init___cribo_2353ad_pkg_pretty(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    global pkg_abc, pkg_console
-    """Pretty printing module with circular dependency on console."""
-    Any = _cribo.typing.Any
-    self.Any = Any
-    pkg_abc = _cribo_init___cribo_5f60be_pkg_abc(pkg_abc)
-    RichRenderable = pkg.abc.RichRenderable
-    self.RichRenderable = RichRenderable
-    self.RichRenderable = RichRenderable
-    pkg_console = _cribo_init___cribo_f0224b_pkg_console(pkg_console)
-    Console = pkg.console.Console
-    self.Console = Console
-    self.Console = Console
+def _cribo_init___cribo_2353ad_pkg_pretty(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
+    if _cribo_getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if _cribo_getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    try:
+        _cribo_self.__package__ = 'pkg'
+        _cribo_self.__doc__ = 'Pretty printing module with circular dependency on console.'
+        global pkg_abc, pkg_console
+        """Pretty printing module with circular dependency on console."""
+        Any = _cribo.typing.Any
+        _cribo_self.Any = Any
+        pkg_abc = _cribo_init___cribo_5f60be_pkg_abc(pkg_abc)
+        RichRenderable = pkg.abc.RichRenderable
+        _cribo_self.RichRenderable = RichRenderable
+        _cribo_self.RichRenderable = RichRenderable
+        pkg_console = _cribo_init___cribo_f0224b_pkg_console(pkg_console)
+        Console = pkg.console.Console
+        _cribo_self.Console = Console
+        _cribo_self.Console = Console
 
-    class PrettyPrinter(RichRenderable):
-        """Pretty printer that implements RichRenderable."""
+        class PrettyPrinter(RichRenderable):
+            """Pretty printer that implements RichRenderable."""
 
-        def __init__(self):
-            self._indent = 2
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.pretty'), _cribo_f)[1])
+            def __init__(self):
+                self._indent = 2
 
-        def render(self, console: Console) -> str:
-            """Render for console output."""
-            return f"PrettyPrinter(indent={self._indent})"
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.pretty'), _cribo_f)[1])
+            def render(self, console: Console) -> str:
+                """Render for console output."""
+                return f"PrettyPrinter(indent={self._indent})"
 
-        def pretty_print(self, obj: _cribo.typing.Any) -> None:
-            """Pretty print an object."""
-            console = Console()
-            formatted = format_pretty(obj, console)
-            print(formatted)
-    PrettyPrinter.__module__ = 'pkg.pretty'
-    self.PrettyPrinter = PrettyPrinter
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.pretty'), _cribo_f)[1])
+            def pretty_print(self, obj: _cribo.typing.Any) -> None:
+                """Pretty print an object."""
+                console = Console()
+                formatted = format_pretty(obj, console)
+                print(formatted)
+        PrettyPrinter.__module__ = 'pkg.pretty'
+        PrettyPrinter.__qualname__ = 'PrettyPrinter'
+        _cribo_self.PrettyPrinter = PrettyPrinter
 
-    def format_pretty(obj: _cribo.typing.Any, console: Console) -> str:
-        """Format object for pretty printing."""
-        if console.is_renderable(obj):
-            return f"<Renderable: {obj}>"
-        return repr(obj)
-    self.format_pretty = format_pretty
-    self.Any = _cribo.typing.Any
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+        def format_pretty(obj: _cribo.typing.Any, console: Console) -> str:
+            """Format object for pretty printing."""
+            if console.is_renderable(obj):
+                return f"<Renderable: {obj}>"
+            return repr(obj)
+        format_pretty.__module__ = 'pkg.pretty'
+        format_pretty.__qualname__ = 'format_pretty'
+        _cribo_self.format_pretty = format_pretty
+        _cribo_self.Any = _cribo.typing.Any
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 pkg_pretty.__init__ = _cribo_init___cribo_2353ad_pkg_pretty
-def _cribo_init___cribo_4c91ba_pkg_style(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    global pkg_color
-    """Style module that participates in circular dependencies."""
-    Optional = _cribo.typing.Optional
-    self.Optional = Optional
-    pkg_color = _cribo_init___cribo_02808e_pkg_color(pkg_color)
-    Color = pkg.color.Color
-    self.Color = Color
-    self.Color = Color
+def _cribo_init___cribo_4c91ba_pkg_style(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
+    if _cribo_getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if _cribo_getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    try:
+        _cribo_self.__package__ = 'pkg'
+        _cribo_self.__doc__ = 'Style module that participates in circular dependencies.'
+        global pkg_color
+        """Style module that participates in circular dependencies."""
+        Optional = _cribo.typing.Optional
+        _cribo_self.Optional = Optional
+        pkg_color = _cribo_init___cribo_02808e_pkg_color(pkg_color)
+        Color = pkg.color.Color
+        _cribo_self.Color = Color
+        _cribo_self.Color = Color
 
-    class Style:
-        """Style configuration for console output."""
+        class Style:
+            """Style configuration for console output."""
 
-        def __init__(self, color: _cribo.typing.Optional[str]=None):
-            self.color = color or "default"
-            self._color_obj = Color()
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.style'), _cribo_f)[1])
+            def __init__(self, color: _cribo.typing.Optional[str]=None):
+                self.color = color or "default"
+                self._color_obj = Color()
 
-        def apply(self, text: str) -> str:
-            """Apply style to text."""
-            return f"[{self.color}]{text}[/{self.color}]"
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.style'), _cribo_f)[1])
+            def apply(self, text: str) -> str:
+                """Apply style to text."""
+                return f"[{self.color}]{text}[/{self.color}]"
 
-        def get_color(self) -> Color:
-            """Get associated color object."""
-            return self._color_obj
-    Style.__module__ = 'pkg.style'
-    self.Style = Style
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.style'), _cribo_f)[1])
+            def get_color(self) -> Color:
+                """Get associated color object."""
+                return self._color_obj
+        Style.__module__ = 'pkg.style'
+        Style.__qualname__ = 'Style'
+        _cribo_self.Style = Style
 
-    def apply_style_to_console(console, style: Style) -> None:
-        """Apply a style to console output."""
-        ConsoleBase = _cribo_init___cribo_f0224b_pkg_console(globals()['pkg_console']).ConsoleBase
-        pass
-    self.apply_style_to_console = apply_style_to_console
-    self.Optional = _cribo.typing.Optional
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+        def apply_style_to_console(console, style: Style) -> None:
+            """Apply a style to console output."""
+            ConsoleBase = _cribo_init___cribo_f0224b_pkg_console(globals()['pkg_console']).ConsoleBase
+            pass
+        apply_style_to_console.__module__ = 'pkg.style'
+        apply_style_to_console.__qualname__ = 'apply_style_to_console'
+        _cribo_self.apply_style_to_console = apply_style_to_console
+        _cribo_self.Optional = _cribo.typing.Optional
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 pkg_style.__init__ = _cribo_init___cribo_4c91ba_pkg_style
 """Test circular dependencies with stdlib-conflicting module names.\n\nThis fixture tests the bundler's ability to handle:\n1. A local module named 'abc' that conflicts with stdlib 'abc'\n2. Circular dependencies that require wrapper functions\n3. Proper stdlib normalization when hard dependencies are involved\n4. Ensuring no incorrect imports are generated for stdlib or bundled modules\n"""
 __cribo_init_result = _cribo_init___cribo_6b1af6_pkg(pkg)

@@ -18,6 +18,123 @@ use crate::{
 pub(super) struct ExpressionRewriter;
 
 impl ExpressionRewriter {
+    /// Add names to the transformer's shadowed bindings for one nested scope
+    /// (lambda parameters, comprehension targets), returning only the names that
+    /// were NEWLY added so pre-existing shadows survive the scope's removal.
+    fn add_scope_shadows(
+        transformer: &mut RecursiveImportTransformer<'_>,
+        names: Vec<String>,
+    ) -> Vec<String> {
+        names
+            .into_iter()
+            .filter(|name| transformer.state.shadowed_bindings.insert(name.clone()))
+            .collect()
+    }
+
+    /// Remove the scope shadows added by [`Self::add_scope_shadows`].
+    fn remove_scope_shadows(transformer: &mut RecursiveImportTransformer<'_>, added: Vec<String>) {
+        for name in added {
+            transformer.state.shadowed_bindings.shift_remove(&name);
+        }
+    }
+
+    /// Transform comprehension generator clauses with Python's scoping: the
+    /// FIRST iterable evaluates in the enclosing scope, and each generator's
+    /// targets then shadow enclosing bindings for the following clauses.
+    /// Returns the shadow names added; the caller removes them after
+    /// transforming the element expressions.
+    fn transform_generators_scoped(
+        transformer: &mut RecursiveImportTransformer<'_>,
+        generators: &mut [ruff_python_ast::Comprehension],
+    ) -> Vec<String> {
+        fn collect(target: &Expr, names: &mut Vec<String>) {
+            match target {
+                Expr::Name(name) => names.push(name.id.as_str().to_owned()),
+                Expr::Tuple(tuple) => {
+                    for element in &tuple.elts {
+                        collect(element, names);
+                    }
+                }
+                Expr::List(list) => {
+                    for element in &list.elts {
+                        collect(element, names);
+                    }
+                }
+                Expr::Starred(starred) => collect(&starred.value, names),
+                _ => {}
+            }
+        }
+        let mut added = Vec::new();
+        for generator in generators {
+            // The first iterable runs before any shadow is added (enclosing
+            // scope); later iterables see the targets bound so far
+            Self::transform_expr(transformer, &mut generator.iter);
+            let mut names = Vec::new();
+            collect(&generator.target, &mut names);
+            added.extend(Self::add_scope_shadows(transformer, names));
+            for if_clause in &mut generator.ifs {
+                Self::transform_expr(transformer, if_clause);
+            }
+        }
+        added
+    }
+
+    /// Transform a lambda: parameter defaults evaluate in the ENCLOSING scope,
+    /// while the body's parameter names shadow enclosing bindings (a parameter
+    /// named like an import alias dispatches to the argument at runtime).
+    fn transform_lambda(
+        transformer: &mut RecursiveImportTransformer<'_>,
+        lambda_expr: &mut ruff_python_ast::ExprLambda,
+    ) {
+        let mut parameter_names = Vec::new();
+        if let Some(parameters) = &mut lambda_expr.parameters {
+            for param in parameters
+                .posonlyargs
+                .iter_mut()
+                .chain(&mut parameters.args)
+                .chain(&mut parameters.kwonlyargs)
+            {
+                if let Some(default) = &mut param.default {
+                    Self::transform_expr(transformer, default);
+                }
+                parameter_names.push(param.parameter.name.as_str().to_owned());
+            }
+            if let Some(vararg) = &parameters.vararg {
+                parameter_names.push(vararg.name.as_str().to_owned());
+            }
+            if let Some(kwarg) = &parameters.kwarg {
+                parameter_names.push(kwarg.name.as_str().to_owned());
+            }
+        }
+        // A walrus target anywhere in the lambda body is LOCAL for the whole
+        // body (a read before the assignment raises UnboundLocalError, so it
+        // must not be rewritten as an enclosing import alias): pre-collect
+        // those bindings like the parameters
+        crate::visitors::utils::collect_lambda_scope_walrus_targets(
+            &lambda_expr.body,
+            &mut parameter_names,
+        );
+        let added = Self::add_scope_shadows(transformer, parameter_names);
+        Self::transform_expr(transformer, &mut lambda_expr.body);
+        Self::remove_scope_shadows(transformer, added);
+    }
+
+    /// Transform the bounds of a slice expression.
+    fn transform_slice(
+        transformer: &mut RecursiveImportTransformer<'_>,
+        slice_expr: &mut ruff_python_ast::ExprSlice,
+    ) {
+        if let Some(lower) = &mut slice_expr.lower {
+            Self::transform_expr(transformer, lower);
+        }
+        if let Some(upper) = &mut slice_expr.upper {
+            Self::transform_expr(transformer, upper);
+        }
+        if let Some(step) = &mut slice_expr.step {
+            Self::transform_expr(transformer, step);
+        }
+    }
+
     /// Recursively transform expressions within the import transformer context
     pub(super) fn transform_expr(
         transformer: &mut RecursiveImportTransformer<'_>,
@@ -78,6 +195,7 @@ impl ExpressionRewriter {
                         // In wrapper modules, we only track local_variables which includes imported
                         // names
                         let is_shadowed = transformer.state.local_variables.contains(name)
+                            || transformer.state.shadowed_bindings.contains(name)
                             || transformer.state.import_aliases.contains_key(name);
 
                         if !is_shadowed {
@@ -208,7 +326,8 @@ impl ExpressionRewriter {
                             transformer.state.import_aliases.get(&base)
                         {
                             // Check if this name is shadowed by a local variable
-                            let is_shadowed = transformer.state.local_variables.contains(&base);
+                            let is_shadowed = transformer.state.local_variables.contains(&base)
+                                || transformer.state.shadowed_bindings.contains(&base);
                             log::debug!(
                                 "Semantic check for attribute base '{}': shadowed={}, \
                                  at_module_level={}, local_vars={:?}",
@@ -329,10 +448,12 @@ impl ExpressionRewriter {
             }
             Expr::Call(call_expr) => {
                 // Check if this is importlib.import_module() with a static string literal
-                if DynamicHandler::is_importlib_import_module_call(
+                let is_importlib_call = DynamicHandler::is_importlib_import_module_call(
                     call_expr,
                     &transformer.state.import_aliases,
-                ) {
+                    &transformer.state.shadowed_bindings,
+                );
+                if is_importlib_call {
                     // Extract the state values we need to avoid borrow checker conflicts
                     let mut created_namespace_objects =
                         std::mem::take(&mut transformer.state.created_namespace_objects);
@@ -353,7 +474,15 @@ impl ExpressionRewriter {
                     transformer.state.created_namespace_objects = created_namespace_objects;
                 }
 
-                Self::transform_expr(transformer, &mut call_expr.func);
+                // A PRESERVED import_module call keeps its CALLEE verbatim:
+                // the import statement handler emits a binding for the
+                // original spelling (`il = _cribo.importlib`), while the
+                // stdlib-alias rewrite would retarget the callee to the
+                // canonical module name, which need not be bound in this
+                // scope (`import importlib as il` inside a function)
+                if !is_importlib_call {
+                    Self::transform_expr(transformer, &mut call_expr.func);
+                }
                 for arg in &mut call_expr.arguments.args {
                     Self::transform_expr(transformer, arg);
                 }
@@ -408,42 +537,45 @@ impl ExpressionRewriter {
                 }
             }
             Expr::ListComp(listcomp_expr) => {
+                let added =
+                    Self::transform_generators_scoped(transformer, &mut listcomp_expr.generators);
                 Self::transform_expr(transformer, &mut listcomp_expr.elt);
-                for generator in &mut listcomp_expr.generators {
-                    Self::transform_expr(transformer, &mut generator.iter);
-                    for if_clause in &mut generator.ifs {
-                        Self::transform_expr(transformer, if_clause);
-                    }
-                }
+                Self::remove_scope_shadows(transformer, added);
             }
             Expr::DictComp(dictcomp_expr) => {
+                let added =
+                    Self::transform_generators_scoped(transformer, &mut dictcomp_expr.generators);
                 if let Some(key) = &mut dictcomp_expr.key {
                     Self::transform_expr(transformer, key);
                 }
                 Self::transform_expr(transformer, &mut dictcomp_expr.value);
-                for generator in &mut dictcomp_expr.generators {
-                    Self::transform_expr(transformer, &mut generator.iter);
-                    for if_clause in &mut generator.ifs {
-                        Self::transform_expr(transformer, if_clause);
-                    }
-                }
+                Self::remove_scope_shadows(transformer, added);
             }
             Expr::SetComp(setcomp_expr) => {
+                let added =
+                    Self::transform_generators_scoped(transformer, &mut setcomp_expr.generators);
                 Self::transform_expr(transformer, &mut setcomp_expr.elt);
-                for generator in &mut setcomp_expr.generators {
-                    Self::transform_expr(transformer, &mut generator.iter);
-                    for if_clause in &mut generator.ifs {
-                        Self::transform_expr(transformer, if_clause);
-                    }
-                }
+                Self::remove_scope_shadows(transformer, added);
             }
             Expr::Generator(genexp_expr) => {
+                let added =
+                    Self::transform_generators_scoped(transformer, &mut genexp_expr.generators);
                 Self::transform_expr(transformer, &mut genexp_expr.elt);
-                for generator in &mut genexp_expr.generators {
-                    Self::transform_expr(transformer, &mut generator.iter);
-                    for if_clause in &mut generator.ifs {
-                        Self::transform_expr(transformer, if_clause);
-                    }
+                Self::remove_scope_shadows(transformer, added);
+            }
+            // Walrus expressions: the VALUE may contain a static import call
+            // (`(mod := importlib.import_module("helper"))`), and the target
+            // rebinds a name in the current scope — record it as shadowed
+            // AFTER visiting the value (which still sees the old binding), so
+            // later uses of the name dispatch to the new binding instead of
+            // being rewritten as the original import alias
+            Expr::Named(named_expr) => {
+                Self::transform_expr(transformer, &mut named_expr.value);
+                if let Expr::Name(target) = &*named_expr.target {
+                    let name = target.id.to_string();
+                    transformer.state.local_variables.insert(name.clone());
+                    transformer.state.shadowed_bindings.insert(name.clone());
+                    log::debug!("Tracking walrus target as local: {name}");
                 }
             }
             Expr::Subscript(subscript_expr) => {
@@ -451,18 +583,10 @@ impl ExpressionRewriter {
                 Self::transform_expr(transformer, &mut subscript_expr.slice);
             }
             Expr::Slice(slice_expr) => {
-                if let Some(lower) = &mut slice_expr.lower {
-                    Self::transform_expr(transformer, lower);
-                }
-                if let Some(upper) = &mut slice_expr.upper {
-                    Self::transform_expr(transformer, upper);
-                }
-                if let Some(step) = &mut slice_expr.step {
-                    Self::transform_expr(transformer, step);
-                }
+                Self::transform_slice(transformer, slice_expr);
             }
             Expr::Lambda(lambda_expr) => {
-                Self::transform_expr(transformer, &mut lambda_expr.body);
+                Self::transform_lambda(transformer, lambda_expr);
             }
             Expr::Yield(yield_expr) => {
                 if let Some(value) = &mut yield_expr.value {
@@ -551,7 +675,8 @@ impl ExpressionRewriter {
                         // Check if this name is shadowed by a local variable
                         // The transformer state tracks local variables to avoid treating them as
                         // module aliases
-                        let is_shadowed = transformer.state.local_variables.contains(name);
+                        let is_shadowed = transformer.state.local_variables.contains(name)
+                            || transformer.state.shadowed_bindings.contains(name);
                         log::debug!(
                             "Semantic check for '{}': shadowed={}, at_module_level={}, \
                              local_vars={:?}",

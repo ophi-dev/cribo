@@ -35,7 +35,11 @@ __pycache__/
 build/
 dist/
 *.egg-info/
+# Test fixtures simulate legacy installs and must keep their egg-info metadata
+!crates/cribo/tests/fixtures/**/*.egg-info/
 *.so
+# Test fixtures simulate native-extension installs with fake .so artifacts
+!crates/cribo/tests/fixtures/**/*.so
 +*.whl
 +venv/
 +.venv/

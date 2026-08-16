@@ -1211,6 +1211,19 @@ impl Bundler<'_> {
                             module_scope_symbols,
                             [function.name.to_string()],
                         ));
+                        // A serializable identity, exactly like top-level init
+                        // definitions: pickle resolves through
+                        // __import__(func.__module__) + getattr by
+                        // __qualname__, and a definition executed inside the
+                        // init function otherwise carries a '<locals>'
+                        // qualified name pickle refuses
+                        crate::code_generator::module_transformer::emit_identity_stamps(
+                            &mut result,
+                            function.name.as_str(),
+                            module_name,
+                            function.name.as_str(),
+                            !function.decorator_list.is_empty(),
+                        );
                     }
                 }
                 Stmt::ClassDef(class) => {
@@ -1221,11 +1234,16 @@ impl Bundler<'_> {
                             module_scope_symbols,
                             [class.name.to_string()],
                         ));
-                        result.push(statements::assign_attribute(
+                        // See the FunctionDef arm: __module__ AND __qualname__
+                        // restore the pickle identity of a class created in
+                        // the init function's local scope
+                        crate::code_generator::module_transformer::emit_identity_stamps(
+                            &mut result,
                             class.name.as_str(),
-                            "__module__",
-                            expressions::string_literal(module_name),
-                        ));
+                            module_name,
+                            class.name.as_str(),
+                            !class.decorator_list.is_empty(),
+                        );
                     }
                 }
                 Stmt::For(for_stmt) => {
@@ -1723,12 +1741,24 @@ impl Bundler<'_> {
                         );
                     }
                 }
-                // Recurse into class body (class scope executes at definition time)
+                // Recurse into class body (class scope executes at definition time).
+                // A class docstring implicitly binds __doc__ in the class
+                // namespace, shadowing the module's value.
+                let class_locals = if matches!(
+                    class_def.body.first(),
+                    Some(Stmt::Expr(expr)) if expr.value.is_string_literal_expr()
+                ) {
+                    let mut extended = local_vars.clone();
+                    extended.insert("__doc__".to_owned());
+                    Some(extended)
+                } else {
+                    None
+                };
                 for stmt in &mut class_def.body {
                     self.transform_stmt_for_module_vars_with_locals(
                         stmt,
                         module_level_vars,
-                        local_vars,
+                        class_locals.as_ref().unwrap_or(local_vars),
                         module_var_name,
                     );
                 }
@@ -1855,12 +1885,17 @@ impl Bundler<'_> {
             Expr::Name(name_expr) => {
                 let name_str = name_expr.id.as_str();
 
-                // Special case: transform __name__ to module.__name__
-                if name_str == "__name__" && matches!(name_expr.ctx, ExprContext::Load) {
-                    // Transform __name__ -> module.__name__
+                // Special case: transform import globals to module attributes
+                // (__package__ is stamped on the namespace by the init prologue).
+                // Locally bound names (function/lambda parameters, comprehension
+                // targets, local assignments) keep their own resolution.
+                if matches!(name_str, "__name__" | "__package__" | "__doc__")
+                    && matches!(name_expr.ctx, ExprContext::Load)
+                    && !local_vars.contains(name_str)
+                {
                     *expr = expressions::attribute(
                         expressions::name(module_var_name, ExprContext::Load),
-                        "__name__",
+                        name_str,
                         ExprContext::Load,
                     );
                 }

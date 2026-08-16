@@ -2,7 +2,6 @@ use std::{
     cell::RefCell,
     ffi::OsStr,
     fmt,
-    io::{BufRead, BufReader},
     path::{Path, PathBuf},
     sync::Mutex,
 };
@@ -330,6 +329,12 @@ impl ImportClassification {
 struct ResolvedModule {
     path: PathBuf,
     source: ImportSource,
+    /// Whether resolution traversed a PEP 420 namespace portion (an
+    /// intermediate directory without `__init__.py`): Python discards such
+    /// portions when a LATER root provides a regular package of the same
+    /// name, so these results only apply when nothing concrete exists
+    /// anywhere else.
+    via_namespace_portion: bool,
 }
 
 impl ResolvedModule {
@@ -370,22 +375,1532 @@ impl ImportModuleDescriptor {
     }
 }
 
-#[derive(Debug, Default)]
-struct DistributionOwnershipIndex {
-    declared_prefixes: IndexSet<String>,
-    record_imports: IndexSet<String>,
+/// AST visitor detecting patterns that make a package unsafe to inline into a bundle:
+///
+/// - imports of runtime package-data and metadata APIs that require an installed
+///   distribution on disk (`importlib.metadata`, `importlib_metadata`, `pkg_resources`,
+///   `importlib.resources`, `importlib_resources`, `pkgutil`) or that introspect the
+///   import machinery (`importlib.util`), which inlined modules are not registered with
+/// - dynamic imports with non-literal module names (including through aliases such as
+///   `from importlib import import_module as load`), whose loaded modules cannot be
+///   discovered statically
+/// - references to `__file__`, which resolve filesystem resources relative to the
+///   module's own source (e.g. `Path(__file__).with_name("data.json")`); after
+///   inlining, `__file__` points at the generated bundle and the adjacent assets are
+///   not shipped
+#[derive(Default)]
+struct UnbundlablePatternDetector {
+    found: bool,
+    /// Local aliases bound to `importlib.import_module` via `from importlib import ...`.
+    /// Literal calls through these are statically discovered and stay bundleable.
+    dynamic_import_aliases: IndexSet<String>,
+    /// Callable aliases created by (annotated) assignments such as
+    /// `load = importlib.import_module`. Import discovery cannot rewrite calls through
+    /// these, so any call blocks bundling, literal or not.
+    assigned_import_aliases: IndexSet<String>,
+    /// Names bound to the `importlib` module itself (`import importlib`,
+    /// `import importlib as il`), so qualified reload calls through aliases
+    /// (`il.reload(mod)`) are recognized too.
+    importlib_module_aliases: IndexSet<String>,
 }
 
-impl DistributionOwnershipIndex {
-    /// Return whether indexed metadata or installed files claim an import.
+impl UnbundlablePatternDetector {
+    /// Whether binding this name would desynchronize the generated wrapper
+    /// from real module semantics: wrapper finalization redirects
+    /// zero-argument `globals()`/`locals()` calls to the generated module
+    /// namespace without checking for local rebindings of those names, and a
+    /// module-level `__builtins__` replacement becomes the builtins namespace
+    /// of every function subsequently defined in the real module — the
+    /// generated init cannot reproduce that capture.
+    fn name_shadows_namespace_introspection(name: &str) -> bool {
+        matches!(name, "globals" | "locals" | "__builtins__")
+    }
+
+    /// Whether an expression denotes (or plausibly denotes) `types.ModuleType`.
+    fn mentions_module_type(expr: &ruff_python_ast::Expr) -> bool {
+        use ruff_python_ast::Expr;
+        match expr {
+            Expr::Attribute(attribute) => attribute.attr.as_str() == "ModuleType",
+            Expr::Name(name) => name.id.as_str() == "ModuleType",
+            _ => false,
+        }
+    }
+
+    const INSTALLED_PACKAGE_APIS: [&'static str; 8] = [
+        "importlib.metadata",
+        "importlib_metadata",
+        "pkg_resources",
+        "importlib.resources",
+        "importlib_resources",
+        // Reads package data files installed on disk (pkgutil.get_data)
+        "pkgutil",
+        // Introspects import specs (find_spec); inlined modules are not registered
+        // with the import machinery, so spec lookups would misreport them
+        "importlib.util",
+        // Executes modules through import specs and loader.get_code(); bundled
+        // modules carry no code-providing loader, so run_module would fail where
+        // the installed distribution runs fine
+        "runpy",
+    ];
+
+    /// Return whether an imported module name is (or is inside) an API module that
+    /// requires an installed distribution.
+    fn module_is_metadata_api(module_name: &str) -> bool {
+        Self::INSTALLED_PACKAGE_APIS.iter().any(|api| {
+            module_name == *api
+                || module_name
+                    .strip_prefix(api)
+                    .is_some_and(|rest| rest.starts_with('.'))
+        })
+    }
+
+    /// Return how a call expression relates to dynamic importing, if at all.
+    fn dynamic_import_kind(&self, callee: &ruff_python_ast::Expr) -> Option<DynamicImportKind> {
+        use ruff_python_ast::Expr;
+        match callee {
+            // Qualified forms like builtins.__import__ are equally undiscoverable
+            Expr::Attribute(attribute) if attribute.attr.as_str() == "__import__" => {
+                Some(DynamicImportKind::Undiscoverable)
+            }
+            // importlib.reload cannot operate on bundled namespaces: they carry no
+            // usable spec/loader, so reloading them would fail where the installed
+            // module reloads fine. Matched through the importlib module and any of
+            // its aliases (`import importlib as il; il.reload(mod)`); unrelated
+            // `x.reload()` methods are common and harmless.
+            Expr::Attribute(attribute)
+                if attribute.attr.as_str() == "reload"
+                    && matches!(&*attribute.value, Expr::Name(name) if self.importlib_module_aliases.contains(name.id.as_str())) =>
+            {
+                Some(DynamicImportKind::Undiscoverable)
+            }
+            Expr::Attribute(attribute) if attribute.attr.as_str() == "import_module" => {
+                // Only receivers known to be the importlib module support static
+                // discovery of literal targets. An UNKNOWN receiver (e.g. a
+                // `loader` parameter the consumer binds to the real importlib)
+                // still performs dynamic imports at runtime, but discovery never
+                // resolves its calls, so the target would be missing from the
+                // bundle.
+                if matches!(&*attribute.value, Expr::Name(name) if self.importlib_module_aliases.contains(name.id.as_str()))
+                {
+                    Some(DynamicImportKind::ImportModule)
+                } else {
+                    Some(DynamicImportKind::Undiscoverable)
+                }
+            }
+            // An import callable stored behind an ATTRIBUTE (e.g. `class Loader:
+            // load = staticmethod(importlib.import_module)` then `Loader.load(x)`)
+            // performs dynamic imports discovery never resolves; the recorded
+            // assigned-alias NAME is matched conservatively on any receiver
+            Expr::Attribute(attribute)
+                if self
+                    .assigned_import_aliases
+                    .contains(attribute.attr.as_str()) =>
+            {
+                Some(DynamicImportKind::Undiscoverable)
+            }
+            Expr::Name(name) if name.id.as_str() == "__import__" => {
+                Some(DynamicImportKind::Undiscoverable)
+            }
+            Expr::Name(name) if self.assigned_import_aliases.contains(name.id.as_str()) => {
+                Some(DynamicImportKind::Undiscoverable)
+            }
+            Expr::Name(name)
+                if name.id.as_str() == "import_module"
+                    || self.dynamic_import_aliases.contains(name.id.as_str()) =>
+            {
+                Some(DynamicImportKind::ImportModule)
+            }
+            // A directly invoked retrieval — `getattr(importlib,
+            // "import_module")(name)` — imports without any name discovery can
+            // resolve; the callee is itself a call expression
+            Expr::Call(inner)
+                if is_getattr_import_callable(inner, &self.importlib_module_aliases) =>
+            {
+                Some(DynamicImportKind::Undiscoverable)
+            }
+            _ => None,
+        }
+    }
+
+    /// Record every alias bound to `importlib.import_module` anywhere in the module
+    /// (including inside `try`/`if` blocks and function bodies) before the detection
+    /// pass, so calls in functions defined above the alias binding are still
+    /// recognized. Import aliases (`from importlib import import_module as X`) and
+    /// (annotated) assignment aliases (`X = importlib.import_module`) are collected
+    /// separately because only import aliases support static discovery. Aliases of
+    /// the `importlib` module itself are tracked for qualified reload detection.
+    ///
+    /// Collection iterates to a FIXED POINT: an alias chain may cross a function
+    /// defined before its source binding (`def run(): load = late; ...` followed by
+    /// `late = importlib.import_module`), so a single source-order pass would miss
+    /// links established earlier in the file than their referent.
+    /// Over-collection is safe: it can only classify more packages as external.
+    fn collect_dynamic_import_aliases(&mut self, body: &[ruff_python_ast::Stmt]) {
+        struct AliasCollector<'detector> {
+            from_imports: &'detector mut IndexSet<String>,
+            assigned: &'detector mut IndexSet<String>,
+            importlib_modules: &'detector mut IndexSet<String>,
+        }
+
+        impl<'a> ruff_python_ast::visitor::Visitor<'a> for AliasCollector<'_> {
+            fn visit_stmt(&mut self, stmt: &'a ruff_python_ast::Stmt) {
+                use ruff_python_ast::{Expr, Stmt};
+                match stmt {
+                    // `import importlib` / `import importlib as il` binds the module
+                    // itself; qualified reload calls resolve through these names
+                    Stmt::Import(import_stmt) => {
+                        for alias in &import_stmt.names {
+                            if alias.name.as_str() == "importlib" {
+                                let bound_name = alias
+                                    .asname
+                                    .as_ref()
+                                    .map_or_else(|| alias.name.as_str(), |name| name.as_str());
+                                self.importlib_modules.insert(bound_name.to_owned());
+                            }
+                        }
+                    }
+                    Stmt::ImportFrom(import_from)
+                        if import_from.level == 0
+                            && import_from.module.as_deref() == Some("importlib") =>
+                    {
+                        record_import_module_aliases(import_from, self.from_imports);
+                        // Aliases of importlib.reload are undiscoverable callables:
+                        // bundled namespaces cannot be reloaded through the import
+                        // machinery
+                        for alias in &import_from.names {
+                            if alias.name.as_str() == "reload" {
+                                let bound_name = alias
+                                    .asname
+                                    .as_ref()
+                                    .map_or_else(|| alias.name.as_str(), |name| name.as_str());
+                                self.assigned.insert(bound_name.to_owned());
+                            }
+                        }
+                    }
+                    // Aliases of builtins.__import__ are undiscoverable callables
+                    Stmt::ImportFrom(import_from)
+                        if import_from.level == 0
+                            && import_from.module.as_deref() == Some("builtins") =>
+                    {
+                        for alias in &import_from.names {
+                            if alias.name.as_str() == "__import__" {
+                                let bound_name = alias
+                                    .asname
+                                    .as_ref()
+                                    .map_or_else(|| alias.name.as_str(), |name| name.as_str());
+                                self.assigned.insert(bound_name.to_owned());
+                            }
+                        }
+                    }
+                    Stmt::Assign(assign) => {
+                        record_assigned_import_module_aliases(
+                            &assign.targets,
+                            &assign.value,
+                            self.from_imports,
+                            self.assigned,
+                            self.importlib_modules,
+                        );
+                    }
+                    Stmt::AnnAssign(ann_assign) => {
+                        if let Some(value) = &ann_assign.value {
+                            let target: &Expr = &ann_assign.target;
+                            record_assigned_import_module_aliases(
+                                std::slice::from_ref(target),
+                                value,
+                                self.from_imports,
+                                self.assigned,
+                                self.importlib_modules,
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+                ruff_python_ast::visitor::walk_stmt(self, stmt);
+            }
+        }
+
+        use ruff_python_ast::visitor::Visitor as _;
+        // `importlib` itself always names the module when it is in scope
+        self.importlib_module_aliases.insert("importlib".to_owned());
+        // Iterate to a fixed point: each pass may resolve alias links whose
+        // referent is bound later in source order than the alias assignment
+        loop {
+            let sizes_before = (
+                self.dynamic_import_aliases.len(),
+                self.assigned_import_aliases.len(),
+                self.importlib_module_aliases.len(),
+            );
+            let mut collector = AliasCollector {
+                from_imports: &mut self.dynamic_import_aliases,
+                assigned: &mut self.assigned_import_aliases,
+                importlib_modules: &mut self.importlib_module_aliases,
+            };
+            for stmt in body {
+                collector.visit_stmt(stmt);
+            }
+            let sizes_after = (
+                self.dynamic_import_aliases.len(),
+                self.assigned_import_aliases.len(),
+                self.importlib_module_aliases.len(),
+            );
+            if sizes_after == sizes_before {
+                break;
+            }
+        }
+    }
+}
+
+/// Track local names bound to `importlib.import_module` by a `from importlib
+/// import ...` statement.
+fn record_import_module_aliases(
+    import_from: &ruff_python_ast::StmtImportFrom,
+    aliases: &mut IndexSet<String>,
+) {
+    for alias in &import_from.names {
+        if alias.name.as_str() == "import_module" {
+            let bound_name = alias
+                .asname
+                .as_ref()
+                .map_or_else(|| alias.name.as_str(), |name| name.as_str());
+            aliases.insert(bound_name.to_owned());
+        }
+    }
+}
+
+/// `getattr(obj, "import_module")` retrieves an import callable dynamically,
+/// and `getattr(importlib, anything)` may — bundled code cannot rewrite either.
+fn is_getattr_import_callable(
+    call: &ruff_python_ast::ExprCall,
+    importlib_module_aliases: &IndexSet<String>,
+) -> bool {
+    use ruff_python_ast::Expr;
+    let Expr::Name(callee) = &*call.func else {
+        return false;
+    };
+    if callee.id.as_str() != "getattr" {
+        return false;
+    }
+    match call.arguments.args.get(1) {
+        Some(Expr::StringLiteral(literal)) => matches!(
+            literal.value.to_str(),
+            "import_module" | "__import__" | "reload"
+        ),
+        _ => call.arguments.args.first().is_some_and(|receiver| {
+            matches!(receiver, Expr::Name(name) if importlib_module_aliases.contains(name.id.as_str()))
+        }),
+    }
+}
+
+/// Track callable aliases created by (annotated) assignments such as
+/// `load = importlib.import_module`, `load = __import__`,
+/// `load = builtins.__import__`, or `load = getattr(importlib, "import_module")`.
+///
+/// Higher-order wrappers are tracked conservatively: when the assigned value is a
+/// call that receives an import callable as an argument (e.g.
+/// `load = functools.partial(import_module, package=__package__)`), the resulting
+/// callable can import dynamically selected modules, so the assigned name is
+/// recorded as an undiscoverable import alias too. `getattr` retrieval is treated
+/// the same: a literal import-callable attribute name (on any object), or ANY
+/// dynamic attribute retrieved from the `importlib` module, may denote an import
+/// callable.
+fn record_assigned_import_module_aliases(
+    targets: &[ruff_python_ast::Expr],
+    value: &ruff_python_ast::Expr,
+    import_aliases: &IndexSet<String>,
+    assigned_aliases: &mut IndexSet<String>,
+    importlib_module_aliases: &IndexSet<String>,
+) {
+    use ruff_python_ast::Expr;
+
+    fn is_import_callable(
+        expr: &Expr,
+        import_aliases: &IndexSet<String>,
+        assigned_aliases: &IndexSet<String>,
+    ) -> bool {
+        match expr {
+            Expr::Attribute(attribute) => {
+                matches!(attribute.attr.as_str(), "import_module" | "__import__")
+            }
+            Expr::Name(name) => {
+                matches!(name.id.as_str(), "import_module" | "__import__")
+                    || import_aliases.contains(name.id.as_str())
+                    || assigned_aliases.contains(name.id.as_str())
+            }
+            _ => false,
+        }
+    }
+
+    // `getattr(obj, "import_module")` retrieval is handled by the module-level
+    // `is_getattr_import_callable` helper, shared with the dynamic-import
+    // kind dispatch.
+    let value_is_import_callable =
+        match value {
+            Expr::Call(call) => {
+                // A wrapper receiving an import callable (functools.partial and
+                // friends) yields a callable that still performs dynamic imports
+                is_getattr_import_callable(call, importlib_module_aliases)
+                    || call.arguments.args.iter().any(|argument| {
+                        is_import_callable(argument, import_aliases, assigned_aliases)
+                    })
+                    || call.arguments.keywords.iter().any(|keyword| {
+                        is_import_callable(&keyword.value, import_aliases, assigned_aliases)
+                    })
+            }
+            _ => is_import_callable(value, import_aliases, assigned_aliases),
+        };
+    if !value_is_import_callable {
+        // Destructuring can smuggle an import callable through a tuple/list
+        // display (`load, = (importlib.import_module,)`): when the VALUE is a
+        // display containing any import callable, every name the target
+        // structure binds is conservatively recorded — the callable may land
+        // on any of them, and over-recording only preserves more real imports
+        let display_elements: Option<&[Expr]> = match value {
+            Expr::Tuple(tuple) => Some(&tuple.elts),
+            Expr::List(list) => Some(&list.elts),
+            _ => None,
+        };
+        let display_holds_import_callable = display_elements.is_some_and(|elements| {
+            elements
+                .iter()
+                .any(|element| is_import_callable(element, import_aliases, assigned_aliases))
+        });
+        if !display_holds_import_callable {
+            return;
+        }
+        for target in targets {
+            record_bound_names(target, assigned_aliases);
+        }
+        return;
+    }
+    for target in targets {
+        if let Expr::Name(name) = target {
+            assigned_aliases.insert(name.id.to_string());
+        }
+    }
+}
+
+/// Record every plain name bound by an assignment target structure
+/// (names, tuple/list destructuring, starred elements).
+fn record_bound_names(target: &ruff_python_ast::Expr, bound: &mut IndexSet<String>) {
+    use ruff_python_ast::Expr;
+    match target {
+        Expr::Name(name) => {
+            bound.insert(name.id.to_string());
+        }
+        Expr::Tuple(tuple) => {
+            for element in &tuple.elts {
+                record_bound_names(element, bound);
+            }
+        }
+        Expr::List(list) => {
+            for element in &list.elts {
+                record_bound_names(element, bound);
+            }
+        }
+        Expr::Starred(starred) => record_bound_names(&starred.value, bound),
+        _ => {}
+    }
+}
+
+/// The dynamic-import mechanism used by a call expression.
+enum DynamicImportKind {
+    /// `importlib.import_module(...)` (possibly import-aliased); literal arguments are
+    /// statically discovered, so only non-literal ones block bundling
+    ImportModule,
+    /// Calls that import discovery never resolves — `__import__(...)` and callables
+    /// assigned from `import_module` — so any such call blocks bundling
+    Undiscoverable,
+}
+
+impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
+    fn visit_stmt(&mut self, stmt: &'a ruff_python_ast::Stmt) {
+        use ruff_python_ast::Stmt;
+        if self.found {
+            return;
+        }
+        match stmt {
+            // Rebinding the name `globals` or `locals` hijacks the namespace
+            // introspection rewrites: wrapper finalization redirects every
+            // zero-argument `globals()`/`locals()` call to the generated
+            // module namespace without checking bindings, so a provider-defined
+            // callable of the same name would silently be replaced
+            Stmt::FunctionDef(func_def) => {
+                if Self::name_shadows_namespace_introspection(func_def.name.as_str())
+                    || func_def.parameters.iter().any(|param| {
+                        Self::name_shadows_namespace_introspection(param.name().as_str())
+                    })
+                {
+                    self.found = true;
+                    return;
+                }
+            }
+            Stmt::ClassDef(class_def) => {
+                if Self::name_shadows_namespace_introspection(class_def.name.as_str()) {
+                    self.found = true;
+                    return;
+                }
+            }
+            Stmt::Import(import_stmt) => {
+                if import_stmt
+                    .names
+                    .iter()
+                    .any(|alias| Self::module_is_metadata_api(alias.name.as_str()))
+                {
+                    self.found = true;
+                    return;
+                }
+                if import_stmt.names.iter().any(|alias| {
+                    Self::name_shadows_namespace_introspection(
+                        alias.asname.as_ref().unwrap_or(&alias.name).as_str(),
+                    )
+                }) {
+                    self.found = true;
+                    return;
+                }
+            }
+            // Assigning `__class__` installs a custom module type
+            // (`sys.modules[__name__].__class__ = CustomModule`): generated
+            // SimpleNamespace objects reject ModuleType layouts, so the module
+            // must keep its installed identity. Any `.__class__` store is
+            // treated conservatively.
+            Stmt::Assign(assign) => {
+                if assign.targets.iter().any(|target| {
+                    matches!(target, ruff_python_ast::Expr::Attribute(attribute)
+                        if attribute.attr.as_str() == "__class__")
+                }) {
+                    self.found = true;
+                    return;
+                }
+            }
+            Stmt::AnnAssign(ann_assign) => {
+                if matches!(&*ann_assign.target, ruff_python_ast::Expr::Attribute(attribute)
+                    if attribute.attr.as_str() == "__class__")
+                {
+                    self.found = true;
+                    return;
+                }
+            }
+            Stmt::ImportFrom(import_from) if import_from.level == 0 => {
+                if let Some(module) = import_from.module.as_deref() {
+                    if Self::module_is_metadata_api(module)
+                        || (module == "importlib"
+                            && import_from.names.iter().any(|alias| {
+                                matches!(alias.name.as_str(), "metadata" | "resources" | "util")
+                            }))
+                    {
+                        self.found = true;
+                        return;
+                    }
+                    // Track aliases of importlib.import_module so aliased dynamic
+                    // calls (e.g. `load(f".{name}")`) are recognized below
+                    if module == "importlib" {
+                        record_import_module_aliases(import_from, &mut self.dynamic_import_aliases);
+                    }
+                }
+                if import_from.names.iter().any(|alias| {
+                    Self::name_shadows_namespace_introspection(
+                        alias.asname.as_ref().unwrap_or(&alias.name).as_str(),
+                    )
+                }) {
+                    self.found = true;
+                    return;
+                }
+            }
+            _ => {}
+        }
+        ruff_python_ast::visitor::walk_stmt(self, stmt);
+    }
+
+    fn visit_expr(&mut self, expr: &'a ruff_python_ast::Expr) {
+        use ruff_python_ast::Expr;
+        if self.found {
+            return;
+        }
+        // A module referencing its own `__file__` locates filesystem resources
+        // relative to its installed source; after inlining, `__file__` points at the
+        // generated bundle and the adjacent assets are not shipped. `__spec__`,
+        // `__loader__`, and `__cached__` are the same class of import-global: they
+        // describe the installed layout, loader capabilities, and bytecode cache
+        // paths, which the bundle cannot reproduce. `__path__` likewise enumerates
+        // the installed package directory (plugin scans), while generated package
+        // namespaces receive an empty `__path__`.
+        if let Expr::Name(name) = expr
+            && matches!(
+                name.id.as_str(),
+                "__file__" | "__spec__" | "__path__" | "__loader__" | "__cached__"
+            )
+        {
+            self.found = true;
+            return;
+        }
+        // Rebinding `globals`/`locals` through any store (assignment, loop or
+        // with target, walrus, del) hijacks the namespace-introspection
+        // rewrites (see `name_shadows_namespace_introspection`)
+        if let Expr::Name(name) = expr
+            && !name.ctx.is_load()
+            && Self::name_shadows_namespace_introspection(name.id.as_str())
+        {
+            self.found = true;
+            return;
+        }
+        if let Expr::Lambda(lambda) = expr
+            && let Some(parameters) = &lambda.parameters
+            && parameters
+                .iter()
+                .any(|param| Self::name_shadows_namespace_introspection(param.name().as_str()))
+        {
+            self.found = true;
+            return;
+        }
+        // Indirect reads of the same import globals through the module dict:
+        // `globals()["__file__"]`, `globals().get("__spec__")`. Wrapper
+        // generation rewrites globals() to the namespace dictionary, which
+        // carries no faithful values for these keys. Only actual dictionary
+        // lookups count — unrelated string DATA (`SPECIAL_NAMES = {"__file__"}`)
+        // never reads an import global.
+        let is_globals_call = |expr: &Expr| {
+            matches!(expr, Expr::Call(call)
+                if matches!(&*call.func, Expr::Name(callee) if callee.id.as_str() == "globals")
+                    && call.arguments.args.is_empty()
+                    && call.arguments.keywords.is_empty())
+        };
+        let is_import_global_key = |expr: &Expr| {
+            matches!(expr, Expr::StringLiteral(literal)
+            if matches!(
+                literal.value.to_str(),
+                "__file__" | "__spec__" | "__path__" | "__loader__" | "__cached__"
+            ))
+        };
+        if let Expr::Subscript(subscript) = expr
+            && is_globals_call(&subscript.value)
+            && is_import_global_key(&subscript.slice)
+        {
+            self.found = true;
+            return;
+        }
+        if let Expr::Call(call) = expr
+            && let Expr::Attribute(method) = &*call.func
+            && matches!(method.attr.as_str(), "get" | "pop" | "setdefault")
+            && is_globals_call(&method.value)
+            && call
+                .arguments
+                .args
+                .first()
+                .is_some_and(is_import_global_key)
+        {
+            self.found = true;
+            return;
+        }
+        // `exec(...)` and `eval(...)` publish names or perform imports through
+        // dynamically evaluated strings: inside a generated wrapper initializer
+        // exec'd names land in the function frame instead of the module
+        // namespace, and eval'd payloads can import modules no discovery ever
+        // saw. Any such call keeps the provider external. No-argument `vars()`
+        // is the module namespace in a real module but the initializer's local
+        // dictionary inside a wrapper, so it blocks bundling likewise.
+        if let Expr::Call(call) = expr
+            && let Expr::Name(callee) = &*call.func
+        {
+            match callee.id.as_str() {
+                "exec" | "eval" => {
+                    self.found = true;
+                    return;
+                }
+                "vars" if call.arguments.args.is_empty() && call.arguments.keywords.is_empty() => {
+                    self.found = true;
+                    return;
+                }
+                _ => {}
+            }
+        }
+        // Module-type identity checks (`isinstance(sys.modules[__name__],
+        // types.ModuleType)`, `type(x) is types.ModuleType`) distinguish real
+        // module objects from generated namespaces: a wrapped provider would
+        // observe False where the installed module observes True. Constructing
+        // module objects (`types.ModuleType("name")`) is NOT flagged.
+        if let Expr::Call(call) = expr
+            && matches!(&*call.func, Expr::Name(callee) if callee.id.as_str() == "isinstance")
+        {
+            let class_mentions_module_type = match call.arguments.args.get(1) {
+                Some(Expr::Tuple(tuple)) => tuple.elts.iter().any(Self::mentions_module_type),
+                Some(class_expr) => Self::mentions_module_type(class_expr),
+                None => false,
+            };
+            if class_mentions_module_type {
+                self.found = true;
+                return;
+            }
+        }
+        if let Expr::Compare(compare) = expr
+            && (Self::mentions_module_type(&compare.left)
+                || compare.comparators.iter().any(Self::mentions_module_type))
+        {
+            self.found = true;
+            return;
+        }
+        // Import-spec introspection (importlib.util.find_spec) misreports inlined
+        // modules: they are not registered with Python's import machinery, so
+        // capability detection would disagree with the original installation
+        if let Expr::Call(call) = expr {
+            let callee_is_find_spec = match &*call.func {
+                Expr::Attribute(attribute) => attribute.attr.as_str() == "find_spec",
+                Expr::Name(name) => name.id.as_str() == "find_spec",
+                _ => false,
+            };
+            if callee_is_find_spec {
+                self.found = true;
+                return;
+            }
+        }
+        // Dynamic imports whose targets are not statically discovered would be missing
+        // from the bundle: non-literal (or missing) `import_module` names cannot be
+        // resolved, and `__import__` calls or assignment-derived callables are never
+        // handled by import discovery at all
+        if let Expr::Call(call) = expr {
+            match self.dynamic_import_kind(&call.func) {
+                Some(DynamicImportKind::Undiscoverable) => {
+                    self.found = true;
+                    return;
+                }
+                Some(DynamicImportKind::ImportModule) => {
+                    // Opaque unpacked arguments (`*args`/`**kwargs`) make the call's
+                    // target unknowable, so the loaded module could be missing from
+                    // the bundle
+                    if crate::python::importlib_call::has_opaque_arguments(call) {
+                        self.found = true;
+                        return;
+                    }
+                    // Calls statically known to raise TypeError never import their
+                    // target: they are preserved verbatim and are safe to bundle
+                    if crate::python::importlib_call::statically_raises_type_error(call) {
+                        // Nested expressions are still walked below
+                    } else {
+                        match crate::python::importlib_call::module_name_argument(call) {
+                            // Literal imports of installed-package APIs are equivalent
+                            // to their ordinary import statements and block bundling
+                            // too
+                            Some(Expr::StringLiteral(literal))
+                                if Self::module_is_metadata_api(literal.value.to_str()) =>
+                            {
+                                self.found = true;
+                                return;
+                            }
+                            // Relative literal names are only discoverable when the
+                            // package context is a literal as well; `__package__` and
+                            // other expressions cannot be resolved statically
+                            Some(Expr::StringLiteral(literal))
+                                if literal.value.to_str().starts_with('.')
+                                    && crate::python::importlib_call::literal_package_context(
+                                        call,
+                                    )
+                                    .is_none() =>
+                            {
+                                self.found = true;
+                                return;
+                            }
+                            Some(Expr::StringLiteral(_)) => {}
+                            // Non-literal or missing names cannot be discovered
+                            // statically
+                            _ => {
+                                self.found = true;
+                                return;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        ruff_python_ast::visitor::walk_expr(self, expr);
+    }
+}
+
+/// Ownership and policy facts for one installed distribution (a `.dist-info` entry).
+#[derive(Clone, Debug, Default)]
+struct DistributionInfo {
+    /// Distribution name from `METADATA` (e.g. "pure-helper")
+    name: String,
+    /// Distribution version from `METADATA`, when declared
+    version: Option<String>,
+    /// Raw `Requires-Python` specifier, when declared
+    requires_python: Option<String>,
+    /// Raw `Requires-Dist` entries, when declared
+    requires_dist: Vec<String>,
+    /// Whether the distribution installs native artifacts (`.so`/`.pyd`) per `RECORD`
+    ships_native_artifacts: bool,
+    /// Whether the distribution installs a top-level `.pth` file: site initialization
+    /// executes those at startup (path extensions or executable import lines), which
+    /// a bundle neither ships nor reproduces
+    installs_startup_hooks: bool,
+    /// Whether the distribution declares runtime-discovered entry points (any
+    /// `entry_points.txt` group other than script shims); such providers are located
+    /// through installed metadata and cannot be inlined
+    has_runtime_entry_points: bool,
+    /// Import prefixes declared via `Import-Name`/`Import-Namespace`
+    declared_prefixes: IndexSet<String>,
+    /// Import names implied by installed `RECORD` files
+    record_imports: IndexSet<String>,
+    /// Whether an installed-files listing (`RECORD` / `installed-files.txt`) was
+    /// read: without one, the distribution's full file set is unknown and purity
+    /// cannot be proven distribution-wide
+    has_file_listing: bool,
+    /// Whether the mandatory core-metadata file (`METADATA` / `PKG-INFO`) is
+    /// absent: the distribution's name, version, `Requires-Python`, and
+    /// `Requires-Dist` constraints are all unknown, so its imports cannot be
+    /// bundled or omitted from requirements safely
+    missing_core_metadata: bool,
+    /// Top-level `.pth` file names claimed by this distribution's installed-files
+    /// listing; used to attribute sibling `.pth` hooks to listing-less
+    /// distributions
+    claimed_pth_files: IndexSet<String>,
+    /// Whether a `Requires-Dist` entry failed PEP 508 parsing: its dependency
+    /// edge cannot be carried into requirements, so bundling the distribution
+    /// would silently drop a dependency the installed environment had
+    unparsable_requirements: bool,
+}
+
+impl DistributionInfo {
+    /// Return whether this distribution's metadata or installed files claim an import.
     fn owns_import(&self, import_name: &str) -> bool {
         self.record_imports.contains(import_name)
             || self.declared_prefixes.iter().any(|prefix| {
                 import_name == prefix
                     || import_name
-                        .strip_prefix(prefix)
+                        .strip_prefix(prefix.as_str())
                         .is_some_and(|suffix| suffix.starts_with('.'))
             })
+    }
+
+    /// Return whether this distribution provides any module under a top-level
+    /// import root (namespace-provider detection: declared prefixes at or under
+    /// the root, or installed files inside it).
+    fn provides_under_root(&self, root: &str) -> bool {
+        let is_at_or_under_root = |name: &str| {
+            name == root
+                || name
+                    .strip_prefix(root)
+                    .is_some_and(|suffix| suffix.starts_with('.'))
+        };
+        self.declared_prefixes
+            .iter()
+            .any(|prefix| is_at_or_under_root(prefix))
+            || self
+                .record_imports
+                .iter()
+                .any(|import| is_at_or_under_root(import))
+    }
+}
+
+/// Canonical dotted paths of the query functions that take a distribution name.
+const QUERY_FUNCTIONS: [&str; 14] = [
+    "importlib.metadata.version",
+    "importlib.metadata.distribution",
+    "importlib.metadata.metadata",
+    "importlib.metadata.requires",
+    "importlib.metadata.files",
+    "importlib.metadata.Distribution.from_name",
+    "importlib_metadata.version",
+    "importlib_metadata.distribution",
+    "importlib_metadata.metadata",
+    "importlib_metadata.requires",
+    "importlib_metadata.files",
+    "importlib_metadata.Distribution.from_name",
+    "pkg_resources.get_distribution",
+    "pkg_resources.require",
+];
+/// Canonical dotted paths of the enumeration functions that observe every
+/// installed distribution without naming one. `entry_points` belongs here: it
+/// observes groups (including script shims) that provider policy deliberately
+/// ignores, so its results must reflect the full installed environment.
+const ENUMERATION_FUNCTIONS: [&str; 9] = [
+    "importlib.metadata.distributions",
+    "importlib.metadata.packages_distributions",
+    "importlib.metadata.entry_points",
+    "importlib.metadata.Distribution.discover",
+    "importlib_metadata.distributions",
+    "importlib_metadata.packages_distributions",
+    "importlib_metadata.entry_points",
+    "importlib_metadata.Distribution.discover",
+    "pkg_resources.iter_entry_points",
+];
+/// Canonical dotted paths of legacy enumeration OBJECTS (not calls): iterating
+/// `pkg_resources.working_set` observes every installed distribution too.
+const ENUMERATION_OBJECTS: [&str; 2] = ["pkg_resources.working_set", "pkg_resources.Environment"];
+/// Canonical dotted paths of metadata CLASSES: recognized constructors
+/// (`Distribution.from_name`) are queries, but any other reference to the class
+/// (`Distribution.at(...)`, aliasing it, passing it around) may perform
+/// arbitrary lookups and conservatively flags global observation.
+const METADATA_CLASSES: [&str; 3] = [
+    "importlib.metadata.Distribution",
+    "importlib_metadata.Distribution",
+    "pkg_resources.Distribution",
+];
+/// Modules whose wildcard import binds the metadata query API.
+const METADATA_API_MODULES: [&str; 3] =
+    ["importlib.metadata", "importlib_metadata", "pkg_resources"];
+/// Canonical dotted paths of the package-resource readers that take a package
+/// (import name or module object) as their anchor. Reading a package's resources
+/// requires its installed layout and import spec, so literal targets must stay
+/// external and installed even when the target itself contains no blocking code.
+const RESOURCE_QUERY_FUNCTIONS: [&str; 23] = [
+    "importlib.resources.files",
+    "importlib.resources.read_text",
+    "importlib.resources.read_binary",
+    "importlib.resources.open_text",
+    "importlib.resources.open_binary",
+    "importlib.resources.contents",
+    "importlib.resources.path",
+    "importlib.resources.is_resource",
+    "importlib_resources.files",
+    "importlib_resources.read_text",
+    "importlib_resources.read_binary",
+    "importlib_resources.open_text",
+    "importlib_resources.open_binary",
+    "importlib_resources.contents",
+    "importlib_resources.path",
+    "importlib_resources.is_resource",
+    "pkgutil.get_data",
+    // Legacy pkg_resources readers resolve the anchor package through the
+    // import system and its installed loader/layout
+    "pkg_resources.resource_filename",
+    "pkg_resources.resource_stream",
+    "pkg_resources.resource_string",
+    "pkg_resources.resource_listdir",
+    "pkg_resources.resource_isdir",
+    "pkg_resources.resource_exists",
+];
+/// Modules whose wildcard import binds the resource reader API.
+const RESOURCE_API_MODULES: [&str; 4] = [
+    "importlib.resources",
+    "importlib_resources",
+    "pkgutil",
+    "pkg_resources",
+];
+/// Canonical dotted path of `importlib.reload`: reload targets must be REAL
+/// registered modules with a usable spec, so bundled targets stay external.
+const RELOAD_FUNCTIONS: [&str; 1] = ["importlib.reload"];
+
+/// Collect every import binding a name EVER holds anywhere in a module —
+/// module level, function bodies, class bodies, and all conditional branches —
+/// as a union: local name -> set of canonical dotted paths.
+///
+/// The metadata-query scanner is conservative by construction: emulating Python
+/// scoping precisely (shadowing, source order, `global`/`nonlocal`, call timing)
+/// can only fail towards MISSING a query, which silently drops a needed
+/// distribution. Unioning every plausible binding makes under-collection
+/// impossible; over-collection merely keeps an extra distribution installed.
+fn collect_import_binding_candidates(
+    module: &ruff_python_ast::ModModule,
+) -> IndexMap<String, Vec<String>> {
+    use ruff_python_ast::{
+        Expr, Stmt,
+        visitor::source_order::{self, SourceOrderVisitor},
+    };
+
+    struct BindingCollector {
+        bindings: IndexMap<String, Vec<String>>,
+        /// Wildcard-imported modules: `from importlib.metadata import *` binds the
+        /// module's whole public API
+        wildcard_modules: Vec<String>,
+    }
+
+    impl BindingCollector {
+        fn record(&mut self, name: &str, target: String) {
+            let candidates = self.bindings.entry(name.to_owned()).or_default();
+            if !candidates.contains(&target) {
+                candidates.push(target);
+            }
+        }
+
+        /// Whether a callee expression plausibly denotes
+        /// `importlib.import_module` (attribute or bare/aliased name form).
+        fn callee_is_import_module(callee: &Expr) -> bool {
+            match callee {
+                Expr::Attribute(attribute) => attribute.attr.as_str() == "import_module",
+                Expr::Name(name) => name.id.as_str() == "import_module",
+                _ => false,
+            }
+        }
+    }
+
+    impl<'a> SourceOrderVisitor<'a> for BindingCollector {
+        fn visit_stmt(&mut self, stmt: &'a Stmt) {
+            match stmt {
+                Stmt::Import(import_stmt) => {
+                    for alias in &import_stmt.names {
+                        let module_name = alias.name.as_str();
+                        if let Some(asname) = &alias.asname {
+                            // `import importlib.metadata as md` binds the full path
+                            self.record(asname.as_str(), module_name.to_owned());
+                        } else {
+                            // `import importlib.metadata` binds only `importlib`
+                            let top_level = module_name.split('.').next().unwrap_or(module_name);
+                            self.record(top_level, top_level.to_owned());
+                        }
+                    }
+                }
+                Stmt::ImportFrom(import_from) if import_from.level == 0 => {
+                    if let Some(module) = import_from.module.as_deref() {
+                        for alias in &import_from.names {
+                            if alias.name.as_str() == "*" {
+                                self.wildcard_modules.push(module.to_owned());
+                                continue;
+                            }
+                            let bound_name = alias
+                                .asname
+                                .as_ref()
+                                .map_or_else(|| alias.name.as_str(), |name| name.as_str());
+                            self.record(bound_name, format!("{module}.{}", alias.name.as_str()));
+                        }
+                    }
+                }
+                // `metadata = importlib.import_module("importlib.metadata")`
+                // returns the metadata module itself: record the binding like a
+                // direct import so later `metadata.version(...)` calls resolve.
+                // Any `.import_module(...)` / `import_module(...)` shape counts
+                // (union over-collection is safe by construction).
+                Stmt::Assign(assign) => {
+                    if let Expr::Call(call) = &*assign.value
+                        && Self::callee_is_import_module(&call.func)
+                        && let Some(literal) =
+                            crate::python::importlib_call::literal_module_name(call)
+                        && !literal.starts_with('.')
+                    {
+                        for target in &assign.targets {
+                            if let Expr::Name(target_name) = target {
+                                self.record(target_name.id.as_str(), literal.to_owned());
+                            }
+                        }
+                    }
+                }
+                Stmt::AnnAssign(ann_assign) => {
+                    if let Some(value) = &ann_assign.value
+                        && let Expr::Call(call) = &**value
+                        && Self::callee_is_import_module(&call.func)
+                        && let Some(literal) =
+                            crate::python::importlib_call::literal_module_name(call)
+                        && !literal.starts_with('.')
+                        && let Expr::Name(target_name) = &*ann_assign.target
+                    {
+                        self.record(target_name.id.as_str(), literal.to_owned());
+                    }
+                }
+                _ => {}
+            }
+            source_order::walk_stmt(self, stmt);
+        }
+    }
+
+    let mut collector = BindingCollector {
+        bindings: IndexMap::new(),
+        wildcard_modules: Vec::new(),
+    };
+    for stmt in &module.body {
+        collector.visit_stmt(stmt);
+    }
+    // `from <metadata module> import *` binds every query and enumeration function
+    // plus the metadata classes (dotted members like `Distribution.from_name` are
+    // reached through their class binding); `from <resource module> import *`
+    // binds the resource readers likewise
+    for module_name in collector.wildcard_modules {
+        if METADATA_API_MODULES.contains(&module_name.as_str())
+            || RESOURCE_API_MODULES.contains(&module_name.as_str())
+        {
+            for function in QUERY_FUNCTIONS
+                .iter()
+                .chain(&ENUMERATION_FUNCTIONS)
+                .chain(&METADATA_CLASSES)
+                .chain(&RESOURCE_QUERY_FUNCTIONS)
+            {
+                if let Some(member) = function.strip_prefix(&format!("{module_name}."))
+                    && !member.contains('.')
+                {
+                    collector
+                        .bindings
+                        .entry(member.to_owned())
+                        .or_default()
+                        .push((*function).to_owned());
+                }
+            }
+        }
+    }
+    collector.bindings
+}
+
+/// Collect every single-value string constant of a module (union across all
+/// scopes): names only ever assigned one literal string value. Names assigned
+/// anything else anywhere are excluded — a query argument that could hold several
+/// values is unresolvable and triggers the conservative enumeration fallback.
+fn collect_string_constant_candidates(
+    module: &ruff_python_ast::ModModule,
+) -> IndexMap<String, String> {
+    use ruff_python_ast::{
+        Expr, Stmt,
+        visitor::source_order::{self, SourceOrderVisitor},
+    };
+
+    struct ConstantCollector {
+        values: IndexMap<String, Option<String>>,
+    }
+
+    impl ConstantCollector {
+        fn record_target(&mut self, name: &str, value: Option<String>) {
+            match self.values.get_mut(name) {
+                Some(existing) if *existing != value => *existing = None,
+                Some(_) => {}
+                None => {
+                    self.values.insert(name.to_owned(), value);
+                }
+            }
+        }
+    }
+
+    impl<'a> SourceOrderVisitor<'a> for ConstantCollector {
+        fn visit_stmt(&mut self, stmt: &'a Stmt) {
+            match stmt {
+                Stmt::Assign(assign) => {
+                    let literal = match &*assign.value {
+                        Expr::StringLiteral(literal) => Some(literal.value.to_str().to_owned()),
+                        _ => None,
+                    };
+                    for target in &assign.targets {
+                        if let Expr::Name(name) = target {
+                            self.record_target(name.id.as_str(), literal.clone());
+                        }
+                    }
+                }
+                Stmt::AnnAssign(ann_assign) => {
+                    if let Expr::Name(name) = &*ann_assign.target {
+                        let literal = ann_assign.value.as_deref().and_then(|value| match value {
+                            Expr::StringLiteral(literal) => Some(literal.value.to_str().to_owned()),
+                            _ => None,
+                        });
+                        self.record_target(name.id.as_str(), literal);
+                    }
+                }
+                Stmt::AugAssign(aug_assign) => {
+                    if let Expr::Name(name) = &*aug_assign.target {
+                        self.record_target(name.id.as_str(), None);
+                    }
+                }
+                Stmt::FunctionDef(function_def) => {
+                    // Parameters hold caller-supplied values: they invalidate any
+                    // same-named constant
+                    for param in function_def
+                        .parameters
+                        .posonlyargs
+                        .iter()
+                        .chain(&function_def.parameters.args)
+                        .chain(&function_def.parameters.kwonlyargs)
+                    {
+                        self.record_target(param.parameter.name.as_str(), None);
+                    }
+                    if let Some(vararg) = &function_def.parameters.vararg {
+                        self.record_target(vararg.name.as_str(), None);
+                    }
+                    if let Some(kwarg) = &function_def.parameters.kwarg {
+                        self.record_target(kwarg.name.as_str(), None);
+                    }
+                }
+                Stmt::For(for_stmt) => {
+                    if let Expr::Name(name) = &*for_stmt.target {
+                        self.record_target(name.id.as_str(), None);
+                    }
+                }
+                _ => {}
+            }
+            source_order::walk_stmt(self, stmt);
+        }
+    }
+
+    let mut collector = ConstantCollector {
+        values: IndexMap::new(),
+    };
+    for stmt in &module.body {
+        collector.visit_stmt(stmt);
+    }
+    collector
+        .values
+        .into_iter()
+        .filter_map(|(name, value)| value.map(|value| (name, value)))
+        .collect()
+}
+
+/// Result of scanning a module for runtime distribution-metadata usage.
+pub(crate) struct DistributionMetadataUsage {
+    /// Verbatim requirement literals of name-taking query calls
+    pub(crate) requirements: Vec<String>,
+    /// Import names whose package resources are read at runtime
+    /// (`importlib.resources.files("provider")`, `pkgutil.get_data("provider", ...)`)
+    /// or that are reloaded as module objects (`importlib.reload(provider)`): the
+    /// target needs its installed layout and import spec, so it must stay
+    /// external and installed
+    pub(crate) resource_import_targets: Vec<String>,
+    /// Whether a global enumeration API (`importlib.metadata.distributions()`,
+    /// `packages_distributions()`, `pkg_resources.working_set`) is observed, or a
+    /// recognized query's target cannot be determined: every installed
+    /// distribution must then stay observable
+    pub(crate) enumerates_distributions: bool,
+}
+
+/// Collect literal requirement strings whose distribution metadata a module queries
+/// at runtime, e.g. `importlib.metadata.version("provider")`,
+/// `metadata.distribution("provider")`, `pkg_resources.get_distribution("provider")`,
+/// or `pkg_resources.require("provider[speed]>=2")`, along with whether the module
+/// observes installed distributions globally.
+///
+/// The scanner is conservative BY CONSTRUCTION rather than scope-precise: a name
+/// resolves to the union of every import binding it ever plausibly holds anywhere
+/// in the module (all scopes, all branches, aliases, wildcard metadata imports),
+/// and shadowing never vetoes recognition. Under-collection — silently dropping a
+/// distribution the runtime still queries — is therefore structurally impossible;
+/// over-collection merely keeps an extra distribution installed. Two additional
+/// safety nets catch indirect access: a metadata query with an unresolvable
+/// argument, and ANY reference to a metadata module member outside a recognized
+/// query call (e.g. `query = md.version`), both flag global observation.
+pub(crate) fn queried_distribution_requirements(
+    module: &ruff_python_ast::ModModule,
+) -> DistributionMetadataUsage {
+    struct QueryCollector {
+        requirements: Vec<String>,
+        resource_import_targets: Vec<String>,
+        enumerates_distributions: bool,
+        bindings: IndexMap<String, Vec<String>>,
+        constants: IndexMap<String, String>,
+        /// Call expressions currently being examined as recognized queries: their
+        /// callee sub-expressions are exempt from the indirect-access safety net
+        recognized_callee_depth: usize,
+    }
+
+    impl QueryCollector {
+        /// Resolve a base name to every candidate canonical target it may hold.
+        fn base_candidates(&self, name: &str) -> Vec<String> {
+            self.bindings.get(name).cloned().unwrap_or_default()
+        }
+
+        /// Resolve an expression to its candidate canonical dotted paths.
+        fn canonical_paths(&self, expr: &ruff_python_ast::Expr) -> Vec<String> {
+            use ruff_python_ast::Expr;
+            let mut segments: Vec<&str> = Vec::new();
+            let mut current = expr;
+            loop {
+                match current {
+                    Expr::Attribute(attribute) => {
+                        segments.push(attribute.attr.as_str());
+                        current = &attribute.value;
+                    }
+                    Expr::Name(name) => {
+                        return self
+                            .base_candidates(name.id.as_str())
+                            .into_iter()
+                            .map(|base| {
+                                let mut path = base;
+                                for segment in segments.iter().rev() {
+                                    path.push('.');
+                                    path.push_str(segment);
+                                }
+                                path
+                            })
+                            .collect();
+                    }
+                    _ => return Vec::new(),
+                }
+            }
+        }
+
+        /// Return whether an expression is a pure name/attribute reference chain.
+        fn is_pure_reference_chain(expr: &ruff_python_ast::Expr) -> bool {
+            use ruff_python_ast::Expr;
+            let mut current = expr;
+            loop {
+                match current {
+                    Expr::Attribute(attribute) => current = &attribute.value,
+                    Expr::Name(_) => return true,
+                    _ => return false,
+                }
+            }
+        }
+
+        /// Resolve a pure reference chain to the candidate canonical paths of the
+        /// FULL expression and of every attribute prefix (`md.working_set.by_key`
+        /// yields candidates for itself, `md.working_set`, and `md`).
+        fn chain_prefix_paths(&self, expr: &ruff_python_ast::Expr) -> Vec<String> {
+            use ruff_python_ast::Expr;
+            let mut paths = Vec::new();
+            let mut current = expr;
+            loop {
+                paths.extend(self.canonical_paths(current));
+                match current {
+                    Expr::Attribute(attribute) => current = &attribute.value,
+                    _ => return paths,
+                }
+            }
+        }
+
+        /// Resolve a query argument to its candidate string values; the boolean
+        /// reports whether the argument resolved at all.
+        fn string_argument_candidates(&self, expr: &ruff_python_ast::Expr) -> (Vec<String>, bool) {
+            use ruff_python_ast::Expr;
+            match expr {
+                Expr::StringLiteral(literal) => (vec![literal.value.to_str().to_owned()], true),
+                Expr::Name(name) => self
+                    .constants
+                    .get(name.id.as_str())
+                    .map_or_else(|| (Vec::new(), false), |value| (vec![value.clone()], true)),
+                _ => (Vec::new(), false),
+            }
+        }
+    }
+
+    impl<'a> ruff_python_ast::visitor::Visitor<'a> for QueryCollector {
+        fn visit_expr(&mut self, expr: &'a ruff_python_ast::Expr) {
+            use ruff_python_ast::Expr;
+            // Pure name/attribute chains are checked as a WHOLE (full path plus
+            // every prefix) and not descended into: the base of a member access
+            // such as `md.PackageNotFoundError` must not be mistaken for a bare
+            // module reference.
+            if Self::is_pure_reference_chain(expr) {
+                let prefix_paths = self.chain_prefix_paths(expr);
+                // Legacy enumeration objects are observed by mere reference
+                // (iterating `pkg_resources.working_set`, an aliased import, or a
+                // member access on the object)
+                if prefix_paths
+                    .iter()
+                    .any(|path| ENUMERATION_OBJECTS.contains(&path.as_str()))
+                {
+                    self.enumerates_distributions = true;
+                }
+                if self.recognized_callee_depth == 0 {
+                    // Safety net for indirect access: any reference to a metadata
+                    // module member OUTSIDE a recognized query callee (e.g.
+                    // `query = md.version`, a metadata function passed to a
+                    // helper, `Distribution.at(...)`, `handler = il.reload`) may
+                    // perform arbitrary lookups later
+                    if prefix_paths.iter().any(|path| {
+                        QUERY_FUNCTIONS.contains(&path.as_str())
+                            || ENUMERATION_FUNCTIONS.contains(&path.as_str())
+                            || METADATA_CLASSES.contains(&path.as_str())
+                            || RESOURCE_QUERY_FUNCTIONS.contains(&path.as_str())
+                            || RELOAD_FUNCTIONS.contains(&path.as_str())
+                    }) {
+                        self.enumerates_distributions = true;
+                    }
+                    // A BARE metadata-module reference (the full expression IS the
+                    // module) escapes the syntactic analysis: aliasing it or
+                    // retrieving members dynamically (`x = md`,
+                    // `getattr(md, name)`) allows arbitrary lookups later.
+                    // Only LOAD references count: assignment/delete targets rebind
+                    // the NAME rather than referencing the module object.
+                    let is_load_reference = match expr {
+                        Expr::Name(name) => name.ctx.is_load(),
+                        Expr::Attribute(attribute) => attribute.ctx.is_load(),
+                        _ => false,
+                    };
+                    if is_load_reference
+                        && self
+                            .canonical_paths(expr)
+                            .iter()
+                            .any(|path| METADATA_API_MODULES.contains(&path.as_str()))
+                    {
+                        self.enumerates_distributions = true;
+                    }
+                }
+                return;
+            }
+            if let Expr::Call(call) = expr {
+                let callee_paths = self.canonical_paths(&call.func);
+                if callee_paths
+                    .iter()
+                    .any(|path| ENUMERATION_FUNCTIONS.contains(&path.as_str()))
+                {
+                    self.enumerates_distributions = true;
+                }
+                let is_query = callee_paths
+                    .iter()
+                    .any(|path| QUERY_FUNCTIONS.contains(&path.as_str()));
+                if is_query {
+                    // `require` is variadic; collecting every positional argument
+                    // is safe for the other APIs too. Arguments resolve as literals
+                    // or single-value string constants; anything unresolvable means
+                    // the query may target ANY installed distribution.
+                    let mut all_arguments_resolved = true;
+                    for argument in &call.arguments.args {
+                        let (values, resolved) = self.string_argument_candidates(argument);
+                        self.requirements.extend(values);
+                        all_arguments_resolved &= resolved;
+                    }
+                    for keyword in &call.arguments.keywords {
+                        if keyword.arg.is_none() {
+                            // **kwargs unpacking is opaque
+                            all_arguments_resolved = false;
+                            continue;
+                        }
+                        let (values, resolved) = self.string_argument_candidates(&keyword.value);
+                        self.requirements.extend(values);
+                        all_arguments_resolved &= resolved;
+                    }
+                    if !all_arguments_resolved {
+                        self.enumerates_distributions = true;
+                    }
+                    // The callee itself is a recognized query reference; walk it
+                    // without triggering the indirect-access safety net
+                    self.recognized_callee_depth += 1;
+                    ruff_python_ast::visitor::walk_expr(self, &call.func);
+                    self.recognized_callee_depth -= 1;
+                    for argument in &call.arguments.args {
+                        self.visit_expr(argument);
+                    }
+                    for keyword in &call.arguments.keywords {
+                        self.visit_expr(&keyword.value);
+                    }
+                    return;
+                }
+                // Reload targets must be REAL registered modules with a usable
+                // spec: bundled namespaces cannot be reloaded, so module-object
+                // targets stay external; an unresolvable target may name ANY
+                // installed module
+                let is_reload = callee_paths
+                    .iter()
+                    .any(|path| RELOAD_FUNCTIONS.contains(&path.as_str()));
+                if is_reload {
+                    let mut resolved = false;
+                    if let Some(argument) = call.arguments.args.first() {
+                        let module_candidates = self.canonical_paths(argument);
+                        resolved = !module_candidates.is_empty();
+                        self.resource_import_targets.extend(module_candidates);
+                    }
+                    if !resolved {
+                        self.enumerates_distributions = true;
+                    }
+                    self.recognized_callee_depth += 1;
+                    ruff_python_ast::visitor::walk_expr(self, &call.func);
+                    self.recognized_callee_depth -= 1;
+                    for argument in &call.arguments.args {
+                        self.visit_expr(argument);
+                    }
+                    for keyword in &call.arguments.keywords {
+                        self.visit_expr(&keyword.value);
+                    }
+                    return;
+                }
+                let is_resource_query = callee_paths
+                    .iter()
+                    .any(|path| RESOURCE_QUERY_FUNCTIONS.contains(&path.as_str()));
+                if is_resource_query {
+                    // The first positional argument (or `package=`/`anchor=`
+                    // keyword) names the target package, as a string or a module
+                    // object; a call without one anchors at the calling module
+                    let target_argument = call.arguments.args.first().or_else(|| {
+                        call.arguments
+                            .keywords
+                            .iter()
+                            .find(|keyword| {
+                                keyword.arg.as_ref().is_some_and(|argument| {
+                                    matches!(argument.as_str(), "package" | "anchor")
+                                })
+                            })
+                            .map(|keyword| &keyword.value)
+                    });
+                    if let Some(argument) = target_argument {
+                        let (values, string_resolved) = self.string_argument_candidates(argument);
+                        // Module-object anchors resolve through import bindings
+                        // (`import provider; files(provider)`)
+                        let module_candidates = self.canonical_paths(argument);
+                        let resolved = string_resolved || !module_candidates.is_empty();
+                        self.resource_import_targets.extend(values);
+                        self.resource_import_targets.extend(module_candidates);
+                        if !resolved {
+                            // The read may target ANY installed package
+                            self.enumerates_distributions = true;
+                        }
+                    }
+                    self.recognized_callee_depth += 1;
+                    ruff_python_ast::visitor::walk_expr(self, &call.func);
+                    self.recognized_callee_depth -= 1;
+                    for argument in &call.arguments.args {
+                        self.visit_expr(argument);
+                    }
+                    for keyword in &call.arguments.keywords {
+                        self.visit_expr(&keyword.value);
+                    }
+                    return;
+                }
+            }
+            ruff_python_ast::visitor::walk_expr(self, expr);
+        }
+    }
+
+    use ruff_python_ast::visitor::Visitor as _;
+    let mut collector = QueryCollector {
+        requirements: Vec::new(),
+        resource_import_targets: Vec::new(),
+        enumerates_distributions: false,
+        bindings: collect_import_binding_candidates(module),
+        constants: collect_string_constant_candidates(module),
+        recognized_callee_depth: 0,
+    };
+    for stmt in &module.body {
+        collector.visit_stmt(stmt);
+    }
+    DistributionMetadataUsage {
+        requirements: collector.requirements,
+        resource_import_targets: collector.resource_import_targets,
+        enumerates_distributions: collector.enumerates_distributions,
+    }
+}
+
+/// All installed distributions discovered under one search root.
+#[derive(Debug, Default)]
+struct DistributionOwnershipIndex {
+    distributions: Vec<DistributionInfo>,
+    /// Whether the metadata directory could not be fully enumerated (permission or
+    /// entry-level iteration errors): ownership answers may then miss distributions,
+    /// so bundling policy must treat packages from this root conservatively.
+    incomplete: bool,
+}
+
+impl DistributionOwnershipIndex {
+    /// Return the distributions claiming an import.
+    ///
+    /// Exact `RECORD`/installed-files ownership takes precedence over declared
+    /// namespace prefixes: in a namespace package split across distributions, only the
+    /// distribution actually installing the child module owns it. When no exact owner
+    /// exists, all prefix claimants are returned so policy checks can aggregate
+    /// conservatively instead of depending on directory iteration order.
+    fn owning_distributions(&self, import_name: &str) -> Vec<&DistributionInfo> {
+        let record_owners: Vec<&DistributionInfo> = self
+            .distributions
+            .iter()
+            .filter(|distribution| distribution.record_imports.contains(import_name))
+            .collect();
+        if !record_owners.is_empty() {
+            return record_owners;
+        }
+        self.distributions
+            .iter()
+            .filter(|distribution| distribution.owns_import(import_name))
+            .collect()
+    }
+
+    /// Return whether indexed metadata or installed files claim an import.
+    fn owns_import(&self, import_name: &str) -> bool {
+        !self.owning_distributions(import_name).is_empty()
+    }
+
+    /// Return whether any distribution claiming an import ships native artifacts
+    /// anywhere in its installed files (e.g. a sibling `_backend.so` module).
+    fn native_distribution_owns_import(&self, import_name: &str) -> bool {
+        self.owning_distributions(import_name)
+            .iter()
+            .any(|distribution| distribution.ships_native_artifacts)
+    }
+
+    /// Return whether any distribution claiming an import installs a top-level
+    /// `.pth` startup hook among its files.
+    fn startup_hook_distribution_owns_import(&self, import_name: &str) -> bool {
+        self.owning_distributions(import_name)
+            .iter()
+            .any(|distribution| distribution.installs_startup_hooks)
     }
 }
 
@@ -400,6 +1915,35 @@ pub struct ModuleResolver {
     classification_cache: RefCell<IndexMap<String, ImportClassification>>,
     /// Cache of virtual environment packages to avoid repeated filesystem scans
     virtualenv_packages_cache: RefCell<Option<IndexSet<String>>>,
+    /// Cache of "must this site-packages package stay external?" scan results
+    external_packages_cache: RefCell<IndexMap<PathBuf, bool>>,
+    /// Distribution names queried at runtime by bundled code (e.g.
+    /// `importlib.metadata.version("provider")`); their owners must stay installed
+    queried_distributions: RefCell<IndexSet<String>>,
+    /// The verbatim requirement literals of those queries (e.g.
+    /// `provider[speed]>=2` from `pkg_resources.require`), preserved so requirements
+    /// generation keeps their extras and version constraints
+    queried_requirement_literals: RefCell<IndexSet<String>>,
+    /// Import names whose package resources bundled code reads at runtime
+    /// (`importlib.resources.files("provider")`, `pkgutil.get_data`): the targets
+    /// need their installed layout and import spec, so they stay external
+    resource_read_import_targets: RefCell<IndexSet<String>>,
+    /// Whether bundled code enumerates installed distributions globally
+    /// (`importlib.metadata.distributions()`, `packages_distributions()`): every
+    /// distribution is then observable and bundled ones would vanish from results
+    global_distribution_enumeration: std::cell::Cell<bool>,
+    /// First-party or bundleable modules that are targets of preserved
+    /// `import_module` calls (opaque arguments): they must be bundled as wrapper
+    /// modules, registered in `sys.modules`, and eagerly initialized so the
+    /// preserved runtime call resolves them
+    preserved_importlib_module_targets: RefCell<IndexSet<String>>,
+    /// Module names whose `sys.modules` entries CONSUMER modules observe
+    /// (`sys.modules["dep"]`, `sys.modules[dep.__name__]`): bundled targets must
+    /// register in `sys.modules` when their init runs, because static imports
+    /// bypass the import machinery
+    sys_modules_observed_targets: RefCell<IndexSet<String>>,
+    /// Cache of resolved environment site-packages roots (hot path for resolution)
+    site_packages_dirs_cache: RefCell<Option<Vec<PathBuf>>>,
     /// Distribution ownership indexed once for each searched filesystem root
     distribution_ownership_cache: RefCell<IndexMap<PathBuf, DistributionOwnershipIndex>>,
     /// Entry file's directory (first in search path)
@@ -446,6 +1990,14 @@ impl ModuleResolver {
             module_cache: RefCell::new(IndexMap::new()),
             classification_cache: RefCell::new(IndexMap::new()),
             virtualenv_packages_cache: RefCell::new(None),
+            external_packages_cache: RefCell::new(IndexMap::new()),
+            queried_distributions: RefCell::new(IndexSet::new()),
+            queried_requirement_literals: RefCell::new(IndexSet::new()),
+            resource_read_import_targets: RefCell::new(IndexSet::new()),
+            global_distribution_enumeration: std::cell::Cell::new(false),
+            preserved_importlib_module_targets: RefCell::new(IndexSet::new()),
+            sys_modules_observed_targets: RefCell::new(IndexSet::new()),
+            site_packages_dirs_cache: RefCell::new(None),
             distribution_ownership_cache: RefCell::new(IndexMap::new()),
             entry_dir: None,
             python_version,
@@ -457,6 +2009,11 @@ impl ModuleResolver {
     /// Set the entry file for the resolver
     /// This establishes the first search path directory
     pub fn set_entry_file(&mut self, entry_path: &Path, original_entry_path: &Path) {
+        // The entry directory participates in fallback virtualenv discovery, so any
+        // environment-derived caches computed before this point are stale
+        self.site_packages_dirs_cache.borrow_mut().take();
+        self.virtualenv_packages_cache.borrow_mut().take();
+
         debug!(
             "set_entry_file: entry_path={}, original_entry_path={}, is_dir={}",
             entry_path.display(),
@@ -714,16 +2271,55 @@ impl ModuleResolver {
             return Ok(None);
         }
 
-        // Try each search directory in order
+        // Try each search directory in order. A PEP 420 namespace portion does
+        // NOT stop the search — neither a bare namespace directory nor a child
+        // reached THROUGH a portion: Python keeps scanning the remaining roots
+        // and a regular package found later (including in bundled
+        // site-packages) wins together with ITS children; portion results are
+        // used only when nothing concrete exists anywhere.
         let search_dirs = self.get_search_directories();
+        let mut namespace_candidate: Option<Option<PathBuf>> = None;
         for search_dir in &search_dirs {
             if let Some(resolved) = self.resolve_in_directory(search_dir, &descriptor) {
+                if matches!(resolved.source, ImportSource::NamespacePackage)
+                    || resolved.via_namespace_portion
+                {
+                    if namespace_candidate.is_none() {
+                        namespace_candidate = Some(resolved.bundle_path());
+                    }
+                    continue;
+                }
                 let bundle_path = resolved.bundle_path();
                 self.module_cache
                     .borrow_mut()
                     .insert(module_name.to_owned(), bundle_path.clone());
                 return Ok(bundle_path);
             }
+            if self.directory_has_regular_root_package(search_dir, &descriptor) {
+                // Python commits to this REGULAR parent even though it lacks
+                // the requested descendant: no portion elsewhere can win
+                self.module_cache
+                    .borrow_mut()
+                    .insert(module_name.to_owned(), None);
+                return Ok(None);
+            }
+        }
+
+        // Opt-in third-party bundling: fall back to virtualenv site-packages for modules
+        // the current policy selects for bundling
+        if let Some(bundle_path) = self.resolve_in_site_packages_for_bundling(module_name) {
+            self.module_cache
+                .borrow_mut()
+                .insert(module_name.to_owned(), Some(bundle_path.clone()));
+            return Ok(Some(bundle_path));
+        }
+
+        // No regular package anywhere: the namespace portion wins after all
+        if let Some(bundle_path) = namespace_candidate {
+            self.module_cache
+                .borrow_mut()
+                .insert(module_name.to_owned(), bundle_path.clone());
+            return Ok(bundle_path);
         }
 
         // Not found - cache the negative result
@@ -759,6 +2355,17 @@ impl ModuleResolver {
             .resolve_relative_to_absolute_module_name(level, name, current_module_path)
             .ok_or_else(|| anyhow!("Failed to resolve relative import"))?;
 
+        // Python resolves relative imports through the CURRENT package's
+        // __path__, not the global search path: a same-named namespace portion
+        // earlier on the search path must not hijack `from . import sub`
+        // executed by a regular package found later. Try the importing
+        // module's own package directory first.
+        if let Some(path) =
+            self.resolve_relative_in_package_dir(descriptor, current_module_path, level)
+        {
+            return Ok(Some(path));
+        }
+
         // Now resolve the absolute module name to a path
         // Create a new descriptor for the absolute import
         let absolute_descriptor = ImportModuleDescriptor::from_module_name(&absolute_module_name);
@@ -771,7 +2378,114 @@ impl ModuleResolver {
             }
         }
 
-        Ok(None)
+        // Opt-in third-party bundling: relative imports inside bundled site-packages
+        // modules resolve against site-packages as well
+        Ok(self.resolve_in_site_packages_for_bundling(&absolute_module_name))
+    }
+
+    /// Resolve a relative import against the importing module's OWN package
+    /// directory on the filesystem — Python's semantics: relative imports use
+    /// the current package's `__path__`, never the global search path, so a
+    /// same-named directory earlier on the search path cannot hijack them.
+    fn resolve_relative_in_package_dir(
+        &self,
+        descriptor: &ImportModuleDescriptor,
+        current_module_path: &Path,
+        level: u32,
+    ) -> Option<PathBuf> {
+        use crate::python::constants::INIT_FILE;
+        // Level 1 anchors at the directory containing the importing module
+        // (its package's __path__); each extra dot climbs one package up
+        let mut anchor = current_module_path.parent()?.to_path_buf();
+        for _ in 1..level {
+            anchor = anchor.parent()?.to_path_buf();
+        }
+        if descriptor.name_parts.is_empty() {
+            // `from . import X`: the anchor package itself
+            let init = anchor.join(INIT_FILE);
+            return init.is_file().then(|| self.canonicalize_path(init));
+        }
+        let mut current = anchor;
+        for part in &descriptor.name_parts[..descriptor.name_parts.len() - 1] {
+            current = current.join(part);
+            if !current.is_dir() {
+                return None;
+            }
+        }
+        let last = descriptor
+            .name_parts
+            .last()
+            .expect("name_parts checked non-empty");
+        let module_file = current.join(format!("{last}.py"));
+        if module_file.is_file() {
+            return Some(self.canonicalize_path(module_file));
+        }
+        let package_init = current.join(last).join(INIT_FILE);
+        package_init
+            .is_file()
+            .then(|| self.canonicalize_path(package_init))
+    }
+
+    /// Resolve a module in virtualenv site-packages when third-party bundling is enabled.
+    ///
+    /// Returns a path only when the current classification policy actually bundles the
+    /// module, so external modules (native-extension packages, `known_third_party`)
+    /// never leak bundle paths into the module cache.
+    ///
+    /// The fallback also respects Python's parent-first resolution: when a normal
+    /// search root supplies any parent component of a dotted name (e.g. a plain
+    /// `pkg.py` beside the entry while site-packages has `pkg/sub.py`), Python binds
+    /// that parent and resolves the child against it alone — `import pkg.sub` fails
+    /// there and must not be satisfied from site-packages.
+    fn resolve_in_site_packages_for_bundling(&self, module_name: &str) -> Option<PathBuf> {
+        if !self.config.bundle_third_party() || module_name.starts_with('.') {
+            return None;
+        }
+        if self.dotted_parent_resolves_locally(module_name) {
+            return None;
+        }
+        if !self.classify_import(module_name).should_bundle() {
+            return None;
+        }
+        let virtualenv_dirs = self.get_virtualenv_site_packages_search_directories(None);
+        self.locate_in_directories(module_name, &virtualenv_dirs)
+            .and_then(|(_, resolved)| resolved.bundle_path())
+    }
+
+    /// Return whether any parent component of a dotted module name resolves in the
+    /// normal (non-fallback) search roots: the child must then come from that parent
+    /// (or fail), never from the site-packages fallback.
+    ///
+    /// Only CONCRETE modules and regular packages stop the search. A PEP 420
+    /// namespace portion (directory without `__init__.py`) does not: Python keeps
+    /// scanning the remaining roots and a regular package found later wins, so the
+    /// fallback must stay reachable through local namespace portions.
+    fn dotted_parent_resolves_locally(&self, module_name: &str) -> bool {
+        let Some((parents, _)) = module_name.rsplit_once('.') else {
+            return false;
+        };
+        let search_dirs = self.get_search_directories();
+        let mut prefix = String::new();
+        for part in parents.split('.') {
+            if !prefix.is_empty() {
+                prefix.push('.');
+            }
+            prefix.push_str(part);
+            let descriptor = ImportModuleDescriptor::from_module_name(&prefix);
+            for search_dir in &search_dirs {
+                if let Some(resolved) = self.resolve_in_directory(search_dir, &descriptor)
+                    && !matches!(resolved.source, ImportSource::NamespacePackage)
+                    && !resolved.via_namespace_portion
+                {
+                    debug!(
+                        "Parent '{prefix}' of '{module_name}' resolves in a normal search root; \
+                         the site-packages fallback must not supply the child"
+                    );
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Resolve an `ImportlibStatic` import that may have invalid Python identifiers
@@ -784,6 +2498,11 @@ impl ModuleResolver {
         package_context: Option<&str>,
     ) -> Option<(String, PathBuf)> {
         // Handle relative imports with package context
+        // CPython raises TypeError for a relative name with a falsy package
+        // anchor, so such calls must stay verbatim rather than resolve
+        if module_name.starts_with('.') && package_context.is_none_or(str::is_empty) {
+            return None;
+        }
         let resolved_name = package_context.map_or_else(
             || module_name.to_owned(),
             |package| {
@@ -858,6 +2577,16 @@ impl ModuleResolver {
             }
         }
 
+        // Opt-in third-party bundling: static importlib imports inside bundled
+        // dependencies resolve against site-packages as well
+        if let Some(bundle_path) = self.resolve_in_site_packages_for_bundling(&resolved_name) {
+            debug!(
+                "Found ImportlibStatic module in site-packages at: {}",
+                bundle_path.display()
+            );
+            return Some((resolved_name, bundle_path));
+        }
+
         // Not found
         None
     }
@@ -875,6 +2604,7 @@ impl ModuleResolver {
         }
 
         let mut current_path = root.to_path_buf();
+        let mut via_namespace_portion = false;
 
         // Process all parts except the last one
         for (i, part) in descriptor.name_parts.iter().enumerate() {
@@ -897,6 +2627,7 @@ impl ModuleResolver {
                     return Some(ResolvedModule {
                         path: canonical,
                         source: ImportSource::Python,
+                        via_namespace_portion,
                     });
                 }
 
@@ -910,6 +2641,7 @@ impl ModuleResolver {
                     return Some(ResolvedModule {
                         path: extension_path,
                         source: ImportSource::NativeExtension,
+                        via_namespace_portion,
                     });
                 }
 
@@ -921,6 +2653,7 @@ impl ModuleResolver {
                     return Some(ResolvedModule {
                         path: canonical,
                         source: ImportSource::Python,
+                        via_namespace_portion,
                     });
                 }
 
@@ -933,6 +2666,7 @@ impl ModuleResolver {
                     return Some(ResolvedModule {
                         path: extension_path,
                         source: ImportSource::NativeExtension,
+                        via_namespace_portion,
                     });
                 }
 
@@ -944,6 +2678,7 @@ impl ModuleResolver {
                     return Some(ResolvedModule {
                         path: canonical,
                         source: ImportSource::NamespacePackage,
+                        via_namespace_portion,
                     });
                 }
             } else {
@@ -959,7 +2694,10 @@ impl ModuleResolver {
                     );
                     current_path = package_dir;
                 } else if crate::python::module_path::is_namespace_package_dir(&package_dir) {
-                    // Namespace package - continue but don't add to resolved paths
+                    // Namespace package - continue but don't add to resolved paths.
+                    // Results reached through this portion lose to a regular
+                    // package found in a later root
+                    via_namespace_portion = true;
                     current_path = package_dir;
                 } else {
                     // Not found
@@ -1006,10 +2744,53 @@ impl ModuleResolver {
         directories: &[PathBuf],
     ) -> Option<(PathBuf, ResolvedModule)> {
         let descriptor = ImportModuleDescriptor::from_module_name(module_name);
-        directories.iter().find_map(|directory| {
-            self.resolve_in_directory(directory, &descriptor)
-                .map(|resolved| (directory.clone(), resolved))
-        })
+        // Namespace portions (and children reached through them) lose to a
+        // regular package in a LATER directory, like Python's own scan
+        let mut namespace_candidate: Option<(PathBuf, ResolvedModule)> = None;
+        for directory in directories {
+            if let Some(resolved) = self.resolve_in_directory(directory, &descriptor) {
+                if matches!(resolved.source, ImportSource::NamespacePackage)
+                    || resolved.via_namespace_portion
+                {
+                    if namespace_candidate.is_none() {
+                        namespace_candidate = Some((directory.clone(), resolved));
+                    }
+                    continue;
+                }
+                return Some((directory.clone(), resolved));
+            }
+            if self.directory_has_regular_root_package(directory, &descriptor) {
+                // Python commits to this REGULAR parent even though it lacks
+                // the requested descendant: the dotted import then fails
+                // instead of falling back to a namespace portion elsewhere
+                return None;
+            }
+        }
+        namespace_candidate
+    }
+
+    /// Return whether a directory provides a REGULAR package for the
+    /// top-level root of a DOTTED descriptor. Python commits to the first
+    /// regular package on the path: portions of the same root found in other
+    /// directories can no longer contribute the descendant, even when this
+    /// regular parent lacks it.
+    fn directory_has_regular_root_package(
+        &self,
+        directory: &Path,
+        descriptor: &ImportModuleDescriptor,
+    ) -> bool {
+        if descriptor.name_parts.len() < 2 {
+            return false;
+        }
+        let Some(root) = descriptor.name_parts.first() else {
+            return false;
+        };
+        let root_descriptor = ImportModuleDescriptor::from_module_name(root);
+        self.resolve_in_directory(directory, &root_descriptor)
+            .is_some_and(|resolved| {
+                !matches!(resolved.source, ImportSource::NamespacePackage)
+                    && !resolved.via_namespace_portion
+            })
     }
 
     fn classify_resolved_import(
@@ -1021,7 +2802,7 @@ impl ModuleResolver {
         allow_bundle: bool,
     ) -> ImportClassification {
         let explicit_first_party = self.config.known_first_party.contains(module_name);
-        let explicit_third_party = self.config.known_third_party.contains(module_name);
+        let explicit_third_party = self.is_explicit_third_party(module_name);
         let origin = if explicit_first_party {
             ImportOrigin::FirstParty
         } else if explicit_third_party
@@ -1045,6 +2826,26 @@ impl ModuleResolver {
             };
 
         ImportClassification::new(origin, resolved.source, bundle)
+    }
+
+    /// Return whether a module or any of its parent packages is listed in
+    /// `known_third_party`, so configured package roots also cover their submodules.
+    fn is_explicit_third_party(&self, module_name: &str) -> bool {
+        if self.config.known_third_party.contains(module_name) {
+            return true;
+        }
+        let mut prefix_end = module_name.len();
+        while let Some(separator_index) = module_name[..prefix_end].rfind('.') {
+            if self
+                .config
+                .known_third_party
+                .contains(&module_name[..separator_index])
+            {
+                return true;
+            }
+            prefix_end = separator_index;
+        }
+        false
     }
 
     /// Classify an import without conflating its origin, source kind, bundle policy, and
@@ -1071,7 +2872,7 @@ impl ModuleResolver {
         }
 
         let explicit_first_party = self.config.known_first_party.contains(module_name);
-        let explicit_third_party = self.config.known_third_party.contains(module_name);
+        let explicit_third_party = self.is_explicit_third_party(module_name);
         if !explicit_first_party
             && !explicit_third_party
             && is_stdlib_module(module_name, self.python_version)
@@ -1084,15 +2885,23 @@ impl ModuleResolver {
         }
 
         let search_dirs = self.get_search_directories();
-        if let Some((search_root, resolved)) = self.locate_in_directories(module_name, &search_dirs)
+        let located = self.locate_in_directories(module_name, &search_dirs);
+        // A namespace-portion candidate from the normal roots does NOT settle
+        // the classification: Python keeps scanning and a REGULAR package
+        // found later — including in site-packages — wins together with its
+        // distribution policies (native artifacts, metadata queries,
+        // Requires-Dist edges), exactly like resolve_module_path_with_context
+        // defers portions until the site-packages scan. Classifying the
+        // portion first would cache a first-party disposition that path
+        // resolution then applies to the installed regular package.
+        let located_is_namespace_candidate = located.as_ref().is_some_and(|(_, resolved)| {
+            matches!(resolved.source, ImportSource::NamespacePackage)
+                || resolved.via_namespace_portion
+        });
+        if let Some((search_root, resolved)) = &located
+            && !located_is_namespace_candidate
         {
-            return self.classify_resolved_import(
-                module_name,
-                &search_root,
-                &resolved,
-                ImportOrigin::FirstParty,
-                true,
-            );
+            return self.classify_normal_root_import(module_name, search_root, resolved);
         }
 
         if module_name.contains('.') {
@@ -1125,13 +2934,42 @@ impl ModuleResolver {
         if let Some((search_root, resolved)) =
             self.locate_in_directories(module_name, &virtualenv_dirs)
         {
-            return self.classify_resolved_import(
-                module_name,
-                &search_root,
-                &resolved,
-                ImportOrigin::ThirdParty,
-                false,
-            );
+            // A REGULAR installed package outranks a deferred namespace
+            // portion from the normal roots; portions from either segment
+            // merge at runtime, so the earlier normal-root candidate keeps
+            // representing them when nothing concrete exists here either
+            let resolved_is_namespace_candidate =
+                matches!(resolved.source, ImportSource::NamespacePackage)
+                    || resolved.via_namespace_portion;
+            if !resolved_is_namespace_candidate || located.is_none() {
+                // Opt-in third-party bundling: pure-Python distributions are bundled, but any
+                // package shipping native extensions (.so/.pyd) or reading its own installed
+                // distribution metadata at runtime stays external as a whole.
+                let allow_bundle = self.config.bundle_third_party()
+                    && !self.package_must_stay_external(&search_root, module_name);
+                return self.classify_resolved_import(
+                    module_name,
+                    &search_root,
+                    &resolved,
+                    ImportOrigin::ThirdParty,
+                    allow_bundle,
+                );
+            }
+        }
+
+        // No regular package anywhere: the deferred namespace portion wins —
+        // unless a regular parent in site-packages shadows the dotted
+        // descendant (Python commits to the regular parent's __path__ and the
+        // import fails at runtime; the portion must not be bundled in its
+        // place)
+        if let Some((search_root, resolved)) = &located {
+            let descriptor = ImportModuleDescriptor::from_module_name(module_name);
+            let shadowed = virtualenv_dirs
+                .iter()
+                .any(|dir| self.directory_has_regular_root_package(dir, &descriptor));
+            if !shadowed {
+                return self.classify_normal_root_import(module_name, search_root, resolved);
+            }
         }
 
         if explicit_first_party {
@@ -1157,17 +2995,822 @@ impl ModuleResolver {
         )
     }
 
+    /// Classify an import resolved through the NORMAL search roots (entry
+    /// directory, configured src roots, `PYTHONPATH`). Under third-party
+    /// bundling, distribution-backed packages supplied through normal roots
+    /// (e.g. PYTHONPATH vendoring with adjacent dist-info) are subject to the
+    /// same external policy as site-packages installs; `known_first_party`
+    /// remains the force-include escape hatch.
+    fn classify_normal_root_import(
+        &self,
+        module_name: &str,
+        search_root: &Path,
+        resolved: &ResolvedModule,
+    ) -> ImportClassification {
+        let mut classification = self.classify_resolved_import(
+            module_name,
+            search_root,
+            resolved,
+            ImportOrigin::FirstParty,
+            true,
+        );
+        if self.config.bundle_third_party()
+            && classification.origin == ImportOrigin::ThirdParty
+            && classification.should_bundle()
+            && !self.config.known_first_party.contains(module_name)
+            && self.package_must_stay_external(search_root, module_name)
+        {
+            classification.bundle = BundleDisposition::External;
+        }
+        classification
+    }
+
+    /// Return whether the top-level package owning `module_name` under `search_root`
+    /// must stay external under the third-party bundling policy.
+    ///
+    /// A package stays external as a whole when it ships native extension (`.so`/`.pyd`)
+    /// artifacts anywhere inside its top-level directory (so compiled submodules keep
+    /// importing correctly at runtime), or when its Python source reads its own installed
+    /// distribution metadata at runtime (`importlib.metadata`, `pkg_resources`), which is
+    /// unavailable once the source is inlined into a bundle.
+    fn package_must_stay_external(&self, search_root: &Path, module_name: &str) -> bool {
+        if self.package_must_stay_external_in_root(search_root, module_name) {
+            return true;
+        }
+        // A split installation may place the module's Python source in
+        // `purelib` while the distribution's dist-info (RECORD naming native
+        // siblings, Requires-Dist edges, entry points) lives in the
+        // interpreter's distinct `platlib`: the policy facts live in the
+        // OWNING root's metadata, so every collected metadata root is
+        // consulted — but only where a distribution actually claims the
+        // import. Root-global predicates (module-map satisfaction,
+        // enumeration completeness) would otherwise trip wrongly in roots that
+        // know nothing about the distribution.
+        let supplied_root = self.canonicalize_path(search_root.to_path_buf());
+        self.get_distribution_metadata_search_directories()
+            .into_iter()
+            .map(|root| self.canonicalize_path(root))
+            .filter(|root| *root != supplied_root)
+            .any(|root| {
+                self.root_has_distribution_owning_import(&root, module_name)
+                    && self.package_must_stay_external_in_root(&root, module_name)
+            })
+    }
+
+    /// Return whether any distribution indexed under this metadata root claims
+    /// the import (declared prefixes or RECORD-listed modules).
+    fn root_has_distribution_owning_import(&self, root: &Path, module_name: &str) -> bool {
+        self.with_distribution_ownership_index(root, |index| {
+            !index.owning_distributions(module_name).is_empty()
+        })
+    }
+
+    /// Apply the third-party externalization policy against ONE metadata root.
+    fn package_must_stay_external_in_root(&self, search_root: &Path, module_name: &str) -> bool {
+        // When the root's metadata directory cannot be fully enumerated, the import
+        // may be owned by a distribution whose policy (native artifacts, entry points,
+        // Requires-Python, Requires-Dist) is unknown; keep the package external so
+        // its installation and dependency constraints are preserved
+        if self.distribution_metadata_index_incomplete(search_root) {
+            debug!(
+                "Import '{module_name}' comes from a root whose distribution metadata cannot be \
+                 fully enumerated; keeping it external"
+            );
+            return true;
+        }
+
+        // A distribution may install native artifacts outside the import's own package
+        // directory (e.g. a pure `frontend` package plus a sibling `_backend.so`);
+        // consult its RECORD before scanning the package directory itself
+        if self.native_distribution_owns_import(search_root, module_name) {
+            debug!(
+                "Import '{module_name}' is owned by a distribution shipping native artifacts; \
+                 keeping it external"
+            );
+            return true;
+        }
+
+        // Top-level .pth files execute at interpreter startup (path extensions or
+        // executable import lines); the bundle neither ships nor reproduces that
+        // initialization, so their distributions must stay installed
+        if self.startup_hook_distribution_owns_import(search_root, module_name) {
+            debug!(
+                "Import '{module_name}' is owned by a distribution installing .pth startup \
+                 hooks; keeping it external"
+            );
+            return true;
+        }
+
+        // A distribution targeting a newer Python than the bundle's target version may
+        // use unsupported syntax or APIs; leave it external so installers can reject it
+        if self.distribution_requires_incompatible_python(search_root, module_name) {
+            debug!(
+                "Import '{module_name}' is owned by a distribution whose Requires-Python is \
+                 incompatible with the target version; keeping it external"
+            );
+            return true;
+        }
+
+        // A distribution without its core-metadata file has an unknown name,
+        // version, and requirement constraints: bundling it would omit an
+        // undeclarable dependency from the requirements output
+        if self.distribution_missing_core_metadata_owns_import(search_root, module_name) {
+            debug!(
+                "Import '{module_name}' is owned by a distribution whose core metadata is \
+                 missing; keeping it external"
+            );
+            return true;
+        }
+
+        // A distribution with an unparsable Requires-Dist entry has dependency
+        // edges that cannot be carried into requirements; keep it external so
+        // the installer validates its metadata instead
+        if self.distribution_with_unparsable_requirements_owns_import(search_root, module_name) {
+            debug!(
+                "Import '{module_name}' is owned by a distribution with unparsable Requires-Dist \
+                 metadata; keeping it external"
+            );
+            return true;
+        }
+
+        // Another installed distribution may pin this import's owner to a
+        // version range its installed copy does not provably satisfy (e.g. a
+        // Windows-only `B>=2` over installed B 1.0): bundling would freeze the
+        // violating copy into the deployment
+        if self.distribution_with_unsatisfiable_incoming_edge_owns_import(search_root, module_name)
+        {
+            debug!(
+                "Import '{module_name}' is owned by a distribution that another distribution \
+                 pins to an unsatisfied version range; keeping it external"
+            );
+            return true;
+        }
+
+        // A distribution that STAYS EXTERNAL (native artifacts, unusable
+        // metadata) lands in requirements, and the installer pulls its
+        // Requires-Dist targets in transitively: bundling such a target would
+        // split module identity between the inlined copy (used by bundled
+        // code) and the installed copy (imported by the external dependent)
+        if self.external_distribution_depends_on_import(search_root, module_name) {
+            debug!(
+                "Import '{module_name}' is a Requires-Dist target of a distribution that stays \
+                 external; keeping it external to preserve module identity"
+            );
+            return true;
+        }
+
+        // Providers of one PEP 420 namespace stay external TOGETHER: bundling one
+        // child while a sibling provider stays external would rebind the namespace
+        // root to the real namespace at runtime, hiding the bundled-only children
+        if self.namespace_provider_must_stay_external(search_root, module_name) {
+            debug!(
+                "Import '{module_name}' shares a PEP 420 namespace with an external provider; \
+                 keeping the whole namespace external"
+            );
+            return true;
+        }
+
+        // Plugin providers are discovered through installed entry-point metadata by
+        // OTHER code; inlining their source would make them invisible to discovery
+        if self.distribution_with_runtime_entry_points_owns_import(search_root, module_name) {
+            debug!(
+                "Import '{module_name}' is owned by a distribution declaring runtime entry \
+                 points; keeping it external"
+            );
+            return true;
+        }
+
+        // Distributions whose metadata is queried at runtime by bundled code (e.g.
+        // `importlib.metadata.version("provider")` in the entry) must stay installed
+        if self.queried_distribution_owns_import(search_root, module_name) {
+            debug!(
+                "Import '{module_name}' is owned by a distribution whose metadata is queried by \
+                 bundled code; keeping it external"
+            );
+            return true;
+        }
+
+        // Packages whose resources bundled code reads at runtime
+        // (`importlib.resources.files("provider")`, `pkgutil.get_data`) need their
+        // installed layout and import spec
+        if self.resource_read_targets_import(module_name) {
+            debug!(
+                "Import '{module_name}' is the target of a runtime package-resource read; \
+                 keeping it external"
+            );
+            return true;
+        }
+
+        // A `requirements.module-map` entry may pin the import to a version or a
+        // direct URL; bundling may only proceed when the installed distribution
+        // provably satisfies it, otherwise the constraint must stay enforced by
+        // the installer
+        if self.module_map_constraint_blocks_bundling(search_root, module_name) {
+            debug!(
+                "Import '{module_name}' has a module-map constraint the installed \
+                 distribution does not provably satisfy; keeping it external"
+            );
+            return true;
+        }
+
+        let top_level = module_name.split('.').next().unwrap_or(module_name);
+        if self.import_root_source_blocked(search_root, top_level) {
+            return true;
+        }
+
+        // A source-level blocker in a SIBLING import root of the same
+        // distribution taints this one: bundling one root while the blocked
+        // sibling stays installed would split module identity between the
+        // bundled copy and the installed distribution's own imports
+        let sibling_roots: Vec<String> =
+            self.with_distribution_ownership_index(search_root, |index| {
+                let mut roots = IndexSet::new();
+                for distribution in index.owning_distributions(top_level) {
+                    for name in distribution
+                        .declared_prefixes
+                        .iter()
+                        .chain(distribution.record_imports.iter())
+                    {
+                        let root = name.split('.').next().unwrap_or(name);
+                        if root != top_level {
+                            roots.insert(root.to_owned());
+                        }
+                    }
+                }
+                roots.into_iter().collect()
+            });
+        if let Some(blocked_sibling) = sibling_roots
+            .iter()
+            .find(|root| self.import_root_source_blocked(search_root, root))
+        {
+            debug!(
+                "Import '{module_name}' shares a distribution with source-blocked import root \
+                 '{blocked_sibling}'; keeping it external"
+            );
+            return true;
+        }
+        false
+    }
+
+    /// Return whether ONE top-level import root under a search root contains a
+    /// source-level bundling blocker: a native extension or blocking file for
+    /// single-file modules, a symlinked/unscannable directory, or a package
+    /// tree with external-marker files.
+    fn import_root_source_blocked(&self, search_root: &Path, top_level: &str) -> bool {
+        let package_dir = search_root.join(top_level);
+        if !package_dir.is_dir() {
+            // Single-file module: check the file itself for metadata usage; native
+            // extension files are already classified as `ImportSource::NativeExtension`.
+            if self
+                .find_native_extension_module(search_root, top_level)
+                .is_some()
+            {
+                return true;
+            }
+            let module_file = search_root.join(format!("{top_level}.py"));
+            return module_file.is_file() && Self::python_file_blocks_bundling(&module_file);
+        }
+
+        // The package directory ITSELF may be a directory symlink
+        // (editable-style installations pointing outside site-packages):
+        // inspect the uncanonicalized path BEFORE canonicalization erases the
+        // link, because resolved module files then canonicalize outside every
+        // known import root and lose the logical package path
+        // Unreadable metadata is conservatively treated like a symlink
+        if !std::fs::symlink_metadata(&package_dir).is_ok_and(|metadata| !metadata.is_symlink()) {
+            debug!(
+                "Package directory '{}' is a symlink; keeping it external",
+                package_dir.display()
+            );
+            return true;
+        }
+
+        let package_dir = self.canonicalize_path(package_dir);
+        if let Some(&stays_external) = self.external_packages_cache.borrow().get(&package_dir) {
+            return stays_external;
+        }
+
+        let stays_external = Self::scan_package_for_external_markers(&package_dir);
+        debug!(
+            "Package directory '{}' must stay external: {stays_external}",
+            package_dir.display()
+        );
+        self.external_packages_cache
+            .borrow_mut()
+            .insert(package_dir, stays_external);
+        stays_external
+    }
+
+    /// Scan a package directory tree for markers that force the package to stay
+    /// external: native extension artifacts or runtime distribution-metadata access.
+    ///
+    /// The scan is conservative: unreadable entries keep the package external, and
+    /// symlinked directories are never traversed (a symlink cycle or a link to a large
+    /// external tree must not stall bundling) — a directory symlink instead keeps the
+    /// package external because its contents cannot be inspected safely. File symlinks
+    /// whose target escapes the package tree (editable or shared-source layouts) also
+    /// keep the package external: module resolution canonicalizes such files to the
+    /// outside target, losing the logical package path that relative imports need.
+    fn scan_package_for_external_markers(root: &Path) -> bool {
+        // A package root that is ITSELF a directory symlink (editable-style
+        // installations pointing outside site-packages) must be inspected
+        // BEFORE canonicalization erases the link: resolved module files then
+        // canonicalize outside every known import root, losing the logical
+        // package path that relative imports and submodule resolution need
+        match std::fs::symlink_metadata(root) {
+            Ok(metadata) if metadata.is_symlink() => return true,
+            Ok(_) => {}
+            Err(_) => return true,
+        }
+        // Resolve the boundary once so per-entry targets compare against the same
+        // canonical tree regardless of how the root itself was reached
+        let Ok(canonical_root) = std::fs::canonicalize(root) else {
+            return true;
+        };
+        let mut pending = vec![root.to_path_buf()];
+        while let Some(directory) = pending.pop() {
+            let Ok(entries) = std::fs::read_dir(&directory) else {
+                // Conservative: a package that cannot be fully inspected stays external
+                return true;
+            };
+            for entry in entries {
+                // Entry-level iteration errors (network filesystems, concurrent
+                // removals) also mean the package cannot be fully inspected
+                let Ok(entry) = entry else {
+                    return true;
+                };
+                let Ok(file_type) = entry.file_type() else {
+                    return true;
+                };
+                let path = entry.path();
+                // Bytecode caches accompany normal source files and are harmless
+                if path.file_name().and_then(OsStr::to_str) == Some("__pycache__") {
+                    continue;
+                }
+                if file_type.is_symlink() {
+                    // Do not follow directory symlinks; treat them as uninspectable
+                    match std::fs::metadata(&path) {
+                        Ok(metadata) if metadata.is_dir() => return true,
+                        Ok(_) => {
+                            // A file symlink escaping the package tree loses its
+                            // logical path when module resolution canonicalizes it
+                            match std::fs::canonicalize(&path) {
+                                Ok(target) if target.starts_with(&canonical_root) => {}
+                                _ => return true,
+                            }
+                            if Self::is_external_marker_file(&path) {
+                                return true;
+                            }
+                        }
+                        Err(_) => return true,
+                    }
+                } else if file_type.is_dir() {
+                    pending.push(path);
+                } else if Self::is_external_marker_file(&path) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Return whether a file name denotes a native binary artifact: Python extension
+    /// modules (`.so`/`.pyd`), shared libraries loaded at runtime through ctypes/CFFI
+    /// (`.dll`/`.dylib`), and versioned shared libraries such as `libhelper.so.1`.
+    /// Distinct from importable-extension matching in
+    /// [`Self::find_native_extension_module`], which covers only Python extensions.
+    fn is_native_artifact_file_name(file_name: &str) -> bool {
+        use cow_utils::CowUtils;
+        let lowercase_name = file_name.cow_to_ascii_lowercase();
+        lowercase_name.ends_with(".so")
+            || lowercase_name.ends_with(".pyd")
+            || lowercase_name.ends_with(".dll")
+            || lowercase_name.ends_with(".dylib")
+            || lowercase_name.contains(".so.")
+    }
+
+    /// Return whether an installed-files path denotes a top-level `.pth` startup
+    /// hook: site initialization executes those files when Python starts (path
+    /// extensions or executable `import` lines), which a bundle neither ships nor
+    /// reproduces. Only top-level entries count: `site` ignores `.pth` files in
+    /// subdirectories.
+    fn is_top_level_pth_path(record_path: &str) -> bool {
+        use cow_utils::CowUtils;
+        !record_path.contains('/')
+            && !record_path.contains('\\')
+            && record_path.cow_to_ascii_lowercase().ends_with(".pth")
+    }
+
+    /// Return whether a single file forces its package to stay external: a native
+    /// artifact, a sourceless bytecode module (`.pyc` without adjacent `.py`), or a
+    /// Python source containing a bundling-blocking pattern.
+    fn is_external_marker_file(path: &Path) -> bool {
+        let Some(file_name) = path.file_name().and_then(OsStr::to_str) else {
+            return false;
+        };
+        if Self::is_native_artifact_file_name(file_name) {
+            return true;
+        }
+        match path.extension().and_then(OsStr::to_str) {
+            Some("py") => Self::python_file_blocks_bundling(path),
+            // Sourceless bytecode outside __pycache__ is importable by Python but has
+            // no source to inline
+            Some("pyc") => !path.with_extension("py").is_file(),
+            _ => false,
+        }
+    }
+
+    /// Return whether a Python source file contains a pattern that makes it unsafe to
+    /// inline: imports of installed-distribution APIs (`importlib.metadata`,
+    /// `pkg_resources`, `importlib.resources`, and their backports), dynamic imports
+    /// with non-literal module names, or `__file__`-relative resource access.
+    fn python_file_blocks_bundling(path: &Path) -> bool {
+        let Ok(source) = std::fs::read_to_string(path) else {
+            // Conservative: an unreadable source file keeps the package external
+            return true;
+        };
+        Self::python_source_blocks_bundling(&source)
+    }
+
+    /// Return whether Python source contains a bundling-blocking pattern (see
+    /// [`UnbundlablePatternDetector`]).
+    ///
+    /// Detection is AST-based so any valid formatting (aliases, parenthesized or
+    /// multiline import lists) is recognized, while comments and docstrings that merely
+    /// mention the APIs are not.
+    fn python_source_blocks_bundling(source: &str) -> bool {
+        // Cheap pre-filter: skip parsing sources that cannot reference the APIs
+        if !source.contains("importlib")
+            && !source.contains("import_module")
+            && !source.contains("__class__")
+            && !source.contains("ModuleType")
+            && !source.contains("exec")
+            && !source.contains("eval")
+            && !source.contains("vars")
+            && !source.contains("globals")
+            && !source.contains("locals")
+            && !source.contains("__builtins__")
+            && !Self::source_has_module_level_annotation_candidate(source)
+            && !source.contains("pkg_resources")
+            && !source.contains("pkgutil")
+            && !source.contains("runpy")
+            && !source.contains("find_spec")
+            && !source.contains("__import__")
+            && !source.contains("__file__")
+            && !source.contains("__spec__")
+            && !source.contains("__path__")
+            && !source.contains("__loader__")
+            && !source.contains("__cached__")
+            && !source.contains("__getattr__")
+            && !source.contains("__dir__")
+        {
+            return false;
+        }
+        let Ok(parsed) = ruff_python_parser::parse_module(source) else {
+            // Conservative: unparsable source keeps the package external
+            return true;
+        };
+        // Module-level annotations create `__annotations__` on real modules;
+        // neither the inlined nor the wrapper path reproduces that metadata
+        // (and value-less annotations vanish inside a function frame), so
+        // annotated providers stay external
+        if Self::stmts_bind_module_annotations(&parsed.syntax().body) {
+            return true;
+        }
+        // PEP 562 module-level __getattr__/__dir__ hooks participate in attribute
+        // lookup only on REAL module objects; generated SimpleNamespace instances
+        // ignore instance attributes with these names, so lazy exports and
+        // advertised APIs would break. Every module-scope binding form counts:
+        // def, (annotated) assignment, and import aliases — including inside
+        // module-level control flow (a conditional `if enabled: def __getattr__`
+        // still binds the hook at module scope), without entering nested
+        // function/class scopes where the names are ordinary locals.
+        if Self::stmts_bind_module_hook(&parsed.syntax().body) {
+            return true;
+        }
+        use ruff_python_ast::visitor::Visitor as _;
+        let mut detector = UnbundlablePatternDetector::default();
+        // Collect importlib.import_module aliases up front: an alias imported after a
+        // function definition still applies to calls inside that function's body
+        detector.collect_dynamic_import_aliases(&parsed.syntax().body);
+        for stmt in &parsed.syntax().body {
+            detector.visit_stmt(stmt);
+        }
+        detector.found
+    }
+
+    /// Whether a module-scope statement list binds a PEP 562 hook
+    /// Cheap textual gate for module-level annotations: any line containing
+    /// ':' whose first token is not a compound-statement keyword, comment,
+    /// string, or import. Indented lines count too — module-level annotations
+    /// may live inside `if`/`try` suites (function-local ones are filtered by
+    /// the AST check, which does not enter nested scopes). Over-inclusive (it
+    /// merely triggers AST analysis).
+    fn source_has_module_level_annotation_candidate(source: &str) -> bool {
+        source.lines().any(|line| {
+            let line = line.trim_start();
+            if !line.contains(':') {
+                return false;
+            }
+            let keyword = line.split([' ', '(', ':']).next().unwrap_or("");
+            if keyword.is_empty() || keyword.starts_with(['#', '"', '\'']) {
+                return false;
+            }
+            match keyword {
+                "import" | "from" => false,
+                // Compound statements exclude only their own suite colon: a
+                // one-line suite (`if enabled: TOKEN: str = "x"`) may still
+                // carry an annotated assignment after it, so a second ':'
+                // keeps the line a candidate (over-inclusive — slices or
+                // parameter annotations merely trigger the AST analysis)
+                "def" | "class" | "if" | "elif" | "else" | "for" | "while" | "with" | "try"
+                | "except" | "finally" | "match" | "case" => line
+                    .split_once(':')
+                    .is_some_and(|(_, rest)| rest.contains(':')),
+                _ => true,
+            }
+        })
+    }
+
+    /// Whether a module-scope statement list contains an annotated assignment
+    /// binding a plain name (`TOKEN: str`, `LIMIT: int = 10`), looking through
+    /// module-level control-flow suites but NOT into function or class scopes.
+    /// Real modules expose these through `__annotations__`, which generated
+    /// namespaces do not reproduce.
+    fn stmts_bind_module_annotations(body: &[ruff_python_ast::Stmt]) -> bool {
+        use ruff_python_ast::{Expr, Stmt};
+        body.iter().any(|stmt| match stmt {
+            Stmt::AnnAssign(ann_assign) => matches!(&*ann_assign.target, Expr::Name(_)),
+            Stmt::If(if_stmt) => {
+                Self::stmts_bind_module_annotations(&if_stmt.body)
+                    || if_stmt
+                        .elif_else_clauses
+                        .iter()
+                        .any(|clause| Self::stmts_bind_module_annotations(&clause.body))
+            }
+            Stmt::Try(try_stmt) => {
+                Self::stmts_bind_module_annotations(&try_stmt.body)
+                    || try_stmt.handlers.iter().any(|handler| {
+                        let ruff_python_ast::ExceptHandler::ExceptHandler(handler) = handler;
+                        Self::stmts_bind_module_annotations(&handler.body)
+                    })
+                    || Self::stmts_bind_module_annotations(&try_stmt.orelse)
+                    || Self::stmts_bind_module_annotations(&try_stmt.finalbody)
+            }
+            Stmt::For(for_stmt) => {
+                Self::stmts_bind_module_annotations(&for_stmt.body)
+                    || Self::stmts_bind_module_annotations(&for_stmt.orelse)
+            }
+            Stmt::While(while_stmt) => {
+                Self::stmts_bind_module_annotations(&while_stmt.body)
+                    || Self::stmts_bind_module_annotations(&while_stmt.orelse)
+            }
+            Stmt::With(with_stmt) => Self::stmts_bind_module_annotations(&with_stmt.body),
+            Stmt::Match(match_stmt) => match_stmt
+                .cases
+                .iter()
+                .any(|case| Self::stmts_bind_module_annotations(&case.body)),
+            _ => false,
+        })
+    }
+
+    /// Whether a module-scope statement list binds a PEP 562 hook
+    /// (`__getattr__`/`__dir__`), looking through module-level control-flow
+    /// suites (if/try/for/while/with/match execute their bodies at module
+    /// scope) but NOT into nested function or class scopes, where the names
+    /// are ordinary locals.
+    fn stmts_bind_module_hook(body: &[ruff_python_ast::Stmt]) -> bool {
+        use ruff_python_ast::{Expr, Stmt};
+        let binds_module_hook = |name: &str| matches!(name, "__getattr__" | "__dir__");
+        body.iter().any(|stmt| match stmt {
+            Stmt::FunctionDef(function_def) => binds_module_hook(function_def.name.as_str()),
+            // `class __getattr__:` binds a callable hook at module scope too
+            Stmt::ClassDef(class_def) => binds_module_hook(class_def.name.as_str()),
+            Stmt::Assign(assign) => assign.targets.iter().any(|target| {
+                // Destructuring binds hooks too: `__getattr__, marker = (resolve, 1)`
+                fn target_binds_hook(target: &Expr) -> bool {
+                    match target {
+                        Expr::Name(name) => {
+                            matches!(name.id.as_str(), "__getattr__" | "__dir__")
+                        }
+                        Expr::Tuple(tuple) => tuple.elts.iter().any(target_binds_hook),
+                        Expr::List(list) => list.elts.iter().any(target_binds_hook),
+                        Expr::Starred(starred) => target_binds_hook(&starred.value),
+                        _ => false,
+                    }
+                }
+                target_binds_hook(target)
+            }),
+            Stmt::AnnAssign(ann_assign) => {
+                ann_assign.value.is_some()
+                    && matches!(&*ann_assign.target, Expr::Name(name) if binds_module_hook(name.id.as_str()))
+            }
+            Stmt::AugAssign(aug_assign) => {
+                matches!(&*aug_assign.target, Expr::Name(name) if binds_module_hook(name.id.as_str()))
+            }
+            Stmt::ImportFrom(import_from) => import_from.names.iter().any(|alias| {
+                let bound = alias
+                    .asname
+                    .as_ref()
+                    .map_or_else(|| alias.name.as_str(), |name| name.as_str());
+                binds_module_hook(bound)
+            }),
+            Stmt::Import(import_stmt) => import_stmt.names.iter().any(|alias| {
+                alias
+                    .asname
+                    .as_ref()
+                    .is_some_and(|name| binds_module_hook(name.as_str()))
+            }),
+            Stmt::If(if_stmt) => {
+                Self::stmts_bind_module_hook(&if_stmt.body)
+                    || if_stmt
+                        .elif_else_clauses
+                        .iter()
+                        .any(|clause| Self::stmts_bind_module_hook(&clause.body))
+            }
+            Stmt::Try(try_stmt) => {
+                Self::stmts_bind_module_hook(&try_stmt.body)
+                    || try_stmt.handlers.iter().any(|handler| {
+                        let ruff_python_ast::ExceptHandler::ExceptHandler(handler) = handler;
+                        // `except E as __getattr__:` binds the hook inside the
+                        // handler body (deleted on exit, but a nested re-binding
+                        // or publication may keep it; conservative)
+                        handler
+                            .name
+                            .as_ref()
+                            .is_some_and(|name| binds_module_hook(name.as_str()))
+                            || Self::stmts_bind_module_hook(&handler.body)
+                    })
+                    || Self::stmts_bind_module_hook(&try_stmt.orelse)
+                    || Self::stmts_bind_module_hook(&try_stmt.finalbody)
+            }
+            Stmt::For(for_stmt) => {
+                // `for __getattr__ in [hook]:` — the loop TARGET binds the hook
+                Self::target_binds_module_hook(&for_stmt.target)
+                    || Self::stmts_bind_module_hook(&for_stmt.body)
+                    || Self::stmts_bind_module_hook(&for_stmt.orelse)
+            }
+            Stmt::While(while_stmt) => {
+                Self::stmts_bind_module_hook(&while_stmt.body)
+                    || Self::stmts_bind_module_hook(&while_stmt.orelse)
+            }
+            Stmt::With(with_stmt) => {
+                // `with ctx() as __getattr__:` — the item target binds the hook
+                with_stmt.items.iter().any(|item| {
+                    item.optional_vars
+                        .as_deref()
+                        .is_some_and(Self::target_binds_module_hook)
+                }) || Self::stmts_bind_module_hook(&with_stmt.body)
+            }
+            Stmt::Match(match_stmt) => match_stmt.cases.iter().any(|case| {
+                // `case {"hook": __getattr__}:` — pattern captures bind at
+                // module scope too
+                let mut pattern_binds = false;
+                crate::visitors::patterns::visit_binding_names(&case.pattern, &mut |name| {
+                    pattern_binds |= matches!(name, "__getattr__" | "__dir__");
+                });
+                pattern_binds || Self::stmts_bind_module_hook(&case.body)
+            }),
+            _ => false,
+        } || Self::stmt_expressions_bind_module_hook(stmt))
+    }
+
+    /// Whether any EXPRESSION in a module-scope statement binds a PEP 562 hook
+    /// through a named expression (`(__getattr__ := lambda name: value)`),
+    /// skipping nested function, class, and lambda scopes whose walrus targets
+    /// bind those scopes instead.
+    fn stmt_expressions_bind_module_hook(stmt: &ruff_python_ast::Stmt) -> bool {
+        use ruff_python_ast::{
+            AnyNodeRef, Expr,
+            visitor::source_order::{SourceOrderVisitor, TraversalSignal, walk_expr, walk_stmt},
+        };
+
+        struct WalrusHookFinder {
+            found: bool,
+        }
+        impl<'a> SourceOrderVisitor<'a> for WalrusHookFinder {
+            fn enter_node(&mut self, node: AnyNodeRef<'a>) -> TraversalSignal {
+                if self.found {
+                    return TraversalSignal::Skip;
+                }
+                match node {
+                    AnyNodeRef::StmtFunctionDef(_)
+                    | AnyNodeRef::StmtClassDef(_)
+                    | AnyNodeRef::ExprLambda(_) => TraversalSignal::Skip,
+                    _ => TraversalSignal::Traverse,
+                }
+            }
+
+            fn visit_expr(&mut self, expr: &'a Expr) {
+                if self.found {
+                    return;
+                }
+                if let Expr::Named(named) = expr
+                    && matches!(&*named.target, Expr::Name(name)
+                        if matches!(name.id.as_str(), "__getattr__" | "__dir__"))
+                {
+                    self.found = true;
+                    return;
+                }
+                walk_expr(self, expr);
+            }
+        }
+
+        let mut finder = WalrusHookFinder { found: false };
+        walk_stmt(&mut finder, stmt);
+        finder.found
+    }
+
+    /// Whether an assignment-like target expression binds a PEP 562 hook name
+    /// (plain names, including inside tuple/list destructuring and starred
+    /// elements).
+    fn target_binds_module_hook(target: &ruff_python_ast::Expr) -> bool {
+        use ruff_python_ast::Expr;
+        match target {
+            Expr::Name(name) => matches!(name.id.as_str(), "__getattr__" | "__dir__"),
+            Expr::Tuple(tuple) => tuple.elts.iter().any(Self::target_binds_module_hook),
+            Expr::List(list) => list.elts.iter().any(Self::target_binds_module_hook),
+            Expr::Starred(starred) => Self::target_binds_module_hook(&starred.value),
+            _ => false,
+        }
+    }
+
     fn get_virtualenv_site_packages_search_directories(
         &self,
         virtualenv_override: Option<&str>,
     ) -> Vec<PathBuf> {
+        // The environment does not change during a bundling run; cache the resolved
+        // roots because this sits on the per-import resolution hot path
+        if virtualenv_override.is_none()
+            && let Ok(cache) = self.site_packages_dirs_cache.try_borrow()
+            && let Some(cached_dirs) = cache.as_ref()
+        {
+            return cached_dirs.clone();
+        }
+
         let mut site_packages_dirs = IndexSet::new();
+        // A configured interpreter (--python / requirements.python) is ALWAYS asked
+        // for its purelib via sysconfig and ordered first: the interpreter's own
+        // report is authoritative where lexical <env>/lib/*/site-packages scanning
+        // misreads layouts (Debian dist-packages, lib64 symlinks, roots containing
+        // several Python minors, pyenv shims). Lexical environment-root discovery
+        // below remains as additional, lower-priority coverage.
+        if virtualenv_override.is_none()
+            && let Some(python) = &self.config.requirements.python
+        {
+            for directory in Self::interpreter_site_packages(python) {
+                site_packages_dirs.insert(self.canonicalize_path(directory));
+            }
+        }
         for virtualenv_path in self.resolve_virtualenv_paths(virtualenv_override) {
             for directory in self.get_virtualenv_site_packages_directories(&virtualenv_path) {
                 site_packages_dirs.insert(self.canonicalize_path(directory));
             }
         }
-        site_packages_dirs.into_iter().collect()
+        let directories: Vec<PathBuf> = site_packages_dirs.into_iter().collect();
+
+        if virtualenv_override.is_none()
+            && let Ok(mut cache) = self.site_packages_dirs_cache.try_borrow_mut()
+        {
+            *cache = Some(directories.clone());
+        }
+        directories
+    }
+
+    /// Ask an interpreter for its `purelib` AND `platlib` (site-packages)
+    /// paths via `sysconfig`. Most layouts unify them, but custom schemes and
+    /// multiarch installations split pure-Python and platform-specific
+    /// packages across two directories — mixed Python/native distributions
+    /// living in `platlib` need the same externalization checks.
+    fn interpreter_site_packages(python: &Path) -> Vec<PathBuf> {
+        let output = std::process::Command::new(python)
+            .args([
+                "-c",
+                "import sysconfig; print(sysconfig.get_path('purelib')); \
+                 print(sysconfig.get_path('platlib'))",
+            ])
+            .output();
+        let Ok(output) = output else {
+            return Vec::new();
+        };
+        if !output.status.success() {
+            return Vec::new();
+        }
+        let Ok(stdout) = String::from_utf8(output.stdout) else {
+            return Vec::new();
+        };
+        let mut directories = Vec::new();
+        for line in stdout.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let path = PathBuf::from(line);
+            if path.is_dir() && !directories.contains(&path) {
+                directories.push(path);
+            }
+        }
+        directories
     }
 
     fn resolve_virtualenv_paths(&self, virtualenv_override: Option<&str>) -> Vec<PathBuf> {
@@ -1180,7 +3823,35 @@ impl ModuleResolver {
         if let Ok(path) = std::env::var("VIRTUAL_ENV") {
             return Self::explicit_virtualenv_paths(&path);
         }
-        self.detect_fallback_virtualenv_paths()
+        // Conda environments use the same site-packages layout; RequirementResolver
+        // already honors CONDA_PREFIX, keep module resolution consistent with it
+        if let Ok(path) = std::env::var("CONDA_PREFIX") {
+            return Self::explicit_virtualenv_paths(&path);
+        }
+        // Without an activated environment, the configured interpreter's environment
+        // (--python / requirements.python) takes precedence over auto-detected
+        // virtualenvs so both halves of the run inspect the same packages; the
+        // auto-detected ones remain as lower-priority roots
+        let mut environments: IndexSet<PathBuf> = IndexSet::new();
+        if let Some(python) = &self.config.requirements.python
+            && let Some(environment) = Self::environment_root_of_interpreter(python)
+        {
+            environments.insert(environment);
+        }
+        environments.extend(self.detect_fallback_virtualenv_paths());
+        environments.into_iter().collect()
+    }
+
+    /// Derive an environment root from an interpreter path laid out as
+    /// `<env>/bin/python` (Unix) or `<env>\Scripts\python.exe` (Windows).
+    fn environment_root_of_interpreter(python: &Path) -> Option<PathBuf> {
+        let executable_dir = python.parent()?;
+        let dir_name = executable_dir.file_name()?.to_str()?;
+        if dir_name.eq_ignore_ascii_case("bin") || dir_name.eq_ignore_ascii_case("Scripts") {
+            executable_dir.parent().map(Path::to_path_buf)
+        } else {
+            None
+        }
     }
 
     fn explicit_virtualenv_paths(virtualenv_path: &str) -> Vec<PathBuf> {
@@ -1227,22 +3898,64 @@ impl ModuleResolver {
         packages
     }
 
-    /// Detect common virtual environment directory names
+    /// Detect common virtual environment directory names along the entry
+    /// file's ancestor directories and beside the working directory: with a
+    /// nested source layout (`/project/src/main.py`), the project environment
+    /// conventionally lives at `/project/.venv`, so out-of-directory invocation
+    /// must look above the entry directory too. The nearest ancestor containing
+    /// an environment wins and stops the upward search, so unrelated
+    /// environments higher up the tree are never picked over the project's own;
+    /// the entry project's environment is ordered before the caller's.
     fn detect_fallback_virtualenv_paths(&self) -> Vec<PathBuf> {
-        let Ok(current_dir) = std::env::current_dir() else {
-            return Vec::new();
+        let current_dir = std::env::current_dir().ok();
+        let entry_dir = self
+            .entry_dir
+            .as_ref()
+            .map(|entry_dir| self.canonicalize_path(entry_dir.clone()));
+        Self::fallback_virtualenv_paths(current_dir.as_deref(), entry_dir.as_deref())
+    }
+
+    /// Environment-independent core of fallback discovery (see
+    /// [`Self::detect_fallback_virtualenv_paths`]).
+    fn fallback_virtualenv_paths(
+        current_dir: Option<&Path>,
+        entry_dir: Option<&Path>,
+    ) -> Vec<PathBuf> {
+        let venvs_in_root = |root: &Path| -> Vec<PathBuf> {
+            let mut found = Vec::new();
+            for venv_name in AUTO_DETECTED_VIRTUALENV_NAMES {
+                let venv_path = root.join(venv_name);
+                if venv_path.is_dir() {
+                    // Check if it looks like a virtual environment
+                    let has_bin =
+                        venv_path.join("bin").is_dir() || venv_path.join("Scripts").is_dir();
+                    let has_lib = venv_path.join("lib").is_dir();
+
+                    if has_bin || has_lib {
+                        found.push(venv_path);
+                    }
+                }
+            }
+            found
         };
 
-        let mut venv_paths = Vec::new();
-
-        for venv_name in AUTO_DETECTED_VIRTUALENV_NAMES {
-            let venv_path = current_dir.join(venv_name);
-            if venv_path.is_dir() {
-                // Check if it looks like a virtual environment
-                let has_bin = venv_path.join("bin").is_dir() || venv_path.join("Scripts").is_dir();
-                let has_lib = venv_path.join("lib").is_dir();
-
-                if has_bin || has_lib {
+        let mut venv_paths: Vec<PathBuf> = Vec::new();
+        // The entry project's environment takes priority: a dependency installed
+        // both beside the caller and in the entry project must resolve from the
+        // project containing --entry. The working-directory environment remains
+        // as a lower-priority fallback.
+        if let Some(entry_dir) = entry_dir {
+            for ancestor in entry_dir.ancestors() {
+                let found = venvs_in_root(ancestor);
+                if !found.is_empty() {
+                    venv_paths.extend(found);
+                    break;
+                }
+            }
+        }
+        if let Some(current_dir) = current_dir {
+            for venv_path in venvs_in_root(current_dir) {
+                if !venv_paths.contains(&venv_path) {
                     venv_paths.push(venv_path);
                 }
             }
@@ -1251,7 +3964,13 @@ impl ModuleResolver {
         venv_paths
     }
 
-    /// Get site-packages directories for a virtual environment
+    /// Get site-packages directories for a virtual environment.
+    ///
+    /// Multiple `lib/pythonX.Y/site-packages` directories may coexist; the raw
+    /// `read_dir` order is unspecified, so the result is ordered
+    /// deterministically and target-aware: the configured target version's
+    /// directory first, then newer versions before older, unparsable names
+    /// last (alphabetically).
     fn get_virtualenv_site_packages_directories(&self, venv_path: &Path) -> Vec<PathBuf> {
         let mut site_packages_dirs = Vec::new();
 
@@ -1260,15 +3979,32 @@ impl ModuleResolver {
         if lib_dir.is_dir()
             && let Ok(entries) = std::fs::read_dir(&lib_dir)
         {
+            let mut versioned: Vec<(PathBuf, Option<(u32, u32)>, String)> = Vec::new();
             for entry in entries.flatten() {
                 let path = entry.path();
                 if path.is_dir() {
                     let site_packages = path.join("site-packages");
                     if site_packages.is_dir() {
-                        site_packages_dirs.push(site_packages);
+                        let dir_name = path
+                            .file_name()
+                            .and_then(OsStr::to_str)
+                            .unwrap_or_default()
+                            .to_owned();
+                        let version = Self::parse_python_directory_version(&dir_name);
+                        versioned.push((site_packages, version, dir_name));
                     }
                 }
             }
+            let target = (3_u32, u32::from(self.python_version));
+            versioned.sort_by(|a, b| {
+                let rank = |version: &Option<(u32, u32)>| match version {
+                    Some(version) if *version == target => (0_u8, std::cmp::Reverse(*version)),
+                    Some(version) => (1, std::cmp::Reverse(*version)),
+                    None => (2, std::cmp::Reverse((0, 0))),
+                };
+                rank(&a.1).cmp(&rank(&b.1)).then_with(|| a.2.cmp(&b.2))
+            });
+            site_packages_dirs.extend(versioned.into_iter().map(|(path, _, _)| path));
         }
 
         // Windows-style virtual environment
@@ -1278,6 +4014,14 @@ impl ModuleResolver {
         }
 
         site_packages_dirs
+    }
+
+    /// Parse the Python version of a `lib/<name>` environment directory
+    /// (`python3.12`, `pypy3.10`).
+    fn parse_python_directory_version(name: &str) -> Option<(u32, u32)> {
+        let digits_start = name.find(|c: char| c.is_ascii_digit())?;
+        let (major, minor) = name[digits_start..].split_once('.')?;
+        Some((major.parse().ok()?, minor.parse().ok()?))
     }
 
     /// Scan a site-packages directory and add found packages to the set
@@ -1333,57 +4077,1363 @@ impl ModuleResolver {
 
     /// Return whether installed distribution metadata claims an import.
     fn distribution_owns_import(&self, site_packages_dir: &Path, import_name: &str) -> bool {
-        let search_root = self.canonicalize_path(site_packages_dir.to_path_buf());
-        if let Some(owns_import) = self
-            .distribution_ownership_cache
-            .borrow()
-            .get(&search_root)
-            .map(|index| index.owns_import(import_name))
+        self.with_distribution_ownership_index(site_packages_dir, |index| {
+            index.owns_import(import_name)
+        })
+    }
+
+    /// Return whether the distribution claiming an import ships native artifacts
+    /// anywhere among its installed files (per its `RECORD`), even outside the
+    /// import's own package directory (e.g. a sibling `_backend.so` module).
+    fn native_distribution_owns_import(&self, site_packages_dir: &Path, import_name: &str) -> bool {
+        self.with_distribution_ownership_index(site_packages_dir, |index| {
+            index.native_distribution_owns_import(import_name)
+        })
+    }
+
+    /// Return whether the distribution claiming an import installs a top-level
+    /// `.pth` startup hook among its files (per `RECORD`/`installed-files.txt`).
+    fn startup_hook_distribution_owns_import(
+        &self,
+        site_packages_dir: &Path,
+        import_name: &str,
+    ) -> bool {
+        self.with_distribution_ownership_index(site_packages_dir, |index| {
+            index.startup_hook_distribution_owns_import(import_name)
+        })
+    }
+
+    /// Return whether a root's distribution metadata could not be fully enumerated,
+    /// in which case ownership answers may miss distributions entirely.
+    fn distribution_metadata_index_incomplete(&self, site_packages_dir: &Path) -> bool {
+        self.with_distribution_ownership_index(site_packages_dir, |index| index.incomplete)
+    }
+
+    /// Return whether an import lives in a PEP 420 namespace whose providers must
+    /// stay external TOGETHER because at least one of them is blocked by its
+    /// distribution metadata.
+    ///
+    /// Mixing bundled and external children of one namespace breaks at runtime: a
+    /// preserved external import rebinds the namespace root to the REAL namespace,
+    /// which cannot contain the bundled-only siblings. Source-level blocks of
+    /// sibling children are already covered by the whole-directory scan of the
+    /// namespace root; this check covers the per-distribution metadata policies
+    /// (native artifacts, `.pth` hooks, runtime entry points, `Requires-Python`,
+    /// queried metadata) that record ownership would otherwise scope to a single
+    /// child. Providers are aggregated across EVERY active metadata root: a PEP
+    /// 420 namespace may be split across roots (PYTHONPATH plus site-packages),
+    /// and a blocked provider in any of them taints the whole namespace.
+    fn namespace_provider_must_stay_external(
+        &self,
+        site_packages_dir: &Path,
+        import_name: &str,
+    ) -> bool {
+        let top_level = import_name.split('.').next().unwrap_or(import_name);
+        let namespace_dir = site_packages_dir.join(top_level);
+        // Only PEP 420 namespace directories can be split across distributions
+        if !namespace_dir.is_dir()
+            || namespace_dir
+                .join(crate::python::constants::INIT_FILE)
+                .is_file()
         {
-            return owns_import;
+            return false;
+        }
+        let queried = self.queried_distributions.borrow();
+        let blocked_provider = |index: &DistributionOwnershipIndex| {
+            index
+                .distributions
+                .iter()
+                .filter(|distribution| distribution.provides_under_root(top_level))
+                .any(|distribution| {
+                    distribution.ships_native_artifacts
+                        || distribution.installs_startup_hooks
+                        || distribution.has_runtime_entry_points
+                        || distribution.missing_core_metadata
+                        || distribution.unparsable_requirements
+                        || distribution
+                            .requires_python
+                            .as_deref()
+                            .is_some_and(|specifiers| !self.target_python_satisfies(specifiers))
+                        || (!distribution.name.is_empty()
+                            && queried
+                                .contains(&Self::normalize_distribution_name(&distribution.name)))
+                })
+        };
+        self.get_distribution_metadata_search_directories()
+            .iter()
+            .any(|metadata_dir| {
+                if self.with_distribution_ownership_index(metadata_dir, |index| {
+                    blocked_provider(index)
+                }) {
+                    return true;
+                }
+                // A module-map constraint blocking ONE provider's imports
+                // taints the namespace like the metadata policies above:
+                // bundling the other portions while the constrained one stays
+                // installed would recreate the split-namespace state. Provider
+                // import names are collected first so constraint evaluation
+                // runs outside the index borrow.
+                let is_at_or_under_root = |name: &str| {
+                    name == top_level
+                        || name
+                            .strip_prefix(top_level)
+                            .is_some_and(|suffix| suffix.starts_with('.'))
+                };
+                let provider_imports: Vec<String> =
+                    self.with_distribution_ownership_index(metadata_dir, |index| {
+                        index
+                            .distributions
+                            .iter()
+                            .filter(|distribution| distribution.provides_under_root(top_level))
+                            .flat_map(|distribution| {
+                                distribution
+                                    .declared_prefixes
+                                    .iter()
+                                    .chain(distribution.record_imports.iter())
+                            })
+                            .filter(|name| is_at_or_under_root(name))
+                            .cloned()
+                            .collect()
+                    });
+                provider_imports.iter().any(|import_name| {
+                    self.module_map_constraint_blocks_bundling(metadata_dir, import_name)
+                })
+            })
+    }
+
+    /// Return whether any distribution claiming an import declares a `Requires-Python`
+    /// specifier that the configured target version does not satisfy.
+    fn distribution_requires_incompatible_python(
+        &self,
+        site_packages_dir: &Path,
+        import_name: &str,
+    ) -> bool {
+        self.with_distribution_ownership_index(site_packages_dir, |index| {
+            index
+                .owning_distributions(import_name)
+                .iter()
+                .filter_map(|distribution| distribution.requires_python.as_deref())
+                .any(|specifiers| !self.target_python_satisfies(specifiers))
+        })
+    }
+
+    /// Return whether any distribution claiming an import declares runtime-discovered
+    /// entry points (plugin metadata located through `importlib.metadata`).
+    fn distribution_with_runtime_entry_points_owns_import(
+        &self,
+        site_packages_dir: &Path,
+        import_name: &str,
+    ) -> bool {
+        self.with_distribution_ownership_index(site_packages_dir, |index| {
+            index
+                .owning_distributions(import_name)
+                .iter()
+                .any(|distribution| distribution.has_runtime_entry_points)
+        })
+    }
+
+    /// Return whether any distribution claiming an import lacks its core-metadata
+    /// file (`METADATA` / `PKG-INFO`): its name, version, and requirement
+    /// constraints are unknown, so bundling it would silently drop an
+    /// undeclarable dependency from the requirements output.
+    fn distribution_missing_core_metadata_owns_import(
+        &self,
+        site_packages_dir: &Path,
+        import_name: &str,
+    ) -> bool {
+        self.with_distribution_ownership_index(site_packages_dir, |index| {
+            index
+                .owning_distributions(import_name)
+                .iter()
+                .any(|distribution| distribution.missing_core_metadata)
+        })
+    }
+
+    /// Return whether any distribution claiming an import declares a
+    /// `Requires-Dist` entry that fails PEP 508 parsing: its dependency edges
+    /// cannot be carried into requirements when the distribution is bundled.
+    fn distribution_with_unparsable_requirements_owns_import(
+        &self,
+        site_packages_dir: &Path,
+        import_name: &str,
+    ) -> bool {
+        self.with_distribution_ownership_index(site_packages_dir, |index| {
+            index
+                .owning_distributions(import_name)
+                .iter()
+                .any(|distribution| distribution.unparsable_requirements)
+        })
+    }
+
+    /// Return whether another installed distribution declares a versioned
+    /// `Requires-Dist` edge on an import's owner that the owner's installed
+    /// Version does NOT provably satisfy (edges gated purely on extras are
+    /// ignored). Bundling such an owner would embed a copy that violates the
+    /// constraint on platforms where the edge's marker applies: the installer
+    /// must stay in charge of selecting a compatible version.
+    fn distribution_with_unsatisfiable_incoming_edge_owns_import(
+        &self,
+        site_packages_dir: &Path,
+        import_name: &str,
+    ) -> bool {
+        use std::str::FromStr;
+        self.with_distribution_ownership_index(site_packages_dir, |index| {
+            let owners = index.owning_distributions(import_name);
+            if owners.is_empty() {
+                return false;
+            }
+            let owner_facts: Vec<(String, Option<pep508_rs::pep440_rs::Version>)> = owners
+                .iter()
+                .filter(|owner| !owner.name.is_empty())
+                .map(|owner| {
+                    (
+                        Self::normalize_distribution_name(&owner.name),
+                        owner.version.as_deref().and_then(|version| {
+                            pep508_rs::pep440_rs::Version::from_str(version).ok()
+                        }),
+                    )
+                })
+                .collect();
+            if owner_facts.is_empty() {
+                return false;
+            }
+            index.distributions.iter().any(|declarer| {
+                declarer.requires_dist.iter().any(|entry| {
+                    let Ok(parsed) =
+                        pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(entry)
+                    else {
+                        return false;
+                    };
+                    // Edges that can only apply with extras enabled are not
+                    // active for a plain installation
+                    if !parsed.marker.evaluate_extras(&[]) {
+                        return false;
+                    }
+                    let Some(pep508_rs::VersionOrUrl::VersionSpecifier(specifiers)) =
+                        &parsed.version_or_url
+                    else {
+                        return false;
+                    };
+                    let target = Self::normalize_distribution_name(parsed.name.as_ref());
+                    owner_facts.iter().any(|(owner_name, owner_version)| {
+                        *owner_name == target
+                            && !owner_version
+                                .as_ref()
+                                .is_some_and(|version| specifiers.contains(version))
+                    })
+                })
+            })
+        })
+    }
+
+    /// Return whether a distribution whose FINAL disposition is external
+    /// declares an extras-independent `Requires-Dist` edge (directly or
+    /// through a chain of such edges) on this import's owner. External
+    /// declarers land in the emitted requirements, and the installer resolves
+    /// their dependency edges transitively: the external dependent then
+    /// imports the INSTALLED copy of the target while bundled code uses the
+    /// inlined copy, splitting class identity and module state.
+    ///
+    /// A declarer counts as external through every statically decidable
+    /// blocker: native artifacts, missing/unparsable core metadata, `.pth`
+    /// startup hooks, runtime entry points, incompatible `Requires-Python`,
+    /// `known_third_party` configuration, and source-level blockers in any of
+    /// its import roots (`__file__` access, metadata queries, ...).
+    fn external_distribution_depends_on_import(
+        &self,
+        site_packages_dir: &Path,
+        import_name: &str,
+    ) -> bool {
+        use std::str::FromStr;
+
+        // Build one graph over EVERY searched metadata root. The declarer and
+        // its target need not live in the same root (configured interpreter,
+        // PYTHONPATH, and fallback virtualenv roots can all differ).
+        let mut search_roots: IndexSet<PathBuf> = self
+            .get_distribution_metadata_search_directories()
+            .into_iter()
+            .map(|root| self.canonicalize_path(root))
+            .collect();
+        search_roots.insert(self.canonicalize_path(site_packages_dir.to_path_buf()));
+
+        let mut distributions: Vec<(PathBuf, DistributionInfo)> = Vec::new();
+        let mut owner_names: FxIndexSet<String> = FxIndexSet::default();
+        for search_root in search_roots {
+            self.with_distribution_ownership_index(&search_root, |index| {
+                owner_names.extend(
+                    index
+                        .owning_distributions(import_name)
+                        .iter()
+                        .filter(|owner| !owner.name.is_empty())
+                        .map(|owner| Self::normalize_distribution_name(&owner.name)),
+                );
+                distributions.extend(
+                    index
+                        .distributions
+                        .iter()
+                        .cloned()
+                        .map(|distribution| (search_root.clone(), distribution)),
+                );
+            });
+        }
+        if owner_names.is_empty() {
+            return false;
+        }
+
+        // Extras explicitly requested for a distribution (module-map entries
+        // like `native = "native[speed]"`) activate that declarer's
+        // extra-gated Requires-Dist edges: the installer WILL install those
+        // targets alongside the external declarer
+        let mut requested_extras: FxIndexMap<String, Vec<pep508_rs::ExtraName>> =
+            FxIndexMap::default();
+        for requirement in self.config.requirements.module_map.values() {
+            if let Ok(parsed) =
+                pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(requirement)
+            {
+                requested_extras
+                    .entry(Self::normalize_distribution_name(parsed.name.as_ref()))
+                    .or_default()
+                    .extend(parsed.extras.iter().cloned());
+            }
+        }
+
+        // Parse every active Requires-Dist edge up front; only distributions
+        // with outgoing edges can propagate externality.
+        let mut edges: Vec<(usize, String)> = Vec::new();
+        for (declarer_index, (_, declarer)) in distributions.iter().enumerate() {
+            let declarer_name = Self::normalize_distribution_name(&declarer.name);
+            let declarer_extras = requested_extras
+                .get(&declarer_name)
+                .map_or(&[][..], Vec::as_slice);
+            for entry in &declarer.requires_dist {
+                let Ok(parsed) = pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(entry)
+                else {
+                    continue;
+                };
+                // Extra-gated edges are active only when the declarer is
+                // installed with that extra requested.
+                if !parsed.marker.evaluate_extras(declarer_extras) {
+                    continue;
+                }
+                let target = Self::normalize_distribution_name(parsed.name.as_ref());
+                // Self-edges cannot split identity.
+                if target != declarer_name {
+                    edges.push((declarer_index, target));
+                }
+            }
+        }
+        if edges.is_empty() {
+            return false;
+        }
+
+        let mut external: Vec<bool> = distributions
+            .iter()
+            .enumerate()
+            .map(|(declarer_index, (search_root, declarer))| {
+                edges.iter().any(|(from, _)| *from == declarer_index)
+                    && (self.distribution_stays_external_directly(declarer, search_root)
+                        // A metadata-queried declarer stays external too
+                        // (queried_distribution_owns_import keeps IT external);
+                        // installing it installs its Requires-Dist targets, so
+                        // inlining a target would split module identity between
+                        // the bundle and the installed copy
+                        || self.distribution_is_metadata_queried(declarer))
+            })
+            .collect();
+        let mut name_to_index: FxIndexMap<String, Vec<usize>> = FxIndexMap::default();
+        for (distribution_index, (_, distribution)) in distributions.iter().enumerate() {
+            name_to_index
+                .entry(Self::normalize_distribution_name(&distribution.name))
+                .or_default()
+                .push(distribution_index);
+        }
+
+        // Installing an external declarer installs its targets transitively;
+        // propagate across the union graph to a fixpoint.
+        loop {
+            let mut changed = false;
+            for (declarer_index, target) in &edges {
+                if !external[*declarer_index] {
+                    continue;
+                }
+                for &target_index in name_to_index.get(target).into_iter().flatten() {
+                    if !external[target_index] {
+                        external[target_index] = true;
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        edges.iter().any(|(declarer_index, target)| {
+            external[*declarer_index] && owner_names.contains(target)
+        })
+    }
+
+    /// Return whether one distribution's DIRECT disposition is external, from
+    /// statically decidable facts only (no dependency propagation): metadata
+    /// facts, target-version compatibility, configuration, and source-level
+    /// blockers in any of its import roots.
+    fn distribution_stays_external_directly(
+        &self,
+        distribution: &DistributionInfo,
+        site_packages_dir: &Path,
+    ) -> bool {
+        if distribution.ships_native_artifacts
+            || distribution.missing_core_metadata
+            || distribution.unparsable_requirements
+            || distribution.installs_startup_hooks
+            || distribution.has_runtime_entry_points
+        {
+            return true;
+        }
+        if distribution
+            .requires_python
+            .as_deref()
+            .is_some_and(|specifiers| !self.target_python_satisfies(specifiers))
+        {
+            return true;
+        }
+        let mut roots = IndexSet::new();
+        for name in distribution
+            .declared_prefixes
+            .iter()
+            .chain(distribution.record_imports.iter())
+        {
+            roots.insert(name.split('.').next().unwrap_or(name));
+        }
+        roots.into_iter().any(|root| {
+            self.is_explicit_third_party(root)
+                || self.import_root_source_blocked(site_packages_dir, root)
+                // A module-map constraint the installed copy does not satisfy
+                // keeps the distribution external too: its emitted requirement
+                // installs a DIFFERENT version, whose own dependencies would
+                // otherwise be inlined alongside — splitting module identity
+                || self.module_map_constraint_blocks_bundling(site_packages_dir, root)
+        })
+    }
+
+    /// Return whether a distribution's metadata is queried at runtime by
+    /// bundled code — by name, or implicitly through a global enumeration of
+    /// installed distributions.
+    fn distribution_is_metadata_queried(&self, distribution: &DistributionInfo) -> bool {
+        if distribution.name.is_empty() {
+            return false;
+        }
+        self.global_distribution_enumeration.get()
+            || self
+                .queried_distributions
+                .borrow()
+                .contains(&Self::normalize_distribution_name(&distribution.name))
+    }
+
+    /// Return whether any distribution claiming an import has its metadata queried at
+    /// runtime by bundled code. When bundled code enumerates installed distributions
+    /// globally, every owned import counts as queried: the enumeration would no
+    /// longer observe the distribution once its source is inlined.
+    fn queried_distribution_owns_import(
+        &self,
+        site_packages_dir: &Path,
+        import_name: &str,
+    ) -> bool {
+        if self.queried_distributions.borrow().is_empty()
+            && !self.global_distribution_enumeration.get()
+        {
+            return false;
+        }
+        self.with_distribution_ownership_index(site_packages_dir, |index| {
+            index
+                .owning_distributions(import_name)
+                .iter()
+                .any(|distribution| self.distribution_is_metadata_queried(distribution))
+        })
+    }
+
+    /// Record that bundled code enumerates installed distributions globally
+    /// (`importlib.metadata.distributions()`, `packages_distributions()`): every
+    /// distribution must then stay observable, so none may be inlined.
+    pub(crate) fn record_global_distribution_enumeration(&self) {
+        if !self.global_distribution_enumeration.replace(true) {
+            self.classification_cache.borrow_mut().clear();
+            self.external_packages_cache.borrow_mut().clear();
+            self.module_cache.borrow_mut().clear();
+        }
+    }
+
+    /// Record a bundled module that is the target of a preserved `import_module`
+    /// call (opaque arguments): the call stays verbatim and resolves the target
+    /// through the import machinery at runtime, so it must be wrapped and
+    /// registered with the bundle's meta-path finder.
+    pub(crate) fn record_preserved_importlib_target(&self, module_name: String) {
+        self.preserved_importlib_module_targets
+            .borrow_mut()
+            .insert(module_name);
+    }
+
+    /// Return whether a bundled module is the target of a preserved
+    /// `import_module` call.
+    pub(crate) fn is_preserved_importlib_target(&self, module_name: &str) -> bool {
+        self.preserved_importlib_module_targets
+            .borrow()
+            .contains(module_name)
+    }
+
+    /// Return whether a bundled module is an ANCESTOR package of a preserved
+    /// `import_module` target: Python's machinery imports parents before dotted
+    /// targets, making the ancestors dynamically importable too (and thereby
+    /// subject to `importlib.reload` and `sys.modules` eviction), so they need
+    /// the wrapper/init path — an inlined `init=None` registration could
+    /// neither re-execute on reload nor reset state for a fresh life.
+    pub(crate) fn is_preserved_importlib_target_ancestor(&self, module_name: &str) -> bool {
+        let targets = self.preserved_importlib_module_targets.borrow();
+        targets.iter().any(|target| {
+            target
+                .strip_prefix(module_name)
+                .is_some_and(|rest| rest.starts_with('.'))
+        })
+    }
+
+    /// Record module names whose `sys.modules` entries consumer modules observe
+    /// (`sys.modules["dep"]`, `sys.modules[dep.__name__]`): bundled targets must
+    /// register in `sys.modules` when their init runs, because static imports
+    /// invoke the generated initializer directly rather than the import
+    /// machinery.
+    pub(crate) fn record_sys_modules_observed_targets(
+        &self,
+        module_names: impl IntoIterator<Item = String>,
+    ) {
+        let mut targets = self.sys_modules_observed_targets.borrow_mut();
+        for name in module_names {
+            targets.insert(name);
+        }
+    }
+
+    /// Return whether a consumer observes this module's `sys.modules` entry.
+    pub(crate) fn is_sys_modules_observed_target(&self, module_name: &str) -> bool {
+        self.sys_modules_observed_targets
+            .borrow()
+            .contains(module_name)
+    }
+
+    /// Record import names whose package resources bundled code reads at runtime
+    /// (`importlib.resources.files("provider")`, `pkgutil.get_data("provider", ..)`):
+    /// the target needs its installed layout and import spec, so it and its package
+    /// tree stay external.
+    ///
+    /// Newly recorded targets invalidate classification-derived caches so modules
+    /// whose bundling decision predates the read are re-evaluated.
+    pub(crate) fn record_resource_read_imports(
+        &self,
+        import_targets: impl IntoIterator<Item = String>,
+    ) {
+        let mut targets = self.resource_read_import_targets.borrow_mut();
+        let mut changed = false;
+        for target in import_targets {
+            if targets.insert(target) {
+                changed = true;
+            }
+        }
+        drop(targets);
+        if changed {
+            self.classification_cache.borrow_mut().clear();
+            self.external_packages_cache.borrow_mut().clear();
+            self.module_cache.borrow_mut().clear();
+        }
+    }
+
+    /// Return whether an import shares a top-level package with a recorded
+    /// resource-read target: resource readers import their anchor at runtime, so
+    /// the whole package tree must keep its installed layout.
+    fn resource_read_targets_import(&self, import_name: &str) -> bool {
+        let targets = self.resource_read_import_targets.borrow();
+        if targets.is_empty() {
+            return false;
+        }
+        let root = import_name.split('.').next().unwrap_or(import_name);
+        targets
+            .iter()
+            .any(|target| target.split('.').next().unwrap_or(target) == root)
+    }
+
+    /// Return whether a `requirements.module-map` entry pins this import to a
+    /// version or direct URL that the installed distribution does not PROVABLY
+    /// satisfy: a direct URL cannot be verified against installed sources, and a
+    /// version specifier must be satisfied by the owning distribution's declared
+    /// `Version`. Blocked imports stay external so the installer enforces the
+    /// user's constraint instead of the bundle silently shipping the
+    /// environment's copy.
+    fn module_map_constraint_blocks_bundling(
+        &self,
+        site_packages_dir: &Path,
+        import_name: &str,
+    ) -> bool {
+        use std::str::FromStr;
+        let mapping = self
+            .config
+            .requirements
+            .module_map
+            .iter()
+            .filter(|(prefix, _)| {
+                crate::requirement_resolver::RequirementResolver::matches_prefix(
+                    prefix,
+                    import_name,
+                )
+            })
+            .max_by_key(|(prefix, _)| prefix.split('.').count());
+        let Some((prefix, requirement)) = mapping else {
+            return false;
+        };
+        let Ok(parsed) = pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(requirement)
+        else {
+            // Invalid mappings are reported as hard errors during requirements
+            // generation; conservatively keep the import external here
+            warn!(
+                "Invalid PEP 508 requirement '{requirement}' configured for import prefix \
+                 '{prefix}'; keeping '{import_name}' external"
+            );
+            return true;
+        };
+        // The mapped distribution NAME must match an owning distribution:
+        // mapping `yaml = "vendor-yaml"` selects a DIFFERENT provider than the
+        // installed PyYAML sources, so bundling those sources would silently
+        // defeat the configured provider selection and drop the explicit
+        // requirement that non-bundling mode emits
+        let mapped_name = Self::normalize_distribution_name(parsed.name.as_ref());
+        let name_matches = self.with_distribution_ownership_index(site_packages_dir, |index| {
+            index
+                .owning_distributions(import_name)
+                .iter()
+                .any(|distribution| {
+                    !distribution.name.is_empty()
+                        && Self::normalize_distribution_name(&distribution.name) == mapped_name
+                })
+        });
+        if !name_matches {
+            return true;
+        }
+        match parsed.version_or_url {
+            None => false,
+            Some(pep508_rs::VersionOrUrl::Url(_)) => {
+                // A pinned artifact cannot be verified against installed sources
+                true
+            }
+            Some(pep508_rs::VersionOrUrl::VersionSpecifier(specifiers)) => {
+                // Bundleable only when the owning distribution's declared Version
+                // provably satisfies the mapped constraint
+                !self.with_distribution_ownership_index(site_packages_dir, |index| {
+                    index
+                        .owning_distributions(import_name)
+                        .iter()
+                        .any(|distribution| {
+                            distribution.version.as_deref().is_some_and(|version| {
+                                pep508_rs::pep440_rs::Version::from_str(version)
+                                    .is_ok_and(|version| specifiers.contains(&version))
+                            })
+                        })
+                })
+            }
+        }
+    }
+
+    /// Record requirement literals whose distribution metadata bundled code queries
+    /// at runtime. The distribution name drives classification policy (owners stay
+    /// external), while the verbatim literal is preserved for requirements
+    /// generation so extras and version constraints survive.
+    ///
+    /// Newly recorded names invalidate classification-derived caches so modules whose
+    /// bundling decision predates the query are re-evaluated.
+    pub(crate) fn record_queried_distributions(
+        &self,
+        requirements: impl IntoIterator<Item = String>,
+    ) {
+        use std::str::FromStr;
+        let mut queried = self.queried_distributions.borrow_mut();
+        let mut literals = self.queried_requirement_literals.borrow_mut();
+        let mut changed = false;
+        for requirement in requirements {
+            let name = pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(&requirement)
+                .map_or_else(|_| requirement.clone(), |parsed| parsed.name.to_string());
+            literals.insert(requirement);
+            if queried.insert(Self::normalize_distribution_name(&name)) {
+                changed = true;
+            }
+        }
+        drop(queried);
+        drop(literals);
+        if changed {
+            self.classification_cache.borrow_mut().clear();
+            self.external_packages_cache.borrow_mut().clear();
+            self.module_cache.borrow_mut().clear();
+        }
+    }
+
+    /// Return the verbatim requirement literals of runtime metadata queries whose
+    /// distribution is installed in the scanned environment (e.g.
+    /// `importlib.metadata.version("provider")` yields `provider`, while
+    /// `pkg_resources.require("provider[speed]>=2")` yields the constrained literal).
+    ///
+    /// The query itself requires the installed dist-info, so these distributions must
+    /// appear in requirements even when no module of theirs is ever imported.
+    /// Recorded literals whose name matches no installed distribution are skipped:
+    /// they raise `PackageNotFoundError` in the source environment as well.
+    pub(crate) fn queried_installed_distribution_requirements(&self) -> Vec<String> {
+        use std::str::FromStr;
+        let literals = self.queried_requirement_literals.borrow();
+        let resource_targets = self.resource_read_import_targets.borrow();
+        if literals.is_empty() && resource_targets.is_empty() {
+            return Vec::new();
+        }
+        let mut installed: IndexSet<String> = IndexSet::new();
+        // Distributions owning resource-read targets must stay installed even when
+        // no module of theirs is ever imported: the reader imports its anchor and
+        // resolves data files through the installed layout
+        let mut resource_owner_requirements: IndexSet<String> = IndexSet::new();
+        for metadata_dir in self.get_distribution_metadata_search_directories() {
+            self.with_distribution_ownership_index(&metadata_dir, |index| {
+                for distribution in &index.distributions {
+                    if !distribution.name.is_empty() {
+                        installed.insert(Self::normalize_distribution_name(&distribution.name));
+                    }
+                }
+                for target in resource_targets.iter() {
+                    for distribution in index.owning_distributions(target) {
+                        if !distribution.name.is_empty() {
+                            resource_owner_requirements.insert(distribution.name.clone());
+                        }
+                    }
+                }
+            });
+        }
+        let mut requirements: Vec<String> = literals
+            .iter()
+            .filter(|literal| {
+                let name = pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(literal)
+                    .map_or_else(|_| (*literal).clone(), |parsed| parsed.name.to_string());
+                installed.contains(&Self::normalize_distribution_name(&name))
+            })
+            .cloned()
+            .collect();
+        requirements.extend(resource_owner_requirements);
+        requirements
+    }
+
+    /// Requirement lines pinning EVERY installed distribution, emitted when
+    /// bundled code enumerates distributions globally
+    /// (`importlib.metadata.distributions()`, `entry_points()`,
+    /// `packages_distributions()`): providers discovered through enumeration
+    /// (plugins located by entry-point group) are runtime dependencies even
+    /// when no module of theirs is ever imported, so an isolated deployment
+    /// must install the same set the original environment enumerated.
+    pub(crate) fn globally_enumerated_distribution_requirements(&self) -> Vec<String> {
+        if !self.global_distribution_enumeration.get() {
+            return Vec::new();
+        }
+        let mut requirements: IndexSet<String> = IndexSet::new();
+        for metadata_dir in self.get_distribution_metadata_search_directories() {
+            self.with_distribution_ownership_index(&metadata_dir, |index| {
+                for distribution in &index.distributions {
+                    if distribution.name.is_empty() {
+                        continue;
+                    }
+                    let name = Self::normalize_distribution_name(&distribution.name);
+                    // Pin the enumerated version: enumeration observes the
+                    // installed metadata, so the deployment must reproduce it
+                    match &distribution.version {
+                        Some(version) => requirements.insert(format!("{name}=={version}")),
+                        None => requirements.insert(name),
+                    };
+                }
+            });
+        }
+        requirements.into_iter().collect()
+    }
+
+    /// Return whether the configured target Python version satisfies a PEP 440
+    /// specifier set. The minor-only target is checked across its whole patch range
+    /// (both `3.X.0` and a high patch sentinel), so patch-sensitive bounds like
+    /// `<3.X.1` conservatively report as unsatisfied. Exclusions targeting a patch
+    /// inside the range (e.g. `!=3.X.5`) also report as unsatisfied: both endpoint
+    /// probes would pass, yet part of the target minor range is explicitly rejected.
+    /// Unparsable specifiers also report as unsatisfied.
+    fn target_python_satisfies(&self, specifiers: &str) -> bool {
+        use std::str::FromStr;
+
+        use pep508_rs::pep440_rs::Operator;
+        let Ok(specifiers) = pep508_rs::pep440_rs::VersionSpecifiers::from_str(specifiers) else {
+            warn!("Ignoring unparsable Requires-Python specifier: {specifiers}");
+            return false;
+        };
+        let minor = u64::from(self.python_version);
+        // An interior patch exclusion cannot be proven irrelevant by a minor-only
+        // target: some patch release of the target minor is incompatible
+        if specifiers.iter().any(|specifier| {
+            matches!(
+                specifier.operator(),
+                Operator::NotEqual | Operator::NotEqualStar
+            ) && specifier.version().release().first() == Some(&3)
+                && specifier.version().release().get(1) == Some(&minor)
+        }) {
+            return false;
+        }
+        let lowest_patch = pep508_rs::pep440_rs::Version::new([3, minor, 0]);
+        let highest_patch = pep508_rs::pep440_rs::Version::new([3, minor, u64::from(u16::MAX)]);
+        specifiers.contains(&lowest_patch) && specifiers.contains(&highest_patch)
+    }
+
+    /// Collect the PEP 508 `Requires-Dist` entries of the distributions owning the
+    /// given bundled imports, excluding requirements that are themselves bundled and
+    /// requirements whose markers cannot apply with the requested extras.
+    ///
+    /// `bundled_imports` maps each bundled import to the extras explicitly requested
+    /// for it (e.g. through a `requirements.module-map` entry like `provider[speed]`),
+    /// so extras-conditioned dependencies of bundled distributions survive when their
+    /// extra was requested. Duplicate declarations of one distribution are merged by
+    /// combining their version specifiers.
+    ///
+    /// Inlining a distribution removes it from `requirements.txt`, so its declared
+    /// dependency constraints must be carried over for the external dependencies it
+    /// pulls in (including dynamically or conditionally imported ones).
+    pub(crate) fn bundled_distribution_requirements(
+        &self,
+        bundled_imports: &FxIndexMap<String, Vec<pep508_rs::ExtraName>>,
+    ) -> Vec<String> {
+        use std::str::FromStr;
+
+        /// Facts collected for one bundled distribution before filtering.
+        #[derive(Default)]
+        struct BundledDistribution {
+            requires_dist: Vec<String>,
+            /// Declared `Version`, used to validate incoming versioned edges
+            /// from other bundled distributions
+            version: Option<String>,
+            /// Active extras with their activation conditions: a requested extra
+            /// is unconditional (`TRUE`), while an extra propagated through a
+            /// marker-gated edge (`B[speed]; sys_platform == "win32"`) carries
+            /// that edge's environment marker so the extra's dependencies stay
+            /// scoped to the platforms that originally requested them
+            extras: Vec<(pep508_rs::ExtraName, pep508_rs::MarkerTree)>,
+        }
+
+        impl BundledDistribution {
+            fn extra_names(&self) -> Vec<pep508_rs::ExtraName> {
+                self.extras.iter().map(|(name, _)| name.clone()).collect()
+            }
+
+            /// Record an extra's activation condition, widening (OR) when the
+            /// extra is activated through several edges.
+            fn activate_extra(
+                &mut self,
+                extra: pep508_rs::ExtraName,
+                activation: pep508_rs::MarkerTree,
+            ) -> bool {
+                if let Some((_, existing)) = self.extras.iter_mut().find(|(name, _)| *name == extra)
+                {
+                    let previous = existing.clone();
+                    existing.or(activation);
+                    *existing != previous
+                } else {
+                    self.extras.push((extra, activation));
+                    true
+                }
+            }
+
+            /// The marker under which a requirement gated on this record's extras
+            /// applies: the OR of the activation conditions of the extras that
+            /// individually satisfy the requirement's marker. Ungated
+            /// requirements apply unconditionally.
+            fn extras_activation_marker(
+                &self,
+                marker: &pep508_rs::MarkerTree,
+            ) -> pep508_rs::MarkerTree {
+                if marker.evaluate_extras(&[]) {
+                    // The marker can hold without any extras: not extra-gated
+                    return pep508_rs::MarkerTree::TRUE;
+                }
+                let mut activation = pep508_rs::MarkerTree::FALSE;
+                for (extra, condition) in &self.extras {
+                    if marker.evaluate_extras(std::slice::from_ref(extra)) {
+                        activation.or(condition.clone());
+                    }
+                }
+                if activation.is_false() {
+                    // Only a combination of extras satisfies the marker (e.g.
+                    // `extra == "a" and extra == "b"`); the full set was verified
+                    // by the caller, so apply every activation condition
+                    activation = pep508_rs::MarkerTree::TRUE;
+                    for (_, condition) in &self.extras {
+                        activation.and(condition.clone());
+                    }
+                }
+                activation
+            }
+        }
+
+        // Distributions can be installed into the environment's site-packages or
+        // supplied through PYTHONPATH/source roots with adjacent dist-info metadata
+        let metadata_dirs = self.get_distribution_metadata_search_directories();
+        let mut bundled: IndexMap<String, BundledDistribution> = IndexMap::new();
+
+        for (import_name, requested_extras) in bundled_imports {
+            // Query ownership at the root that actually supplied the module, so a
+            // stale dist-info in an earlier root cannot claim it; namespace packages
+            // have no single root and fall back to scanning all metadata roots
+            let owner_roots: Vec<PathBuf> = self
+                .get_import_search_root(import_name)
+                .map_or_else(|| metadata_dirs.clone(), |root| vec![root]);
+            for site_packages_dir in &owner_roots {
+                // Aggregate over all owning distributions (shared namespaces can have
+                // several claimants; record-exact owners take precedence in the index)
+                let found = self.with_distribution_ownership_index(site_packages_dir, |index| {
+                    let owners = index.owning_distributions(import_name);
+                    if owners.is_empty() {
+                        None
+                    } else {
+                        Some(
+                            owners
+                                .iter()
+                                .map(|dist| {
+                                    (
+                                        dist.name.clone(),
+                                        dist.requires_dist.clone(),
+                                        dist.version.clone(),
+                                    )
+                                })
+                                .collect::<Vec<_>>(),
+                        )
+                    }
+                });
+                if let Some(owners) = found {
+                    for (name, requires_dist, version) in owners {
+                        let normalized_name = Self::normalize_distribution_name(&name);
+                        let record = bundled.entry(normalized_name).or_default();
+                        record.requires_dist = requires_dist;
+                        record.version = version;
+                        for extra in requested_extras {
+                            // Explicitly requested extras apply unconditionally
+                            record.activate_extra(extra.clone(), pep508_rs::MarkerTree::TRUE);
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        // Propagate extras between bundled distributions to a fixpoint: when bundled A
+        // declares `B[speed]` and B is bundled too, B's `extra == "speed"` dependencies
+        // must be activated as if A had been installed normally. The activating edge's
+        // environment marker (and the activation conditions of any extras gating the
+        // edge itself) are carried along, so `B[speed]; sys_platform == "win32"`
+        // scopes B's speed-dependencies to Windows instead of activating them
+        // everywhere.
+        for _ in 0..bundled.len().max(1) {
+            let mut propagated: Vec<(String, Vec<pep508_rs::ExtraName>, pep508_rs::MarkerTree)> =
+                Vec::new();
+            for record in bundled.values() {
+                let extra_names = record.extra_names();
+                for entry in &record.requires_dist {
+                    let Ok(parsed) =
+                        pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(entry)
+                    else {
+                        continue;
+                    };
+                    if parsed.extras.is_empty() || !parsed.marker.evaluate_extras(&extra_names) {
+                        continue;
+                    }
+                    let target = parsed.name.to_string();
+                    if bundled.contains_key(&target) {
+                        // The propagated extras hold under the edge's residual
+                        // environment marker AND the conditions of the extras that
+                        // gate the edge itself
+                        let mut activation = record.extras_activation_marker(&parsed.marker);
+                        activation.and(parsed.marker.simplify_extras(&extra_names));
+                        propagated.push((target, parsed.extras, activation));
+                    }
+                }
+            }
+            let mut changed = false;
+            for (target, extras, activation) in propagated {
+                let record = bundled
+                    .get_mut(&target)
+                    .expect("propagation targets are bundled distributions");
+                for extra in extras {
+                    if record.activate_extra(extra, activation.clone()) {
+                        changed = true;
+                    }
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+
+        // Deduplicate by distribution name and marker branch: same-branch duplicates
+        // merge their constraints, while differently-marked declarations stay on
+        // separate lines so one platform's constraints never leak into another's
+        // (pip evaluates each line's marker independently)
+        let bundled_names: IndexSet<String> = bundled.keys().cloned().collect();
+        let mut merged: IndexMap<String, Vec<pep508_rs::Requirement<pep508_rs::VerbatimUrl>>> =
+            IndexMap::new();
+        for record in bundled.values() {
+            let extra_names = record.extra_names();
+            for entry in &record.requires_dist {
+                let Ok(mut parsed) =
+                    pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(entry)
+                else {
+                    warn!(
+                        "Skipping unparsable Requires-Dist entry of a bundled distribution: \
+                         {entry}"
+                    );
+                    continue;
+                };
+                // Keep only declarations that can apply with the requested extras: a
+                // pure `extra == ...` condition holds only when that extra was asked
+                // for, while markers like `python_version < "3.12" or extra == "fast"`
+                // always can
+                if !parsed.marker.evaluate_extras(&extra_names) {
+                    continue;
+                }
+                // Extras-gated declarations apply under the activation conditions of
+                // the extras that gate them: an extra propagated through a
+                // marker-scoped edge keeps that scope instead of activating its
+                // dependencies everywhere
+                let activation = record.extras_activation_marker(&parsed.marker);
+                // Active extras are satisfied by construction; remove them from the
+                // marker, because `extra` is unset when pip evaluates requirements files
+                parsed.marker = parsed.marker.clone().simplify_extras(&extra_names);
+                parsed.marker.and(activation);
+                let name = parsed.name.to_string();
+                // Requirements satisfied by other bundled distributions are not
+                // needed — EXCEPT when the edge cannot be PROVEN satisfied by
+                // the bundled copy: direct-URL pins are unverifiable against
+                // inspected sources, and a version specifier must be satisfied
+                // by the bundled owner's declared Version (constraints active
+                // only on other platforms would otherwise be silently dropped).
+                // Retained lines keep their markers for installer enforcement.
+                if bundled_names.contains(&name) {
+                    let provably_satisfied = match &parsed.version_or_url {
+                        None => true,
+                        Some(pep508_rs::VersionOrUrl::Url(_)) => false,
+                        Some(pep508_rs::VersionOrUrl::VersionSpecifier(specifiers)) => bundled
+                            .get(&name)
+                            .and_then(|record| record.version.as_deref())
+                            .and_then(|version| {
+                                pep508_rs::pep440_rs::Version::from_str(version).ok()
+                            })
+                            .is_some_and(|version| specifiers.contains(&version)),
+                    };
+                    if provably_satisfied {
+                        continue;
+                    }
+                }
+                let branches = merged.entry(name).or_default();
+                if let Some(existing) = branches
+                    .iter_mut()
+                    .find(|existing| existing.marker == parsed.marker)
+                {
+                    if let Some(unmergeable) = Self::merge_requirement_constraints(existing, parsed)
+                    {
+                        // Conflicting direct URLs: emit both lines so the installer
+                        // reports the conflict
+                        branches.push(unmergeable);
+                    }
+                } else {
+                    branches.push(parsed);
+                }
+            }
+        }
+
+        let mut requirements: Vec<String> = merged
+            .into_values()
+            .flatten()
+            .map(|requirement| requirement.to_string())
+            .collect();
+        requirements.sort();
+        requirements
+    }
+
+    /// Merge a duplicate requirement declaration carrying the same environment marker
+    /// into an existing one: extras are unioned and version specifiers are combined
+    /// (e.g. `dep<2` + `dep>=1` becomes `dep>=1,<2`).
+    ///
+    /// PEP 508 cannot express a direct URL and a version specifier on one line,
+    /// but pip validates an explicit URL candidate against EVERY collected
+    /// requirement (resolvelib rejects a pinned artifact failing a version
+    /// constraint), so mixed URL/specifier declarations are returned for emission
+    /// as SEPARATE lines — the installer then enforces both, exactly like the
+    /// original installation. Two declarations pinning DIFFERENT direct URLs are
+    /// likewise both emitted so the installer reports the conflict; identical URLs
+    /// deduplicate. Returns `None` when the incoming declaration was fully merged.
+    pub(crate) fn merge_requirement_constraints(
+        existing: &mut pep508_rs::Requirement<pep508_rs::VerbatimUrl>,
+        incoming: pep508_rs::Requirement<pep508_rs::VerbatimUrl>,
+    ) -> Option<pep508_rs::Requirement<pep508_rs::VerbatimUrl>> {
+        use pep508_rs::VersionOrUrl;
+        for extra in &incoming.extras {
+            if !existing.extras.contains(extra) {
+                existing.extras.push(extra.clone());
+            }
+        }
+        match (&existing.version_or_url, incoming.version_or_url) {
+            (None, incoming_version) => {
+                existing.version_or_url = incoming_version;
+            }
+            (
+                Some(VersionOrUrl::VersionSpecifier(current)),
+                Some(VersionOrUrl::VersionSpecifier(additional)),
+            ) => {
+                let combined: pep508_rs::pep440_rs::VersionSpecifiers =
+                    current.iter().cloned().chain(additional).collect();
+                existing.version_or_url = Some(VersionOrUrl::VersionSpecifier(combined));
+            }
+            (Some(VersionOrUrl::Url(_)), Some(VersionOrUrl::VersionSpecifier(specifiers))) => {
+                // Keep the URL pin AND emit the constraint separately: the
+                // installer validates the pinned artifact against it
+                let mut returned = existing.clone();
+                returned.version_or_url = Some(VersionOrUrl::VersionSpecifier(specifiers));
+                return Some(returned);
+            }
+            (Some(VersionOrUrl::VersionSpecifier(_)), Some(VersionOrUrl::Url(url))) => {
+                let mut returned = existing.clone();
+                returned.version_or_url = Some(VersionOrUrl::Url(url));
+                return Some(returned);
+            }
+            (Some(VersionOrUrl::Url(current)), Some(VersionOrUrl::Url(incoming_url)))
+                if current.to_string() != incoming_url.to_string() =>
+            {
+                warn!(
+                    "Requirement '{}' is pinned to two DIFFERENT direct URLs ({current} \
+                     and {incoming_url}); both are emitted so the installer reports the \
+                     conflict",
+                    existing.name
+                );
+                let mut returned = existing.clone();
+                returned.version_or_url = Some(VersionOrUrl::Url(incoming_url));
+                return Some(returned);
+            }
+            _ => {}
+        }
+        None
+    }
+
+    /// Normalize a distribution name per PEP 503 for set comparisons.
+    fn normalize_distribution_name(name: &str) -> String {
+        pep508_rs::PackageName::new(name.to_owned())
+            .map_or_else(|_| name.to_owned(), |package| package.to_string())
+    }
+
+    /// Run a query against the (lazily built, cached) ownership index of a search root.
+    fn with_distribution_ownership_index<R>(
+        &self,
+        site_packages_dir: &Path,
+        query: impl FnOnce(&DistributionOwnershipIndex) -> R,
+    ) -> R {
+        let search_root = self.canonicalize_path(site_packages_dir.to_path_buf());
+        if let Some(index) = self.distribution_ownership_cache.borrow().get(&search_root) {
+            return query(index);
         }
 
         let index = Self::build_distribution_ownership_index(&search_root);
-        let owns_import = index.owns_import(import_name);
+        let result = query(&index);
         self.distribution_ownership_cache
             .borrow_mut()
             .insert(search_root, index);
-        owns_import
+        result
     }
 
-    /// Build distribution ownership data for one search root.
+    /// Build distribution ownership data for one search root, covering both modern
+    /// `.dist-info` installs and legacy `.egg-info` installs.
     fn build_distribution_ownership_index(site_packages_dir: &Path) -> DistributionOwnershipIndex {
         let mut index = DistributionOwnershipIndex::default();
-        let Ok(entries) = std::fs::read_dir(site_packages_dir) else {
-            return index;
+        // Top-level native artifact modules seen beside the metadata directories;
+        // used to attribute unclaimed native siblings to listing-less distributions
+        let mut top_level_native_modules: Vec<String> = Vec::new();
+        // Top-level `.pth` startup hooks seen beside the metadata directories;
+        // an unclaimed one may have been installed by any listing-less distribution
+        let mut top_level_pth_files: Vec<String> = Vec::new();
+        // Ordinary sibling directories; scanned for native artifacts when
+        // listing-less distributions exist (their file sets are unknown)
+        let mut sibling_directories: Vec<(String, PathBuf)> = Vec::new();
+        let entries = match std::fs::read_dir(site_packages_dir) {
+            Ok(entries) => entries,
+            Err(error) => {
+                // A missing root simply has no metadata; any other failure (e.g. a
+                // permission error) means metadata may exist but cannot be enumerated
+                index.incomplete = error.kind() != std::io::ErrorKind::NotFound;
+                return index;
+            }
         };
 
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
+        for entry in entries {
+            // Entry-level iteration errors (network filesystems, concurrent removals)
+            // can hide a metadata directory, so the index must not be trusted to
+            // prove the absence of ownership or policy metadata
+            let Ok(entry) = entry else {
+                index.incomplete = true;
                 continue;
-            }
-
+            };
+            let path = entry.path();
             let Some(dir_name) = path.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-            if !dir_name.ends_with(".dist-info") {
+            if path.is_dir() {
+                if dir_name.ends_with(".dist-info") {
+                    let distribution = Self::index_dist_info(&path, &mut index.incomplete);
+                    index.distributions.push(distribution);
+                } else if dir_name.ends_with(".egg-info") {
+                    let distribution = Self::index_egg_info(&path, &mut index.incomplete);
+                    index.distributions.push(distribution);
+                } else if dir_name != "__pycache__" {
+                    sibling_directories.push((dir_name.to_owned(), path.clone()));
+                }
+            } else if dir_name.ends_with(".egg-info") {
+                // Legacy file-form egg-info: the file itself is PKG-INFO metadata
+                if let Some(metadata) = Self::read_metadata_sidecar(&path, &mut index.incomplete) {
+                    let mut distribution = DistributionInfo::default();
+                    Self::index_distribution_metadata(&metadata, &mut distribution);
+                    Self::infer_import_root_from_name(
+                        &mut distribution,
+                        &path,
+                        &mut index.incomplete,
+                    );
+                    index.distributions.push(distribution);
+                }
+            } else if Self::is_native_artifact_file_name(dir_name) {
+                // A top-level native module (e.g. `_backend.cpython-312.so`); its
+                // module name is the file-name stem before the first dot
+                if let Some((module_name, _)) = dir_name.split_once('.')
+                    && !module_name.is_empty()
+                {
+                    top_level_native_modules.push(module_name.to_owned());
+                }
+            } else if Self::is_top_level_pth_path(dir_name) {
+                top_level_pth_files.push(dir_name.to_owned());
+            }
+        }
+
+        // Attribute top-level native modules to distributions. A record-claimed
+        // owner already carries the native flag from its listing scan; a
+        // prefix-claimed owner without a listing learns it now; an UNCLAIMED
+        // native module may belong to ANY distribution lacking an installed-files
+        // listing, so none of those can be proven pure (the conventional example
+        // is a name-inferred `frontend/` whose wheel also installed a top-level
+        // `_backend.so` that no RECORD mentions).
+        for module_name in top_level_native_modules {
+            let record_owners: Vec<usize> = index
+                .distributions
+                .iter()
+                .enumerate()
+                .filter(|(_, distribution)| distribution.record_imports.contains(&module_name))
+                .map(|(position, _)| position)
+                .collect();
+            let owners = if record_owners.is_empty() {
+                index
+                    .distributions
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, distribution)| distribution.owns_import(&module_name))
+                    .map(|(position, _)| position)
+                    .collect()
+            } else {
+                record_owners
+            };
+            if owners.is_empty() {
+                for distribution in &mut index.distributions {
+                    if !distribution.has_file_listing && !distribution.ships_native_artifacts {
+                        log::debug!(
+                            "Distribution '{}' has no installed-files listing and the unclaimed \
+                             native sibling '{module_name}' exists: treating the distribution as \
+                             shipping native artifacts",
+                            distribution.name
+                        );
+                        distribution.ships_native_artifacts = true;
+                    }
+                }
+            } else {
+                for position in owners {
+                    index.distributions[position].ships_native_artifacts = true;
+                }
+            }
+        }
+
+        // Attribute top-level `.pth` startup hooks: a listing-claimed hook already
+        // flagged its owner during the listing scan, but an UNCLAIMED one may have
+        // been installed by ANY distribution lacking an installed-files listing,
+        // so none of those can be proven hook-free. Python executes the hook at
+        // startup regardless of which distribution shipped it.
+        for pth_file in top_level_pth_files {
+            let claimed = index
+                .distributions
+                .iter()
+                .any(|distribution| distribution.claimed_pth_files.contains(&pth_file));
+            if claimed {
                 continue;
             }
-
-            let metadata_file = path.join("METADATA");
-            if let Ok(metadata) = std::fs::read_to_string(metadata_file) {
-                Self::index_distribution_metadata(&metadata, &mut index);
+            for distribution in &mut index.distributions {
+                if !distribution.has_file_listing && !distribution.installs_startup_hooks {
+                    log::debug!(
+                        "Distribution '{}' has no installed-files listing and the unclaimed \
+                         startup hook '{pth_file}' exists: treating the distribution as \
+                         installing startup hooks",
+                        distribution.name
+                    );
+                    distribution.installs_startup_hooks = true;
+                }
             }
+        }
 
-            let record_file = path.join("RECORD");
-            if record_file.exists()
-                && let Ok(file) = std::fs::File::open(&record_file)
-            {
-                let reader = BufReader::new(file);
-                for line in reader.lines().map_while(Result::ok) {
-                    let path_part = line.split(',').next().unwrap_or("");
-                    Self::index_record_path(path_part, &mut index);
+        // A listing-less distribution may also have installed native code in a
+        // sibling DIRECTORY no listing claims (e.g. `frontend/` plus
+        // `frontend.libs/libhelper.so` from the same RECORD-less wheel). Attribute
+        // each directory by its import root: when its owners include listing-less
+        // distributions, scan it and taint THOSE owners on native artifacts; a
+        // directory no distribution claims at all may belong to ANY listing-less
+        // distribution, so all of them are tainted.
+        if index
+            .distributions
+            .iter()
+            .any(|distribution| !distribution.has_file_listing)
+        {
+            for (dir_name, dir_path) in &sibling_directories {
+                let module_name = dir_name.split('.').next().unwrap_or(dir_name);
+                let owner_positions: Vec<usize> = index
+                    .distributions
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, distribution)| distribution.owns_import(module_name))
+                    .map(|(position, _)| position)
+                    .collect();
+                let listing_less_owners: Vec<usize> = owner_positions
+                    .iter()
+                    .copied()
+                    .filter(|position| !index.distributions[*position].has_file_listing)
+                    .collect();
+                if !owner_positions.is_empty() && listing_less_owners.is_empty() {
+                    // Fully attributed to listed distributions: their listings
+                    // already decided the native policy
+                    continue;
+                }
+                if !Self::directory_contains_native_artifacts(dir_path) {
+                    continue;
+                }
+                if listing_less_owners.is_empty() {
+                    // Unclaimed: any listing-less distribution may own it
+                    for distribution in &mut index.distributions {
+                        if !distribution.has_file_listing && !distribution.ships_native_artifacts {
+                            log::debug!(
+                                "Distribution '{}' has no installed-files listing and the \
+                                 unclaimed native sibling directory '{dir_name}' exists: \
+                                 treating the distribution as shipping native artifacts",
+                                distribution.name
+                            );
+                            distribution.ships_native_artifacts = true;
+                        }
+                    }
+                } else {
+                    for position in listing_less_owners {
+                        index.distributions[position].ships_native_artifacts = true;
+                    }
                 }
             }
         }
@@ -1391,26 +5441,389 @@ impl ModuleResolver {
         index
     }
 
-    /// Add Core Metadata import declarations to an ownership index.
-    fn index_distribution_metadata(metadata: &str, index: &mut DistributionOwnershipIndex) {
+    /// Return whether a directory contains a native binary artifact anywhere in
+    /// its tree (`__pycache__` excluded). Read errors count as containing one:
+    /// purity cannot be proven for an unreadable tree. Directory symlinks are
+    /// conservatively rejected like the package scanner does: following them
+    /// could cycle or escape into unrelated filesystem content.
+    fn directory_contains_native_artifacts(directory: &Path) -> bool {
+        let mut pending = vec![directory.to_path_buf()];
+        while let Some(current) = pending.pop() {
+            let Ok(entries) = std::fs::read_dir(&current) else {
+                return true;
+            };
+            for entry in entries {
+                let Ok(entry) = entry else {
+                    return true;
+                };
+                let Ok(file_type) = entry.file_type() else {
+                    return true;
+                };
+                let path = entry.path();
+                let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                if file_type.is_dir() {
+                    if file_name != "__pycache__" {
+                        pending.push(path);
+                    }
+                } else if file_type.is_symlink() {
+                    // A symlink may point at a directory tree (cycles, escapes)
+                    // or at a native artifact; treat it as unprovable purity
+                    return true;
+                } else if Self::is_native_artifact_file_name(file_name) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Index one modern `.dist-info` distribution (METADATA + RECORD, with
+    /// `top_level.txt` supplying import roots when present — older tooling relies on
+    /// it instead of `Import-Name` headers or a `RECORD` file).
+    fn index_dist_info(dist_info_dir: &Path, incomplete: &mut bool) -> DistributionInfo {
+        // Index each distribution separately so ownership facts carry the
+        // distribution's own policy metadata (native artifacts, requirements)
+        let mut distribution = DistributionInfo::default();
+
+        let metadata_file = dist_info_dir.join("METADATA");
+        if let Some(metadata) = Self::read_metadata_sidecar(&metadata_file, incomplete) {
+            Self::index_distribution_metadata(&metadata, &mut distribution);
+        } else {
+            // METADATA is mandatory for .dist-info: without it the distribution's
+            // name, version, and requirement constraints are all unknown
+            distribution.missing_core_metadata = true;
+        }
+
+        Self::index_top_level_declarations(dist_info_dir, &mut distribution, incomplete);
+        Self::index_entry_points(dist_info_dir, &mut distribution, incomplete);
+
+        let record_file = dist_info_dir.join("RECORD");
+        if let Some(record) = Self::read_metadata_sidecar(&record_file, incomplete) {
+            distribution.has_file_listing = true;
+            for line in record.lines() {
+                let path_part = Self::record_line_first_field(line);
+                Self::index_record_path(&path_part, &mut distribution);
+                if path_part
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .is_some_and(Self::is_native_artifact_file_name)
+                {
+                    distribution.ships_native_artifacts = true;
+                }
+                if Self::is_top_level_pth_path(&path_part) {
+                    distribution.installs_startup_hooks = true;
+                    distribution.claimed_pth_files.insert(path_part.clone());
+                }
+            }
+        }
+
+        // A dist-info without RECORD, top_level.txt, or Import-Name declarations
+        // (system-managed or damaged installations) still names a distribution:
+        // infer its conventional import root from the name like egg-info indexing
+        // does. When even the name is unreadable, ownership is unknowable and the
+        // index must not be trusted to prove absence of ownership.
+        if distribution.declared_prefixes.is_empty() && distribution.record_imports.is_empty() {
+            if distribution.name.is_empty() {
+                *incomplete = true;
+            } else {
+                Self::infer_import_root_from_name(&mut distribution, dist_info_dir, incomplete);
+            }
+        }
+
+        distribution
+    }
+
+    /// Index one legacy `.egg-info` distribution: `PKG-INFO` uses the same Core
+    /// Metadata headers, `top_level.txt` declares import roots, and
+    /// `installed-files.txt` (when present) lists installed files.
+    fn index_egg_info(egg_info_dir: &Path, incomplete: &mut bool) -> DistributionInfo {
+        let mut distribution = DistributionInfo::default();
+
+        let metadata_file = egg_info_dir.join("PKG-INFO");
+        if let Some(metadata) = Self::read_metadata_sidecar(&metadata_file, incomplete) {
+            Self::index_distribution_metadata(&metadata, &mut distribution);
+        } else {
+            // PKG-INFO is the egg-info core-metadata file; without it the
+            // distribution's identity and constraints are unknown
+            distribution.missing_core_metadata = true;
+        }
+
+        Self::index_top_level_declarations(egg_info_dir, &mut distribution, incomplete);
+        Self::index_entry_points(egg_info_dir, &mut distribution, incomplete);
+        Self::index_requires_txt(egg_info_dir, &mut distribution, incomplete);
+
+        // installed-files.txt paths are relative to the egg-info directory itself
+        // (e.g. "../package/module.py"); resolve them against the site-packages root
+        let installed_files = egg_info_dir.join("installed-files.txt");
+        if let Some(listing) = Self::read_metadata_sidecar(&installed_files, incomplete) {
+            distribution.has_file_listing = true;
+            for line in listing.lines() {
+                let record_path = line.trim();
+                let normalized = record_path
+                    .strip_prefix("../")
+                    .unwrap_or(record_path)
+                    .trim_start_matches("./");
+                Self::index_record_path(normalized, &mut distribution);
+                if normalized
+                    .rsplit(['/', '\\'])
+                    .next()
+                    .is_some_and(Self::is_native_artifact_file_name)
+                {
+                    distribution.ships_native_artifacts = true;
+                }
+                if Self::is_top_level_pth_path(normalized) {
+                    distribution.installs_startup_hooks = true;
+                    distribution.claimed_pth_files.insert(normalized.to_owned());
+                }
+            }
+        }
+
+        // Inference runs last so declared ownership (top_level.txt, Import-Name,
+        // installed-files.txt) always takes precedence
+        Self::infer_import_root_from_name(&mut distribution, egg_info_dir, incomplete);
+
+        distribution
+    }
+
+    /// Read one metadata sidecar file, distinguishing a missing file (benign: the
+    /// sidecar is optional) from an unreadable one (file-level permissions, transient
+    /// I/O errors), which must mark the ownership data incomplete so the distribution's
+    /// policy metadata is never silently treated as absent.
+    fn read_metadata_sidecar(path: &Path, incomplete: &mut bool) -> Option<String> {
+        match std::fs::read_to_string(path) {
+            Ok(content) => Some(content),
+            Err(error) => {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    *incomplete = true;
+                }
+                None
+            }
+        }
+    }
+
+    /// Add the import roots declared in a metadata directory's `top_level.txt`.
+    fn index_top_level_declarations(
+        metadata_dir: &Path,
+        distribution: &mut DistributionInfo,
+        incomplete: &mut bool,
+    ) {
+        let top_level_file = metadata_dir.join("top_level.txt");
+        if let Some(top_level) = Self::read_metadata_sidecar(&top_level_file, incomplete) {
+            for line in top_level.lines() {
+                let import_root = line.trim();
+                if !import_root.is_empty() {
+                    distribution
+                        .declared_prefixes
+                        .insert(import_root.to_owned());
+                }
+            }
+        }
+    }
+
+    /// Record whether a metadata directory declares runtime-discovered entry points.
+    ///
+    /// `console_scripts`/`gui_scripts` groups are installer-generated script shims and
+    /// do not require the distribution at runtime; any other group is plugin metadata
+    /// that consumers discover through `importlib.metadata.entry_points()`.
+    fn index_entry_points(
+        metadata_dir: &Path,
+        distribution: &mut DistributionInfo,
+        incomplete: &mut bool,
+    ) {
+        let entry_points_file = metadata_dir.join("entry_points.txt");
+        let Some(entry_points) = Self::read_metadata_sidecar(&entry_points_file, incomplete) else {
+            return;
+        };
+        for line in entry_points.lines() {
+            let line = line.trim();
+            if let Some(group) = line
+                .strip_prefix('[')
+                .and_then(|rest| rest.strip_suffix(']'))
+                && !matches!(group.trim(), "console_scripts" | "gui_scripts")
+            {
+                distribution.has_runtime_entry_points = true;
+                return;
+            }
+        }
+    }
+
+    /// Infer a distribution's import root from its name when the metadata declares
+    /// none (no `Import-Name`, `top_level.txt`, or installed-files listing):
+    /// installers conventionally place a module matching the underscore-normalized
+    /// distribution name beside the metadata directory.
+    ///
+    /// The inference is verified against the filesystem: when no matching package
+    /// directory or module file exists beside the metadata (project and import names
+    /// differ, e.g. `beautifulsoup4` providing `bs4`), ownership is unknowable and
+    /// the index is marked incomplete instead of claiming a wrong prefix.
+    fn infer_import_root_from_name(
+        distribution: &mut DistributionInfo,
+        metadata_dir: &Path,
+        incomplete: &mut bool,
+    ) {
+        if !distribution.declared_prefixes.is_empty()
+            || !distribution.record_imports.is_empty()
+            || distribution.name.is_empty()
+        {
+            return;
+        }
+        use cow_utils::CowUtils;
+        let inferred = distribution.name.cow_replace('-', "_").into_owned();
+        let root = metadata_dir.parent().unwrap_or(metadata_dir);
+        if root.join(&inferred).is_dir() || root.join(format!("{inferred}.py")).is_file() {
+            distribution.declared_prefixes.insert(inferred);
+        } else {
+            // The distribution provides an import name that cannot be derived from
+            // its project name; the index must not be trusted to prove absence of
+            // ownership for any package in this root
+            *incomplete = true;
+        }
+    }
+
+    /// Parse a legacy `requires.txt` sidecar into `Requires-Dist`-equivalent entries.
+    ///
+    /// Sections scope their entries: `[extra]` maps to `; extra == "extra"`,
+    /// `[:marker]` to `; marker`, and `[extra:marker]` to both conditions combined.
+    fn index_requires_txt(
+        egg_info_dir: &Path,
+        distribution: &mut DistributionInfo,
+        incomplete: &mut bool,
+    ) {
+        let requires_file = egg_info_dir.join("requires.txt");
+        let Some(requires) = Self::read_metadata_sidecar(&requires_file, incomplete) else {
+            return;
+        };
+        let mut section: Option<String> = None;
+        for line in requires.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some(header) = line
+                .strip_prefix('[')
+                .and_then(|rest| rest.strip_suffix(']'))
+            {
+                section = Some(header.trim().to_owned());
+                continue;
+            }
+            let entry = match section.as_deref() {
+                None | Some("") => line.to_owned(),
+                Some(header) => {
+                    let (extra, marker) = header
+                        .split_once(':')
+                        .map_or((header, ""), |(extra, marker)| (extra, marker));
+                    let mut conditions: Vec<String> = Vec::new();
+                    if !extra.trim().is_empty() {
+                        conditions.push(format!("extra == \"{}\"", extra.trim()));
+                    }
+                    if !marker.trim().is_empty() {
+                        conditions.push(format!("({})", marker.trim()));
+                    }
+                    if conditions.is_empty() {
+                        line.to_owned()
+                    } else {
+                        format!("{line}; {}", conditions.join(" and "))
+                    }
+                }
+            };
+            distribution.requires_dist.push(entry);
+        }
+    }
+
+    /// Extract the first CSV field of an installed-files `RECORD` line.
+    ///
+    /// PEP 376 `RECORD` files are CSV: paths containing commas are double-quoted with
+    /// `""` escapes, so a plain `split(',')` would truncate them.
+    fn record_line_first_field(line: &str) -> String {
+        if !line.starts_with('"') {
+            return line.split(',').next().unwrap_or("").to_owned();
+        }
+        let mut field = String::new();
+        let mut chars = line[1..].chars();
+        while let Some(character) = chars.next() {
+            if character == '"' {
+                match chars.next() {
+                    // An escaped quote ("") inside a quoted field
+                    Some('"') => field.push('"'),
+                    // The closing quote: the field ends here
+                    _ => break,
+                }
+            } else {
+                field.push(character);
+            }
+        }
+        field
+    }
+
+    /// Add Core Metadata declarations (import names, distribution name, requirement
+    /// specifiers) to a distribution's ownership record. Parsing stops at the first
+    /// empty line: Core Metadata is RFC 822, and the free-text description that follows
+    /// must not be parsed as headers. Folded headers (continuation lines starting with
+    /// whitespace) are unfolded before parsing.
+    fn index_distribution_metadata(metadata: &str, distribution: &mut DistributionInfo) {
+        let mut logical_lines: Vec<String> = Vec::new();
         for line in metadata.lines() {
+            if line.is_empty() {
+                break;
+            }
+            if line.starts_with([' ', '\t'])
+                && let Some(previous) = logical_lines.last_mut()
+            {
+                // RFC 822 folded header: the continuation belongs to the previous line
+                previous.push(' ');
+                previous.push_str(line.trim_start());
+                continue;
+            }
+            logical_lines.push(line.to_owned());
+        }
+
+        for line in &logical_lines {
             let Some((header, value)) = line.split_once(':') else {
                 continue;
             };
-            if !header.eq_ignore_ascii_case("Import-Name")
-                && !header.eq_ignore_ascii_case("Import-Namespace")
+            if header.eq_ignore_ascii_case("Name") {
+                value.trim().clone_into(&mut distribution.name);
+            } else if header.eq_ignore_ascii_case("Version") {
+                let version = value.trim();
+                if !version.is_empty() {
+                    distribution.version = Some(version.to_owned());
+                }
+            } else if header.eq_ignore_ascii_case("Requires-Python") {
+                let specifier = value.trim();
+                if !specifier.is_empty() {
+                    distribution.requires_python = Some(specifier.to_owned());
+                }
+            } else if header.eq_ignore_ascii_case("Requires-Dist") {
+                let requirement = value.trim();
+                if !requirement.is_empty() {
+                    // A malformed or unsupported dependency declaration cannot
+                    // be carried into requirements when the distribution is
+                    // bundled: mark the metadata unsafe so the owner stays
+                    // external and the installer validates it instead
+                    if <pep508_rs::Requirement<pep508_rs::VerbatimUrl> as std::str::FromStr>::from_str(
+                        requirement,
+                    )
+                    .is_err()
+                    {
+                        distribution.unparsable_requirements = true;
+                    }
+                    distribution.requires_dist.push(requirement.to_owned());
+                }
+            } else if header.eq_ignore_ascii_case("Import-Name")
+                || header.eq_ignore_ascii_case("Import-Namespace")
             {
-                continue;
-            }
-            let prefix = value.split(';').next().unwrap_or("").trim();
-            if !prefix.is_empty() {
-                index.declared_prefixes.insert(prefix.to_owned());
+                let prefix = value.split(';').next().unwrap_or("").trim();
+                if !prefix.is_empty() {
+                    distribution.declared_prefixes.insert(prefix.to_owned());
+                }
             }
         }
     }
 
     /// Add import paths implied by one installed distribution `RECORD` entry.
-    fn index_record_path(record_path: &str, index: &mut DistributionOwnershipIndex) {
+    fn index_record_path(record_path: &str, distribution: &mut DistributionInfo) {
         let normalized = record_path.cow_replace('\\', "/");
         if normalized.starts_with('/')
             || normalized
@@ -1435,14 +5848,14 @@ impl ModuleResolver {
         let mut import_parts = Vec::new();
         for directory in components {
             import_parts.push(directory);
-            index.record_imports.insert(import_parts.join("."));
+            distribution.record_imports.insert(import_parts.join("."));
         }
 
         if let Some((module_name, _)) = file_name.split_once('.')
             && !module_name.is_empty()
         {
             import_parts.push(module_name);
-            index.record_imports.insert(import_parts.join("."));
+            distribution.record_imports.insert(import_parts.join("."));
         }
     }
 
@@ -1586,8 +5999,16 @@ impl ModuleResolver {
             self.canonicalize_path(joined)
         };
 
-        // Find which search directory (entry dir, PYTHONPATH, or src) contains this file
-        let search_dirs = self.get_search_directories();
+        // Find which root contains this file. Under third-party bundling, site-packages
+        // roots participate as well so relative imports inside bundled dependencies
+        // resolve to absolute module names; they are consulted first because they may be
+        // nested inside a search directory (e.g. a virtualenv beside the entry file),
+        // whose prefix would otherwise win and yield a mangled module name.
+        let mut search_dirs = Vec::new();
+        if self.config.bundle_third_party() {
+            search_dirs.extend(self.get_virtualenv_site_packages_search_directories(None));
+        }
+        search_dirs.extend(self.get_search_directories());
         log::trace!(
             "path_to_module_parts: absolute_file_path={}, search_dirs={:?}",
             absolute_file_path.display(),
@@ -2017,16 +6438,71 @@ mod tests {
     fn test_distribution_metadata_import_headers_are_case_insensitive() {
         let metadata = "\
 Metadata-Version: 2.5
+name: mixed-case-distribution
 import-name: lower_case.module
 IMPORT-NAMESPACE: UPPER_CASE
+requires-python: >=3.8
+requires-dist: helper-dependency>=1
 ";
 
-        let mut index = DistributionOwnershipIndex::default();
-        ModuleResolver::index_distribution_metadata(metadata, &mut index);
+        let mut distribution = DistributionInfo::default();
+        ModuleResolver::index_distribution_metadata(metadata, &mut distribution);
 
-        assert!(index.owns_import("lower_case.module.child"));
-        assert!(index.owns_import("UPPER_CASE.child"));
-        assert!(!index.owns_import("unrelated"));
+        assert!(distribution.owns_import("lower_case.module.child"));
+        assert!(distribution.owns_import("UPPER_CASE.child"));
+        assert!(!distribution.owns_import("unrelated"));
+        assert_eq!(distribution.name, "mixed-case-distribution");
+        assert_eq!(distribution.requires_python.as_deref(), Some(">=3.8"));
+        assert_eq!(distribution.requires_dist, vec!["helper-dependency>=1"]);
+    }
+
+    /// Core Metadata is RFC 822: header-like lines in the free-text description after
+    /// the first empty line must not be parsed as headers.
+    #[test]
+    fn test_distribution_metadata_parsing_stops_at_description() {
+        let metadata = "\
+Metadata-Version: 2.5
+Name: real-name
+Import-Name: real_module
+
+This README documents the package.
+Requires-Python: >=3.13
+Requires-Dist: injected-dependency
+Name: other-name
+Import-Name: injected_module
+";
+
+        let mut distribution = DistributionInfo::default();
+        ModuleResolver::index_distribution_metadata(metadata, &mut distribution);
+
+        assert_eq!(distribution.name, "real-name");
+        assert_eq!(distribution.requires_python, None);
+        assert!(distribution.requires_dist.is_empty());
+        assert!(distribution.owns_import("real_module"));
+        assert!(!distribution.owns_import("injected_module"));
+    }
+
+    /// RFC 822 folded headers (continuation lines starting with whitespace) are
+    /// unfolded before parsing, so multi-line `Requires-Dist` markers survive.
+    #[test]
+    fn test_distribution_metadata_unfolds_continuation_lines() {
+        let metadata = "\
+Metadata-Version: 2.5
+Name: folded-name
+Requires-Dist: folded-dep;
+  python_version < \"3.12\"
+Import-Name: folded_module
+";
+
+        let mut distribution = DistributionInfo::default();
+        ModuleResolver::index_distribution_metadata(metadata, &mut distribution);
+
+        assert_eq!(
+            distribution.requires_dist,
+            vec!["folded-dep; python_version < \"3.12\""],
+            "folded Requires-Dist headers must be unfolded into one logical line"
+        );
+        assert!(distribution.owns_import("folded_module"));
     }
 
     #[test]
@@ -2625,6 +7101,3148 @@ IMPORT-NAMESPACE: UPPER_CASE
             resolver.classify_import("test_module").origin,
             ImportOrigin::FirstParty,
             "Should classify test_module as first-party"
+        );
+
+        Ok(())
+    }
+
+    /// Create a fake virtualenv with a pure-Python distribution and a distribution that
+    /// ships native extension artifacts, returning the site-packages directory.
+    fn create_bundle_third_party_virtualenv(virtualenv: &Path) -> Result<PathBuf> {
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+
+        // Pure-Python package whose __init__.py uses a relative import
+        create_test_file(
+            &site_packages.join(format!(
+                "pure_package/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "from .helpers import helper\nVALUE = 'pure'\n",
+        )?;
+        create_test_file(
+            &site_packages.join("pure_package/helpers.py"),
+            "def helper():\n    return 'helper'\n",
+        )?;
+
+        // Package with a native extension buried in a subdirectory
+        create_test_file(
+            &site_packages.join(format!(
+                "native_package/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "",
+        )?;
+        create_test_file(
+            &site_packages.join("native_package/_internals/speedups.cpython-312-test.so"),
+            "",
+        )?;
+
+        Ok(site_packages)
+    }
+
+    /// Build a resolver with third-party bundling enabled against a fake virtualenv.
+    fn bundle_third_party_resolver(virtualenv: &Path) -> Result<ModuleResolver> {
+        let config = Config {
+            bundle_third_party: Some(true),
+            ..Default::default()
+        };
+        let virtualenv_path = virtualenv.to_string_lossy();
+        ModuleResolver::new_with_overrides(config, Some(""), Some(virtualenv_path.as_ref()))
+    }
+
+    /// Multiple `lib/pythonX.Y/site-packages` directories in one environment
+    /// resolve deterministically: the target version's directory wins over
+    /// both older and newer siblings regardless of `read_dir` order.
+    #[test]
+    fn test_bundle_third_party_prefers_target_version_site_packages() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        for minor in ["3.11", "3.12", "3.13"] {
+            create_test_file(
+                &virtualenv.join(format!(
+                    "lib/python{minor}/site-packages/dup_pkg/{}",
+                    crate::python::constants::INIT_FILE
+                )),
+                &format!("VALUE = '{minor}'\n"),
+            )?;
+            create_test_file(
+                &virtualenv.join(format!(
+                    "lib/python{minor}/site-packages/dup_pkg-1.0.dist-info/METADATA"
+                )),
+                "Metadata-Version: 2.5\nName: dup-pkg\nVersion: 1.0\nImport-Name: dup_pkg\n",
+            )?;
+        }
+        let mut config = Config {
+            bundle_third_party: Some(true),
+            ..Default::default()
+        };
+        config.set_target_version("py312".to_owned())?;
+        let virtualenv_path = virtualenv.to_string_lossy();
+        let resolver =
+            ModuleResolver::new_with_overrides(config, Some(""), Some(virtualenv_path.as_ref()))?;
+
+        assert_eq!(
+            resolver.resolve_module_path("dup_pkg")?,
+            Some(
+                virtualenv
+                    .join(format!(
+                        "lib/python3.12/site-packages/dup_pkg/{}",
+                        crate::python::constants::INIT_FILE
+                    ))
+                    .canonicalize()?
+            ),
+            "the target version's site-packages must win over newer and older siblings"
+        );
+
+        Ok(())
+    }
+
+    /// Fallback environment discovery searches the entry file's ancestors: a
+    /// nested source layout (`/project/src/main.py` with `/project/.venv`)
+    /// finds the project environment even when Cribo runs from elsewhere. The
+    /// nearest ancestor containing an environment stops the upward search.
+    #[test]
+    fn test_bundle_third_party_finds_virtualenv_in_entry_ancestors() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let project = temp_dir.path().join("project");
+
+        // Conventional project environment above the entry directory, plus an
+        // unrelated one even higher that must NOT win over the nearest
+        create_test_file(
+            &project.join(".venv/lib/python3.12/site-packages/ancestor_pkg/__init__.py"),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &temp_dir
+                .path()
+                .join(".venv/lib/python3.12/site-packages/outer_pkg/__init__.py"),
+            "VALUE = 1\n",
+        )?;
+
+        // Nested source layout: the entry lives below the project root
+        let entry_dir = project.join("src");
+        create_test_file(&entry_dir.join("main.py"), "import ancestor_pkg\n")?;
+
+        let discovered = ModuleResolver::fallback_virtualenv_paths(None, Some(entry_dir.as_path()));
+        assert_eq!(
+            discovered,
+            vec![project.join(".venv")],
+            "the nearest ancestor environment must be discovered, and the upward search must \
+             stop there"
+        );
+
+        // With a caller-directory environment too, the entry project's wins
+        let caller = temp_dir.path().join("caller");
+        create_test_file(
+            &caller.join(".venv/lib/python3.12/site-packages/caller_pkg/__init__.py"),
+            "VALUE = 1\n",
+        )?;
+        let discovered = ModuleResolver::fallback_virtualenv_paths(
+            Some(caller.as_path()),
+            Some(entry_dir.as_path()),
+        );
+        assert_eq!(
+            discovered,
+            vec![project.join(".venv"), caller.join(".venv")],
+            "the entry project's environment must be ordered before the caller's"
+        );
+
+        Ok(())
+    }
+
+    /// Pure-Python site-packages distributions are classified for bundling and resolve
+    /// to real site-packages paths when third-party bundling is enabled.
+    #[test]
+    fn test_bundle_third_party_includes_pure_python_distribution() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = create_bundle_third_party_virtualenv(&virtualenv)?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let classification = resolver.classify_import("pure_package");
+        assert_eq!(classification.origin, ImportOrigin::ThirdParty);
+        assert_eq!(classification.source, ImportSource::Python);
+        assert_eq!(classification.bundle, BundleDisposition::Include);
+
+        let submodule = resolver.classify_import("pure_package.helpers");
+        assert_eq!(submodule.bundle, BundleDisposition::Include);
+
+        // Resolution must produce actual site-packages paths for bundled modules
+        assert_eq!(
+            resolver.resolve_module_path("pure_package")?,
+            Some(
+                site_packages
+                    .join(format!(
+                        "pure_package/{}",
+                        crate::python::constants::INIT_FILE
+                    ))
+                    .canonicalize()?
+            )
+        );
+        assert_eq!(
+            resolver.resolve_module_path("pure_package.helpers")?,
+            Some(
+                site_packages
+                    .join("pure_package/helpers.py")
+                    .canonicalize()?
+            )
+        );
+
+        // Relative imports inside the bundled package resolve against site-packages
+        let package_init = site_packages.join(format!(
+            "pure_package/{}",
+            crate::python::constants::INIT_FILE
+        ));
+        assert_eq!(
+            resolver.resolve_module_path_with_context(".helpers", Some(&package_init))?,
+            Some(
+                site_packages
+                    .join("pure_package/helpers.py")
+                    .canonicalize()?
+            ),
+            "relative imports inside bundled site-packages modules must resolve"
+        );
+
+        Ok(())
+    }
+
+    /// A distribution shipping native extension artifacts anywhere inside its package
+    /// directory stays external as a whole, even when its `__init__.py` is pure Python.
+    #[test]
+    fn test_bundle_third_party_keeps_native_distribution_external() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        create_bundle_third_party_virtualenv(&virtualenv)?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        // Even though native_package/__init__.py is pure Python, the package ships a
+        // native artifact in a nested directory, so the whole package stays external
+        let classification = resolver.classify_import("native_package");
+        assert_eq!(classification.origin, ImportOrigin::ThirdParty);
+        assert_eq!(classification.source, ImportSource::Python);
+        assert_eq!(classification.bundle, BundleDisposition::External);
+        assert!(
+            resolver.resolve_module_path("native_package")?.is_none(),
+            "external native-extension packages must not resolve to bundle paths"
+        );
+
+        Ok(())
+    }
+
+    /// `known_third_party` entries force listed packages external even when pure Python.
+    #[test]
+    fn test_bundle_third_party_respects_known_third_party_override() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        create_bundle_third_party_virtualenv(&virtualenv)?;
+
+        let config = Config {
+            bundle_third_party: Some(true),
+            known_third_party: IndexSet::from(["pure_package".to_owned()]),
+            ..Default::default()
+        };
+        let virtualenv_path = virtualenv.to_string_lossy();
+        let resolver =
+            ModuleResolver::new_with_overrides(config, Some(""), Some(virtualenv_path.as_ref()))?;
+
+        // Explicit known_third_party acts as a manual "keep external" escape hatch
+        let classification = resolver.classify_import("pure_package");
+        assert_eq!(classification.bundle, BundleDisposition::External);
+        assert!(resolver.resolve_module_path("pure_package")?.is_none());
+
+        // The escape hatch covers submodules of the configured package root as well
+        let submodule = resolver.classify_import("pure_package.helpers");
+        assert_eq!(submodule.origin, ImportOrigin::ThirdParty);
+        assert_eq!(submodule.bundle, BundleDisposition::External);
+        assert!(
+            resolver
+                .resolve_module_path("pure_package.helpers")?
+                .is_none(),
+            "submodules of known_third_party roots must stay external"
+        );
+
+        Ok(())
+    }
+
+    /// Packages reading their own installed distribution metadata at runtime
+    /// (`importlib.metadata`, `pkg_resources`) stay external because that metadata is
+    /// unavailable once the source is inlined into a bundle.
+    #[test]
+    fn test_bundle_third_party_keeps_metadata_dependent_distribution_external() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        // Parenthesized multiline import form: detection must be AST-based
+        create_test_file(
+            &site_packages.join(format!(
+                "metadata_package/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "from importlib import (\n    metadata,\n)\n__version__ = \
+             metadata.version('metadata-package')\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let classification = resolver.classify_import("metadata_package");
+        assert_eq!(classification.origin, ImportOrigin::ThirdParty);
+        assert_eq!(classification.bundle, BundleDisposition::External);
+        assert!(
+            resolver.resolve_module_path("metadata_package")?.is_none(),
+            "metadata-dependent packages must not be inlined"
+        );
+
+        Ok(())
+    }
+
+    /// The installed-package API import detector recognizes all valid import forms and
+    /// ignores non-import mentions of the API names.
+    #[test]
+    fn test_distribution_metadata_import_detection() {
+        // Positive: every import form that makes the installed distribution a runtime
+        // dependency (dist-info metadata or adjacent package data files)
+        for source in [
+            "import importlib.metadata\n",
+            "import importlib.metadata as ilm\n",
+            "from importlib import metadata\n",
+            "from importlib import (\n    metadata,\n)\n",
+            "from importlib import util, metadata\n",
+            "from importlib.metadata import version\n",
+            "import importlib_metadata\n",
+            "import pkg_resources\n",
+            "from pkg_resources import get_distribution\n",
+            "import importlib.resources\n",
+            "from importlib import resources\n",
+            "from importlib.resources import files\n",
+            "import importlib_resources\n",
+            "from importlib_resources import files\n",
+            "def lazy():\n    from importlib import metadata\n    return metadata\n",
+            // Package-data and import-machinery APIs need the installed layout
+            "import pkgutil\nDATA = pkgutil.get_data(__name__, 'data.json')\n",
+            "from pkgutil import get_data\n",
+            "import importlib.util\n",
+            "from importlib import util\n",
+            "from importlib.util import find_spec\n",
+            // Executes modules through import specs; bundled modules carry no
+            // code-providing loader
+            "import runpy\nrunpy.run_module('pkg.backend')\n",
+            "from runpy import run_module\n",
+        ] {
+            assert!(
+                ModuleResolver::python_source_blocks_bundling(source),
+                "should detect installed-package dependency in: {source:?}"
+            );
+        }
+
+        // Negative: importlib usage that does not touch installed-package data
+        for source in [
+            "import importlib\nimportlib.import_module('json')\n",
+            "'''docstring mentioning importlib.metadata and pkg_resources'''\n",
+            "# comment: importlib.metadata\nVALUE = 1\n",
+            "from .metadata import local_helper\n",
+            "from .resources import local_data\n",
+            "VALUE = 1\n",
+        ] {
+            assert!(
+                !ModuleResolver::python_source_blocks_bundling(source),
+                "should not flag: {source:?}"
+            );
+        }
+    }
+
+    /// `__file__`-relative resource access blocks bundling: after inlining,
+    /// `__file__` points at the generated bundle and adjacent assets are not shipped.
+    #[test]
+    fn test_file_dunder_resource_access_detection() {
+        for source in [
+            "from pathlib import Path\nDATA = Path(__file__).with_name('data.json').read_text()\n",
+            "import os\nHERE = os.path.dirname(__file__)\n",
+            "def load():\n    return open(__file__)\n",
+            // Package-path enumeration (plugin scans): generated namespaces receive
+            // an empty __path__
+            "for entry in __path__:\n    print(entry)\n",
+            // Loader/bytecode-cache introspection observes the installed layout
+            "CAN_LOAD = __loader__.get_data is not None\n",
+            "print(__cached__)\n",
+            // Indirect reads through the module dict
+            "F = globals()['__file__']\n",
+            "S = globals().get('__spec__')\n",
+            // PEP 562 module-level hooks: SimpleNamespace instances ignore
+            // instance attributes named __getattr__/__dir__, in EVERY binding form
+            "def __getattr__(name):\n    raise AttributeError(name)\n",
+            "__getattr__ = _lazy_hook\n",
+            "from ._lazy import hook as __getattr__\n",
+            "__getattr__: object = _lazy_hook\n",
+            "def __dir__():\n    return ['lazy_name']\n",
+            // Hooks bound inside module-level control flow still register at
+            // module scope when the branch executes
+            "if _enabled:\n    def __getattr__(name):\n        raise AttributeError(name)\n",
+            "try:\n    from ._accel import __getattr__\nexcept ImportError:\n    def \
+             __getattr__(name):\n        raise AttributeError(name)\n",
+            "with _ctx():\n    __getattr__ = _lazy_hook\n",
+            "for _ in range(1):\n    def __dir__():\n        return []\n",
+            // Header targets bind hooks at module scope too
+            "for __getattr__ in [_lazy_hook]:\n    pass\n",
+            "with _ctx() as __getattr__:\n    pass\n",
+            "try:\n    pass\nexcept Exception as __getattr__:\n    pass\n",
+            // A class named __getattr__ is a callable hook as well
+            "class __getattr__:\n    def __new__(cls, name):\n        return name\n",
+        ] {
+            assert!(
+                ModuleResolver::python_source_blocks_bundling(source),
+                "should flag __file__ resource access in: {source:?}"
+            );
+        }
+
+        for source in [
+            "'''docstring mentioning __file__'''\nVALUE = 1\n",
+            "# comment: __file__\nVALUE = 1\n",
+            "file = 'not the dunder'\nprint(file)\n",
+            // Class-level __getattr__ is ordinary Python, not a PEP 562 hook
+            "class Lazy:\n    def __getattr__(self, name):\n        return name\n",
+            // Function-local __getattr__ is an ordinary local, not a module hook
+            "def _factory():\n    def __getattr__(name):\n        return name\n    return \
+             __getattr__\n",
+            "if _enabled:\n    class Lazy:\n        def __getattr__(self, name):\n            \
+             return name\n",
+        ] {
+            assert!(
+                !ModuleResolver::python_source_blocks_bundling(source),
+                "should not flag: {source:?}"
+            );
+        }
+    }
+
+    /// Static `importlib.import_module` relative imports inside bundled site-packages
+    /// dependencies resolve through the site-packages fallback.
+    #[test]
+    fn test_bundle_third_party_resolves_importlib_static_relative_import() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = create_bundle_third_party_virtualenv(&virtualenv)?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let (resolved_name, resolved_path) = resolver
+            .resolve_importlib_static_with_context(".helpers", Some("pure_package"))
+            .expect("importlib static relative import must resolve for bundled packages");
+        assert_eq!(resolved_name, "pure_package.helpers");
+        assert_eq!(
+            resolved_path,
+            site_packages
+                .join("pure_package/helpers.py")
+                .canonicalize()?
+        );
+
+        Ok(())
+    }
+
+    /// With third-party bundling disabled (the default), pure-Python site-packages
+    /// distributions keep their previous external disposition.
+    #[test]
+    fn test_bundle_third_party_disabled_keeps_pure_distribution_external() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        create_bundle_third_party_virtualenv(&virtualenv)?;
+
+        let virtualenv_path = virtualenv.to_string_lossy();
+        let resolver = ModuleResolver::new_with_overrides(
+            Config::default(),
+            Some(""),
+            Some(virtualenv_path.as_ref()),
+        )?;
+
+        let classification = resolver.classify_import("pure_package");
+        assert_eq!(classification.bundle, BundleDisposition::External);
+        assert!(resolver.resolve_module_path("pure_package")?.is_none());
+
+        Ok(())
+    }
+
+    /// Directory symlinks inside a site-packages package are never traversed; the
+    /// package conservatively stays external because it cannot be inspected safely.
+    #[cfg(unix)]
+    #[test]
+    fn test_bundle_third_party_directory_symlink_keeps_package_external() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!(
+                "linked_package/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "",
+        )?;
+        // Symlink cycle: linked_package/loop -> linked_package
+        std::os::unix::fs::symlink(
+            site_packages.join("linked_package"),
+            site_packages.join("linked_package/loop"),
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let classification = resolver.classify_import("linked_package");
+        assert_eq!(
+            classification.bundle,
+            BundleDisposition::External,
+            "packages with directory symlinks must conservatively stay external"
+        );
+        assert!(resolver.resolve_module_path("linked_package")?.is_none());
+
+        Ok(())
+    }
+
+    /// A package ROOT that is itself a directory symlink (editable-style
+    /// installation pointing outside site-packages) stays external: resolved
+    /// module files canonicalize outside every known import root, losing the
+    /// logical package path that relative imports need.
+    #[cfg(unix)]
+    #[test]
+    fn test_bundle_third_party_symlinked_package_root_keeps_package_external() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        // Real source tree OUTSIDE site-packages
+        let source_tree = temp_dir.path().join("src/editable_pkg");
+        create_test_file(
+            &source_tree.join(crate::python::constants::INIT_FILE),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("editable_pkg-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: editable-pkg\nVersion: 1.0\nImport-Name: editable_pkg\n",
+        )?;
+        // The site-packages entry is a symlink to the external tree
+        std::os::unix::fs::symlink(&source_tree, site_packages.join("editable_pkg"))?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        assert_eq!(
+            resolver.classify_import("editable_pkg").bundle,
+            BundleDisposition::External,
+            "symlinked package roots must conservatively stay external"
+        );
+
+        Ok(())
+    }
+
+    /// A distribution whose RECORD lists native artifacts outside the import's own
+    /// package directory (e.g. a pure `frontend` package with a sibling `_backend.so`)
+    /// keeps every import it owns external.
+    #[test]
+    fn test_bundle_third_party_keeps_distribution_with_sibling_native_module_external() -> Result<()>
+    {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!("frontend/{}", crate::python::constants::INIT_FILE)),
+            "VALUE = 'frontend'\n",
+        )?;
+        create_test_file(&site_packages.join("_backend.cpython-312-test.so"), "")?;
+        create_test_file(
+            &site_packages.join("split_distribution-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: split-distribution\nVersion: 1.0\nImport-Name: \
+             frontend\nImport-Name: _backend\n",
+        )?;
+        create_test_file(
+            &site_packages.join("split_distribution-1.0.dist-info/RECORD"),
+            "frontend/__init__.py,,\n_backend.cpython-312-test.so,,\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        // The frontend package directory itself is pure Python, but its distribution
+        // ships a native sibling module, so the whole distribution stays external
+        let classification = resolver.classify_import("frontend");
+        assert_eq!(classification.origin, ImportOrigin::ThirdParty);
+        assert_eq!(
+            classification.bundle,
+            BundleDisposition::External,
+            "imports owned by native-shipping distributions must stay external"
+        );
+        assert!(resolver.resolve_module_path("frontend")?.is_none());
+
+        Ok(())
+    }
+
+    /// Extras requested for a bundled distribution (e.g. through a module-map entry
+    /// like `provider[speed]`) activate its extras-conditioned `Requires-Dist`
+    /// entries, while unrequested extras stay dropped.
+    #[test]
+    fn test_bundled_distribution_requirements_respect_requested_extras() -> Result<()> {
+        use std::str::FromStr;
+
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!("provider/{}", crate::python::constants::INIT_FILE)),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("provider-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: provider\nVersion: 1.0\nImport-Name: \
+             provider\nRequires-Dist: speed-dep; extra == \"speed\"\nRequires-Dist: docs-tool; \
+             extra == \"docs\"\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let mut bundled_imports: FxIndexMap<String, Vec<pep508_rs::ExtraName>> =
+            FxIndexMap::default();
+        bundled_imports.insert(
+            "provider".to_owned(),
+            vec![pep508_rs::ExtraName::from_str("speed").expect("valid extra name")],
+        );
+
+        let requirements = resolver.bundled_distribution_requirements(&bundled_imports);
+        assert_eq!(
+            requirements,
+            vec!["speed-dep".to_owned()],
+            "requested extras must activate their dependencies with the extra marker \
+             simplified away (pip leaves `extra` unset in requirements files); unrequested \
+             extras must not"
+        );
+
+        Ok(())
+    }
+
+    /// Distributions declaring runtime entry points (plugin metadata) stay external;
+    /// script-shim groups (`console_scripts`) alone do not prevent bundling.
+    #[test]
+    fn test_bundle_third_party_keeps_entry_point_provider_external() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        for (package, entry_points) in [
+            (
+                "plugin_provider",
+                "[myapp.plugins]\nprovider = plugin_provider:register\n",
+            ),
+            ("cli_tool", "[console_scripts]\ncli-tool = cli_tool:main\n"),
+        ] {
+            create_test_file(
+                &site_packages.join(format!("{package}/{}", crate::python::constants::INIT_FILE)),
+                "VALUE = 1\n",
+            )?;
+            create_test_file(
+                &site_packages.join(format!("{package}-1.0.dist-info/METADATA")),
+                &format!(
+                    "Metadata-Version: 2.5\nName: {package}\nVersion: 1.0\nImport-Name: \
+                     {package}\n"
+                ),
+            )?;
+            create_test_file(
+                &site_packages.join(format!("{package}-1.0.dist-info/entry_points.txt")),
+                entry_points,
+            )?;
+        }
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        assert_eq!(
+            resolver.classify_import("plugin_provider").bundle,
+            BundleDisposition::External,
+            "runtime entry-point providers must stay discoverable through metadata"
+        );
+        assert_eq!(
+            resolver.classify_import("cli_tool").bundle,
+            BundleDisposition::Include,
+            "console-script shims alone must not prevent bundling"
+        );
+
+        Ok(())
+    }
+
+    /// Sourceless bytecode packages (`.pyc` without adjacent `.py`) stay external:
+    /// Python can import them, but there is no source to inline. Regular `__pycache__`
+    /// artifacts beside sources are harmless.
+    #[test]
+    fn test_bundle_third_party_keeps_sourceless_bytecode_package_external() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        // Sourceless package: bytecode initializer without source
+        create_test_file(&site_packages.join("sourceless_pkg/__init__.pyc"), "")?;
+        create_test_file(&site_packages.join("sourceless_pkg/helper.pyc"), "")?;
+        // Ordinary package with a bytecode cache beside its sources
+        create_test_file(
+            &site_packages.join(format!(
+                "cached_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("cached_pkg/__pycache__/__init__.cpython-312.pyc"),
+            "",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        assert_eq!(
+            resolver.classify_import("sourceless_pkg").bundle,
+            BundleDisposition::External,
+            "sourceless bytecode packages must stay external"
+        );
+        assert_eq!(
+            resolver.classify_import("cached_pkg").bundle,
+            BundleDisposition::Include,
+            "__pycache__ artifacts beside sources must not prevent bundling"
+        );
+
+        Ok(())
+    }
+
+    /// A package whose contents cannot be fully inspected (unreadable subdirectory)
+    /// conservatively stays external.
+    #[cfg(unix)]
+    #[test]
+    fn test_bundle_third_party_keeps_uninspectable_package_external() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!(
+                "opaque_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        let hidden_dir = site_packages.join("opaque_pkg/hidden");
+        fs::create_dir_all(&hidden_dir)?;
+        fs::set_permissions(&hidden_dir, fs::Permissions::from_mode(0o000))?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let classification = resolver.classify_import("opaque_pkg");
+        // Restore permissions before asserting so the tempdir can be cleaned up
+        fs::set_permissions(&hidden_dir, fs::Permissions::from_mode(0o755))?;
+        assert_eq!(
+            classification.bundle,
+            BundleDisposition::External,
+            "packages that cannot be fully inspected must stay external"
+        );
+
+        Ok(())
+    }
+
+    /// A package exposing a Python file through a symlink whose target escapes the
+    /// package tree (editable or shared-source layouts) stays external: module
+    /// resolution canonicalizes the file to the outside target, losing the logical
+    /// package path that relative imports need. Intra-package symlinks are harmless.
+    #[cfg(unix)]
+    #[test]
+    fn test_bundle_third_party_keeps_escaping_symlink_package_external() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        // Shared source living outside the environment
+        let shared_source = temp_dir.path().join("shared/impl.py");
+        create_test_file(&shared_source, "VALUE = 1\n")?;
+        create_test_file(
+            &site_packages.join(format!(
+                "escaping_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "from .impl import VALUE\n",
+        )?;
+        std::os::unix::fs::symlink(&shared_source, site_packages.join("escaping_pkg/impl.py"))?;
+        // Negative control: a symlink staying inside the package tree is harmless
+        create_test_file(
+            &site_packages.join(format!(
+                "internal_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "from .alias import VALUE\n",
+        )?;
+        create_test_file(&site_packages.join("internal_pkg/real.py"), "VALUE = 1\n")?;
+        std::os::unix::fs::symlink("real.py", site_packages.join("internal_pkg/alias.py"))?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        assert_eq!(
+            resolver.classify_import("escaping_pkg").bundle,
+            BundleDisposition::External,
+            "symlinks escaping the package tree must keep the package external"
+        );
+        assert_eq!(
+            resolver.classify_import("internal_pkg").bundle,
+            BundleDisposition::Include,
+            "intra-package symlinks must not force the package external"
+        );
+
+        Ok(())
+    }
+
+    /// When the root's distribution metadata cannot be enumerated (unreadable
+    /// site-packages listing), ownership and policy metadata may be missing entirely,
+    /// so packages from that root conservatively stay external.
+    #[cfg(unix)]
+    #[test]
+    fn test_bundle_third_party_keeps_packages_external_when_metadata_unenumerable() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!(
+                "opaque_meta_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("opaque_meta_pkg-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: opaque-meta-pkg\nVersion: 1.0\nImport-Name: \
+             opaque_meta_pkg\nRequires-Dist: hidden-dep>=1\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        // Traverse-only permissions: path probes still resolve the module, but the
+        // metadata listing cannot be enumerated
+        fs::set_permissions(&site_packages, fs::Permissions::from_mode(0o311))?;
+        let classification = resolver.classify_import("opaque_meta_pkg");
+        // Restore permissions before asserting so the tempdir can be cleaned up
+        fs::set_permissions(&site_packages, fs::Permissions::from_mode(0o755))?;
+        assert_eq!(classification.origin, ImportOrigin::ThirdParty);
+        assert_eq!(
+            classification.bundle,
+            BundleDisposition::External,
+            "packages from a root whose metadata cannot be enumerated must stay external"
+        );
+
+        Ok(())
+    }
+
+    /// When a distribution's metadata directory is enumerable but a sidecar file
+    /// inside it cannot be read (file-level permissions, transient I/O errors), the
+    /// distribution's ownership and policy metadata may be silently missing, so
+    /// packages from that root conservatively stay external.
+    #[cfg(unix)]
+    #[test]
+    fn test_bundle_third_party_keeps_packages_external_when_metadata_file_unreadable() -> Result<()>
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!(
+                "opaque_file_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        let metadata_file = site_packages.join("opaque_file_pkg-1.0.dist-info/METADATA");
+        create_test_file(
+            &metadata_file,
+            "Metadata-Version: 2.5\nName: opaque-file-pkg\nVersion: 1.0\nImport-Name: \
+             opaque_file_pkg\nRequires-Dist: hidden-dep>=1\n",
+        )?;
+        fs::set_permissions(&metadata_file, fs::Permissions::from_mode(0o000))?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let classification = resolver.classify_import("opaque_file_pkg");
+        // Restore permissions before asserting so the tempdir can be cleaned up
+        fs::set_permissions(&metadata_file, fs::Permissions::from_mode(0o644))?;
+        assert_eq!(classification.origin, ImportOrigin::ThirdParty);
+        assert_eq!(
+            classification.bundle,
+            BundleDisposition::External,
+            "packages whose distribution metadata files cannot be read must stay external"
+        );
+
+        Ok(())
+    }
+
+    /// A distribution declaring a `Requires-Dist` entry that fails PEP 508
+    /// parsing stays external: its dependency edge cannot be carried into
+    /// requirements, so bundling it would silently drop a dependency.
+    #[test]
+    fn test_bundle_third_party_keeps_distribution_with_unparsable_requirements_external()
+    -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!(
+                "odd_deps_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("odd_deps_pkg-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: odd-deps-pkg\nVersion: 1.0\nImport-Name: \
+             odd_deps_pkg\nRequires-Dist: hidden dep !! not-pep508\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        assert_eq!(
+            resolver.classify_import("odd_deps_pkg").bundle,
+            BundleDisposition::External,
+            "distributions with unparsable Requires-Dist metadata must stay external"
+        );
+
+        Ok(())
+    }
+
+    /// A `.dist-info` with a readable `RECORD` but no `METADATA` names a
+    /// distribution whose identity and requirement constraints are unknown:
+    /// its imports stay external so the dependency is not silently dropped.
+    #[test]
+    fn test_bundle_third_party_keeps_distribution_without_core_metadata_external() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!(
+                "headless_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        // RECORD claims ownership, but the mandatory METADATA file is absent
+        create_test_file(
+            &site_packages.join("headless_pkg-1.0.dist-info/RECORD"),
+            "headless_pkg/__init__.py,sha256=abc,20\nheadless_pkg-1.0.dist-info/RECORD,,\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let classification = resolver.classify_import("headless_pkg");
+        assert_eq!(classification.origin, ImportOrigin::ThirdParty);
+        assert_eq!(
+            classification.bundle,
+            BundleDisposition::External,
+            "distributions without their core-metadata file must stay external"
+        );
+
+        Ok(())
+    }
+
+    /// Distributions whose metadata bundled code queries at runtime (e.g.
+    /// `importlib.metadata.version("provider")` in the entry) stay external, and
+    /// recording a query invalidates earlier bundling decisions.
+    #[test]
+    fn test_bundle_third_party_keeps_queried_distribution_external() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!("provider/{}", crate::python::constants::INIT_FILE)),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("provider-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: provider\nVersion: 1.0\nImport-Name: provider\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        // Bundleable until a metadata query is observed, external afterwards
+        assert_eq!(
+            resolver.classify_import("provider").bundle,
+            BundleDisposition::Include
+        );
+        resolver.record_queried_distributions(["Provider".to_owned()]);
+        assert_eq!(
+            resolver.classify_import("provider").bundle,
+            BundleDisposition::External,
+            "queried distributions must stay installed (normalized name matching)"
+        );
+        assert!(resolver.resolve_module_path("provider")?.is_none());
+
+        Ok(())
+    }
+
+    /// The metadata-query scanner collects literal requirement strings from the
+    /// supported query call forms — verbatim, so constraints and extras survive.
+    /// Callees resolve through import bindings, so unrelated callables sharing a
+    /// final name (e.g. `provider.version(...)`) record nothing; resolution is
+    /// deliberately conservative (a union of every binding a name ever holds), so
+    /// locally shadowed aliases still record their queries — over-collection only
+    /// keeps an extra distribution installed, while under-collection would break
+    /// isolated deployments.
+    #[test]
+    fn test_queried_distribution_names_collection() {
+        let source = "\
+from importlib.metadata import version
+from importlib import metadata as md
+import importlib.metadata
+import pkg_resources
+import provider
+
+print(version('direct-name'))
+print(importlib.metadata.distribution('attr-name'))
+print(md.requires('module-alias-name'))
+print(pkg_resources.get_distribution('legacy-name'))
+print(importlib.metadata.version(distribution_name='keyword-name'))
+print(pkg_resources.require('constrained-name>=2', 'variadic-name[extra]<3'))
+print(unrelated('not', 'a', 'query'))
+print(provider.version('provider'))
+print(provider.metadata('provider'))
+files = provider.files('provider')
+
+
+def local_collision():
+    import json as md
+
+    return md.dumps({})
+
+
+def local_shadow(version):
+    return version('shadowed-name')
+
+
+def default_query(md=md.version('default-name')):
+    # The default expression executes in the enclosing scope at definition
+    # time, where ``md`` is still the metadata alias; the parameter shadows it
+    # only inside the body
+    return md.version('body-shadowed-name')
+
+
+class ClassOrder:
+    # Class namespaces bind in source order: this use precedes the rebinding
+    class_version = md.version('class-order-name')
+    md = str
+    hidden = md.version('class-hidden-name')
+
+
+print(local_collision(), local_shadow(str))
+print(md.version('post-collision-name'))
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert_eq!(
+            usage.requirements,
+            vec![
+                "direct-name",
+                "attr-name",
+                "module-alias-name",
+                "legacy-name",
+                "keyword-name",
+                "constrained-name>=2",
+                "variadic-name[extra]<3",
+                // Shadow-adjacent queries over-collect by design: the union
+                // resolution never risks missing a real query
+                "shadowed-name",
+                "default-name",
+                "body-shadowed-name",
+                "class-order-name",
+                "class-hidden-name",
+                "post-collision-name"
+            ]
+        );
+        assert!(
+            !usage.enumerates_distributions,
+            "name-taking queries are not global enumeration"
+        );
+    }
+
+    /// Global metadata enumeration (`distributions()`, `packages_distributions()`)
+    /// is detected through the same scoped callee resolution, while unrelated
+    /// same-named callables are ignored.
+    #[test]
+    fn test_global_distribution_enumeration_detection() {
+        let source = "\
+import importlib.metadata
+
+print(importlib.metadata.packages_distributions())
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        assert!(queried_distribution_requirements(parsed.syntax()).enumerates_distributions);
+
+        let source = "\
+from importlib.metadata import distributions
+
+print(list(distributions()))
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        assert!(queried_distribution_requirements(parsed.syntax()).enumerates_distributions);
+
+        let source = "\
+import provider
+
+print(provider.distributions())
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        assert!(!queried_distribution_requirements(parsed.syntax()).enumerates_distributions);
+    }
+
+    /// Scope-resolution refinements of the metadata-query scanner: `global`
+    /// declarations, single-assignment constants, module-level source order, and the
+    /// conservative fallback for unresolvable arguments.
+    #[test]
+    fn test_queried_distribution_scope_refinements() {
+        // `global md` means the later assignment binds the MODULE scope: the query
+        // resolves through the module-level alias and must be recorded
+        let source = "\
+import importlib.metadata as md
+
+
+def refresh():
+    global md
+    result = md.version('global-name')
+    md = None
+    return result
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert_eq!(usage.requirements, vec!["global-name"]);
+        assert!(!usage.enumerates_distributions);
+
+        // Single-assignment string constants resolve as query arguments
+        let source = "\
+from importlib.metadata import version
+
+NAME = 'constant-name'
+print(version(NAME))
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert_eq!(usage.requirements, vec!["constant-name"]);
+        assert!(!usage.enumerates_distributions);
+
+        // A recognized query with an unresolvable argument may target ANY installed
+        // distribution: everything conservatively stays observable
+        let source = "\
+from importlib.metadata import version
+
+
+def query(name):
+    return version(name)
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        assert!(queried_distribution_requirements(parsed.syntax()).enumerates_distributions);
+
+        // Module-level source order: a query BEFORE a later rebinding import still
+        // resolves through the earlier alias
+        let source = "\
+import importlib.metadata as md
+
+VERSION = md.version('early-name')
+import json as md
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert_eq!(usage.requirements, vec!["early-name"]);
+
+        // Function bodies resolve module names at call time: the FINAL module
+        // binding applies even when the function is defined before the import
+        let source = "\
+def read_version():
+    return md.version('deferred-name')
+
+
+import importlib.metadata as md
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert_eq!(usage.requirements, vec!["deferred-name"]);
+
+        // A function may ALSO be called before a later module rebinding: both the
+        // source-order and deferred module views apply to function-body lookups
+        let source = "\
+import importlib.metadata as md
+
+
+def read():
+    return md.version('called-before-rebinding')
+
+
+read()
+import json as md
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert_eq!(usage.requirements, vec!["called-before-rebinding"]);
+
+        // A constant assignment colliding with a parameter must not override the
+        // parameter shadow: the earlier call sees the caller-supplied value, so the
+        // argument is unresolvable and everything conservatively stays observable
+        let source = "\
+from importlib.metadata import version
+
+
+def read(name):
+    result = version(name)
+    name = 'provider'
+    return result
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert!(usage.requirements.is_empty());
+        assert!(usage.enumerates_distributions);
+    }
+
+    /// The union-based scanner is conservative by construction: conditional
+    /// aliases, intermediate bindings, `nonlocal` declarations, imported
+    /// enumeration objects, wildcard metadata imports, and assigned query
+    /// callables can never under-collect.
+    #[test]
+    fn test_queried_distribution_conservative_union() {
+        // A conditional rebinding unions with the metadata alias instead of
+        // replacing it: the query is still recognized
+        let source = "\
+import importlib.metadata as md
+
+if False:
+    import json as md
+print(md.version('conditional-name'))
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert!(usage.requirements.contains(&"conditional-name".to_owned()));
+
+        // A function called while an INTERMEDIATE module binding is live: the
+        // union holds every binding the name ever receives, so neither the
+        // definition-time nor the final binding can veto the metadata alias
+        let source = "\
+import json as md
+
+
+def read():
+    return md.version('intermediate-name')
+
+
+import importlib.metadata as md
+
+read()
+import json as md
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert!(usage.requirements.contains(&"intermediate-name".to_owned()));
+
+        // `nonlocal` resolves through the enclosing function's import; the
+        // declaration must not shadow the binding away
+        let source = "\
+def outer():
+    from importlib.metadata import version
+
+    def inner():
+        nonlocal version
+        result = version('nonlocal-name')
+        version = None
+        return result
+
+    return inner()
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert!(usage.requirements.contains(&"nonlocal-name".to_owned()));
+
+        // Iterating a directly imported (and aliased) enumeration object
+        // observes every installed distribution
+        let source = "\
+from pkg_resources import working_set as ws
+
+for dist in ws:
+    print(dist)
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        assert!(queried_distribution_requirements(parsed.syntax()).enumerates_distributions);
+
+        // A wildcard import from a metadata module binds the whole query API
+        let source = "\
+from importlib.metadata import *
+
+print(version('wildcard-name'))
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert!(usage.requirements.contains(&"wildcard-name".to_owned()));
+
+        // A query callable escaping into an assignment may perform arbitrary
+        // lookups later: everything conservatively stays observable
+        let source = "\
+import importlib.metadata as md
+
+query = md.version
+print(query('assigned-name'))
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        assert!(queried_distribution_requirements(parsed.syntax()).enumerates_distributions);
+    }
+
+    /// `Distribution` class access: `from_name` is a recognized name-taking query
+    /// (module-qualified, imported, or wildcard-bound), `discover` enumerates, and
+    /// any other reference to the class conservatively flags global observation.
+    #[test]
+    fn test_queried_distribution_class_lookups() {
+        let source = "\
+import importlib.metadata as md
+
+print(md.Distribution.from_name('dist-name').version)
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert_eq!(usage.requirements, vec!["dist-name"]);
+        assert!(!usage.enumerates_distributions);
+
+        let source = "\
+from importlib.metadata import Distribution
+
+print(Distribution.from_name('cls-name').version)
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert_eq!(usage.requirements, vec!["cls-name"]);
+        assert!(!usage.enumerates_distributions);
+
+        let source = "\
+from importlib.metadata import *
+
+print(Distribution.from_name('wild-cls-name').version)
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert_eq!(usage.requirements, vec!["wild-cls-name"]);
+
+        // Distribution.discover() observes every installed distribution
+        let source = "\
+from importlib_metadata import Distribution
+
+for dist in Distribution.discover():
+    print(dist)
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        assert!(queried_distribution_requirements(parsed.syntax()).enumerates_distributions);
+
+        // Any OTHER class reference (aliasing, Distribution.at, escaping) may
+        // perform arbitrary lookups: conservatively global
+        let source = "\
+import importlib.metadata as md
+
+loader = md.Distribution
+print(loader.from_name('hidden-name'))
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        assert!(queried_distribution_requirements(parsed.syntax()).enumerates_distributions);
+    }
+
+    /// Metadata access that escapes syntactic attribute analysis — `getattr` on a
+    /// metadata module, aliasing the module object — conservatively flags global
+    /// observation, and `importlib.reload` records module-object targets so they
+    /// keep their installed import spec.
+    #[test]
+    fn test_queried_distribution_dynamic_access_and_reload() {
+        // getattr retrieval of a query function
+        let source = "\
+import importlib.metadata as md
+
+query = getattr(md, 'version')
+print(query('provider'))
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        assert!(queried_distribution_requirements(parsed.syntax()).enumerates_distributions);
+
+        // Aliasing the metadata module object
+        let source = "\
+import importlib.metadata as md
+
+alias = md
+print(alias.version('provider'))
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        assert!(queried_distribution_requirements(parsed.syntax()).enumerates_distributions);
+
+        // Member access through the module is NOT a bare module reference
+        let source = "\
+import importlib.metadata as md
+
+try:
+    print(md.version('member-name'))
+except md.PackageNotFoundError:
+    raise SystemExit('missing')
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert_eq!(usage.requirements, vec!["member-name"]);
+        assert!(!usage.enumerates_distributions);
+
+        // reload records the module-object target (through importlib aliases too)
+        let source = "\
+import importlib as il
+import provider
+
+il.reload(provider)
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert_eq!(usage.resource_import_targets, vec!["provider"]);
+        assert!(!usage.enumerates_distributions);
+
+        // An unresolvable reload target may name ANY installed module
+        let source = "\
+from importlib import reload
+
+
+def refresh(module):
+    return reload(module)
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        assert!(queried_distribution_requirements(parsed.syntax()).enumerates_distributions);
+
+        // An escaping reload callable is undiscoverable
+        let source = "\
+import importlib
+
+handler = importlib.reload
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        assert!(queried_distribution_requirements(parsed.syntax()).enumerates_distributions);
+    }
+
+    /// Package-resource readers (`importlib.resources.files`, `pkgutil.get_data`)
+    /// record their literal or module-object anchors as resource-read targets;
+    /// unresolvable anchors conservatively flag global observation.
+    #[test]
+    fn test_resource_read_target_collection() {
+        // Literal string anchor, module-qualified callee
+        let source = "\
+import importlib.resources
+
+DATA = importlib.resources.files('provider').joinpath('data.json').read_text()
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert_eq!(usage.resource_import_targets, vec!["provider"]);
+        assert!(!usage.enumerates_distributions);
+
+        // Module-object anchor through an imported name
+        let source = "\
+import provider
+from importlib.resources import files
+
+print(files(provider))
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert_eq!(usage.resource_import_targets, vec!["provider"]);
+        assert!(!usage.enumerates_distributions);
+
+        // pkgutil.get_data names a dotted package anchor
+        let source = "\
+import pkgutil
+
+DATA = pkgutil.get_data('provider.assets', 'blob.bin')
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        let usage = queried_distribution_requirements(parsed.syntax());
+        assert_eq!(usage.resource_import_targets, vec!["provider.assets"]);
+
+        // Unresolvable anchor: the read may target ANY installed package
+        let source = "\
+from importlib.resources import files
+
+
+def read(package):
+    return files(package)
+";
+        let parsed = ruff_python_parser::parse_module(source).expect("test module should parse");
+        assert!(queried_distribution_requirements(parsed.syntax()).enumerates_distributions);
+    }
+
+    /// Resource-read targets stay external and their owning distributions reach
+    /// requirements even when never imported.
+    #[test]
+    fn test_bundle_third_party_keeps_resource_read_target_external() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!(
+                "res_provider/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("res_provider-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: res-provider\nVersion: 1.0\nImport-Name: res_provider\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+        assert_eq!(
+            resolver.classify_import("res_provider").bundle,
+            BundleDisposition::Include,
+            "a pure provider is bundleable until a resource read targets it"
+        );
+
+        resolver.record_resource_read_imports(["res_provider".to_owned()]);
+        assert_eq!(
+            resolver.classify_import("res_provider").bundle,
+            BundleDisposition::External,
+            "resource-read targets need their installed layout and import spec"
+        );
+        assert_eq!(
+            resolver.classify_import("res_provider.assets").bundle,
+            BundleDisposition::External,
+            "the whole package tree of a resource-read target stays external"
+        );
+        assert_eq!(
+            resolver.queried_installed_distribution_requirements(),
+            vec!["res-provider".to_owned()],
+            "owning distributions of resource-read targets must reach requirements"
+        );
+
+        Ok(())
+    }
+
+    /// Shared libraries loaded through ctypes/CFFI (`.dll`/`.dylib`) and versioned
+    /// shared libraries (`libhelper.so.1`) also keep a distribution external, not just
+    /// Python extension modules.
+    #[test]
+    fn test_bundle_third_party_keeps_shared_library_distribution_external() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        for (package, library) in [
+            ("cffi_style_pkg", "libhelper.dylib"),
+            ("versioned_so_pkg", "libhelper.so.1"),
+        ] {
+            create_test_file(
+                &site_packages.join(format!("{package}/{}", crate::python::constants::INIT_FILE)),
+                "VALUE = 1\n",
+            )?;
+            create_test_file(&site_packages.join(format!("{package}/{library}")), "")?;
+        }
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        for package in ["cffi_style_pkg", "versioned_so_pkg"] {
+            let classification = resolver.classify_import(package);
+            assert_eq!(
+                classification.bundle,
+                BundleDisposition::External,
+                "distributions shipping shared libraries must stay external: {package}"
+            );
+            assert!(resolver.resolve_module_path(package)?.is_none());
+        }
+
+        Ok(())
+    }
+
+    /// An explicitly configured interpreter (`requirements.python` / `--python`)
+    /// designates an environment for third-party bundling when no environment
+    /// variables are set. Site-packages discovery is covered end-to-end in
+    /// `test_bundle_third_party_uses_configured_interpreter_environment` (CLI test,
+    /// hermetic against ambient `VIRTUAL_ENV`); this covers the path derivation.
+    #[test]
+    fn test_environment_root_of_interpreter() {
+        assert_eq!(
+            ModuleResolver::environment_root_of_interpreter(Path::new("/env/bin/python")),
+            Some(PathBuf::from("/env"))
+        );
+        assert_eq!(
+            ModuleResolver::environment_root_of_interpreter(Path::new("C:/env/Scripts/python.exe")),
+            Some(PathBuf::from("C:/env"))
+        );
+        assert_eq!(
+            ModuleResolver::environment_root_of_interpreter(Path::new("/usr/local/bin/python3")),
+            Some(PathBuf::from("/usr/local"))
+        );
+        assert_eq!(
+            ModuleResolver::environment_root_of_interpreter(Path::new("python3")),
+            None
+        );
+    }
+
+    /// A configured interpreter is ALWAYS asked for its purelib, even under a
+    /// recognizable `bin` layout: the interpreter's own `sysconfig` report covers
+    /// layouts the lexical `<env>/lib/*/site-packages` scan misses (Debian
+    /// `dist-packages`, `lib64`, multiple minors).
+    #[cfg(unix)]
+    #[test]
+    fn test_bundle_third_party_queries_bin_layout_interpreter_purelib() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new()?;
+        let environment = temp_dir.path().join("env");
+        // The purelib uses a Debian-style dist-packages layout that the lexical
+        // site-packages scan does not discover
+        let dist_packages = environment.join("lib/python3/dist-packages");
+        create_test_file(
+            &dist_packages.join(format!(
+                "debian_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &dist_packages.join("debian_pkg-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: debian-pkg\nVersion: 1.0\nImport-Name: debian_pkg\n",
+        )?;
+        // Fake bin-layout interpreter reporting that purelib via sysconfig
+        let interpreter = environment.join("bin/python");
+        create_test_file(
+            &interpreter,
+            &format!("#!/bin/sh\necho '{}'\n", dist_packages.display()),
+        )?;
+        fs::set_permissions(&interpreter, fs::Permissions::from_mode(0o755))?;
+
+        let config = Config {
+            bundle_third_party: Some(true),
+            requirements: crate::config::RequirementsConfig {
+                python: Some(interpreter),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let resolver = ModuleResolver::new_with_overrides(config, Some(""), None)?;
+
+        let classification = resolver.classify_import("debian_pkg");
+        assert_eq!(classification.origin, ImportOrigin::ThirdParty);
+        assert_eq!(
+            classification.bundle,
+            BundleDisposition::Include,
+            "the interpreter-reported purelib must be searched even for bin-layout interpreters"
+        );
+        assert_eq!(
+            resolver.resolve_module_path("debian_pkg")?,
+            Some(
+                dist_packages
+                    .join("debian_pkg")
+                    .join(crate::python::constants::INIT_FILE)
+                    .canonicalize()?
+            )
+        );
+
+        Ok(())
+    }
+
+    /// Distribution-backed packages supplied through PYTHONPATH are subject to the
+    /// same external policy as site-packages installs under third-party bundling,
+    /// while default-mode behavior is unchanged.
+    #[test]
+    fn test_bundle_third_party_applies_external_policy_to_pythonpath_distributions() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let pythonpath_dir = temp_dir.path().join("vendored");
+        create_test_file(
+            &pythonpath_dir.join(format!(
+                "vendored_metadata_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "from importlib.metadata import version\n__version__ = \
+             version('vendored-metadata-pkg')\n",
+        )?;
+        create_test_file(
+            &pythonpath_dir.join("vendored_metadata_pkg-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: vendored-metadata-pkg\nVersion: 1.0\nImport-Name: \
+             vendored_metadata_pkg\n",
+        )?;
+        let pythonpath = pythonpath_dir.to_string_lossy();
+
+        let bundling_config = Config {
+            bundle_third_party: Some(true),
+            ..Default::default()
+        };
+        let bundling_resolver = ModuleResolver::new_with_overrides(
+            bundling_config,
+            Some(pythonpath.as_ref()),
+            Some(""),
+        )?;
+        let classification = bundling_resolver.classify_import("vendored_metadata_pkg");
+        assert_eq!(classification.origin, ImportOrigin::ThirdParty);
+        assert_eq!(
+            classification.bundle,
+            BundleDisposition::External,
+            "hazardous PYTHONPATH distributions must stay external under the opt-in mode"
+        );
+
+        // Default mode keeps its long-standing behavior of bundling PYTHONPATH sources
+        let default_resolver = ModuleResolver::new_with_overrides(
+            Config::default(),
+            Some(pythonpath.as_ref()),
+            Some(""),
+        )?;
+        assert_eq!(
+            default_resolver
+                .classify_import("vendored_metadata_pkg")
+                .bundle,
+            BundleDisposition::Include,
+            "default-mode classification of PYTHONPATH distributions must not change"
+        );
+
+        Ok(())
+    }
+
+    /// A `.dist-info` without `RECORD` or `Import-Name` headers still declares its
+    /// import roots through `top_level.txt`, so its policy metadata applies.
+    #[test]
+    fn test_dist_info_top_level_txt_supplies_ownership() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!(
+                "no_record_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("no_record_pkg-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.1\nName: no-record-pkg\nVersion: 1.0\nRequires-Python: >=3.13\n",
+        )?;
+        create_test_file(
+            &site_packages.join("no_record_pkg-1.0.dist-info/top_level.txt"),
+            "no_record_pkg\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let classification = resolver.classify_import("no_record_pkg");
+        assert_eq!(
+            classification.bundle,
+            BundleDisposition::External,
+            "top_level.txt ownership must enforce Requires-Python without RECORD"
+        );
+
+        Ok(())
+    }
+
+    /// Ownership is read from the root that actually supplied the bundled module, so
+    /// a stale dist-info in an earlier search root cannot inject its dependencies.
+    #[test]
+    fn test_bundled_distribution_requirements_use_owning_root() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        // Stale metadata in a PYTHONPATH root that does NOT contain the package
+        let stale_root = temp_dir.path().join("stale");
+        create_test_file(
+            &stale_root.join("shadowed_pkg-0.1.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: shadowed-pkg\nVersion: 0.1\nImport-Name: \
+             shadowed_pkg\nRequires-Dist: stale-dep==1\n",
+        )?;
+        // The real installation in the virtualenv
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!(
+                "shadowed_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("shadowed_pkg-2.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: shadowed-pkg\nVersion: 2.0\nImport-Name: \
+             shadowed_pkg\nRequires-Dist: real-dep>=2\n",
+        )?;
+        let config = Config {
+            bundle_third_party: Some(true),
+            ..Default::default()
+        };
+        let pythonpath = stale_root.to_string_lossy();
+        let virtualenv_path = virtualenv.to_string_lossy();
+        let resolver = ModuleResolver::new_with_overrides(
+            config,
+            Some(pythonpath.as_ref()),
+            Some(virtualenv_path.as_ref()),
+        )?;
+
+        let mut bundled_imports: FxIndexMap<String, Vec<pep508_rs::ExtraName>> =
+            FxIndexMap::default();
+        bundled_imports.insert("shadowed_pkg".to_owned(), Vec::new());
+
+        let requirements = resolver.bundled_distribution_requirements(&bundled_imports);
+        assert_eq!(
+            requirements,
+            vec!["real-dep>=2".to_owned()],
+            "dependencies must come from the distribution that supplied the module"
+        );
+
+        Ok(())
+    }
+
+    /// Extras propagate transitively between bundled distributions: `A -> B[speed]`
+    /// activates B's `extra == "speed"` dependencies even though B is bundled.
+    #[test]
+    fn test_bundled_distribution_requirements_propagate_transitive_extras() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!("dist_a/{}", crate::python::constants::INIT_FILE)),
+            "import dist_b\n",
+        )?;
+        create_test_file(
+            &site_packages.join("dist_a-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: dist-a\nVersion: 1.0\nImport-Name: \
+             dist_a\nRequires-Dist: dist-b[speed]>=1\n",
+        )?;
+        create_test_file(
+            &site_packages.join(format!("dist_b/{}", crate::python::constants::INIT_FILE)),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("dist_b-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: dist-b\nVersion: 1.0\nImport-Name: \
+             dist_b\nRequires-Dist: accelerator>=3; extra == \"speed\"\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let mut bundled_imports: FxIndexMap<String, Vec<pep508_rs::ExtraName>> =
+            FxIndexMap::default();
+        bundled_imports.insert("dist_a".to_owned(), Vec::new());
+        bundled_imports.insert("dist_b".to_owned(), Vec::new());
+
+        let requirements = resolver.bundled_distribution_requirements(&bundled_imports);
+        assert_eq!(
+            requirements,
+            vec!["accelerator>=3".to_owned()],
+            "extras requested by bundled dependents must activate transitively"
+        );
+
+        Ok(())
+    }
+
+    /// A versioned edge to a bundled dependency is retained when the bundled
+    /// copy's declared Version does not provably satisfy it: `B>=2;
+    /// sys_platform == "win32"` over bundled B 1.0 must reach requirements so
+    /// Windows installations enforce the constraint the Linux build host
+    /// never evaluated.
+    #[test]
+    fn test_bundled_distribution_requirements_keep_unsatisfied_version_edges() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!("dist_a/{}", crate::python::constants::INIT_FILE)),
+            "import dist_b\n",
+        )?;
+        create_test_file(
+            &site_packages.join("dist_a-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: dist-a\nVersion: 1.0\nImport-Name: \
+             dist_a\nRequires-Dist: dist-b>=2; sys_platform == \"win32\"\nRequires-Dist: \
+             dist-b>=1\n",
+        )?;
+        create_test_file(
+            &site_packages.join(format!("dist_b/{}", crate::python::constants::INIT_FILE)),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("dist_b-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: dist-b\nVersion: 1.0\nImport-Name: dist_b\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let mut bundled_imports: FxIndexMap<String, Vec<pep508_rs::ExtraName>> =
+            FxIndexMap::default();
+        bundled_imports.insert("dist_a".to_owned(), Vec::new());
+        bundled_imports.insert("dist_b".to_owned(), Vec::new());
+
+        let requirements = resolver.bundled_distribution_requirements(&bundled_imports);
+        assert_eq!(
+            requirements,
+            vec!["dist-b>=2 ; sys_platform == 'win32'".to_owned()],
+            "the unsatisfied marker-gated edge must survive while the satisfied >=1 edge \
+             dedupes against the bundled copy"
+        );
+
+        Ok(())
+    }
+
+    /// A direct-URL `Requires-Dist` edge to a bundled dependency is retained:
+    /// the locally inspected source cannot be proven to come from the pinned
+    /// artifact, so the installer must keep enforcing the URL.
+    #[test]
+    fn test_bundled_distribution_requirements_keep_url_pins_to_bundled_deps() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!("dist_a/{}", crate::python::constants::INIT_FILE)),
+            "import dist_b\n",
+        )?;
+        create_test_file(
+            &site_packages.join("dist_a-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: dist-a\nVersion: 1.0\nImport-Name: \
+             dist_a\nRequires-Dist: dist-b @ https://example.com/dist_b-1.0.tar.gz\n",
+        )?;
+        create_test_file(
+            &site_packages.join(format!("dist_b/{}", crate::python::constants::INIT_FILE)),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("dist_b-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: dist-b\nVersion: 1.0\nImport-Name: dist_b\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let mut bundled_imports: FxIndexMap<String, Vec<pep508_rs::ExtraName>> =
+            FxIndexMap::default();
+        bundled_imports.insert("dist_a".to_owned(), Vec::new());
+        bundled_imports.insert("dist_b".to_owned(), Vec::new());
+
+        let requirements = resolver.bundled_distribution_requirements(&bundled_imports);
+        assert_eq!(
+            requirements,
+            vec!["dist-b @ https://example.com/dist_b-1.0.tar.gz".to_owned()],
+            "the URL pin must survive even though its target is bundled"
+        );
+
+        Ok(())
+    }
+
+    /// A marker-gated extras edge between bundled distributions scopes the
+    /// activated dependencies to that marker: `A -> B[speed]; sys_platform ==
+    /// "win32"` must NOT install B's speed-dependencies on other platforms.
+    #[test]
+    fn test_bundled_distribution_requirements_keep_extras_edge_markers() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!("dist_a/{}", crate::python::constants::INIT_FILE)),
+            "import dist_b\n",
+        )?;
+        create_test_file(
+            &site_packages.join("dist_a-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: dist-a\nVersion: 1.0\nImport-Name: \
+             dist_a\nRequires-Dist: dist-b[speed]>=1; sys_platform == \"win32\"\n",
+        )?;
+        create_test_file(
+            &site_packages.join(format!("dist_b/{}", crate::python::constants::INIT_FILE)),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("dist_b-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: dist-b\nVersion: 1.0\nImport-Name: \
+             dist_b\nRequires-Dist: accelerator>=3; extra == \"speed\"\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let mut bundled_imports: FxIndexMap<String, Vec<pep508_rs::ExtraName>> =
+            FxIndexMap::default();
+        bundled_imports.insert("dist_a".to_owned(), Vec::new());
+        bundled_imports.insert("dist_b".to_owned(), Vec::new());
+
+        let requirements = resolver.bundled_distribution_requirements(&bundled_imports);
+        assert_eq!(
+            requirements,
+            vec!["accelerator>=3 ; sys_platform == 'win32'".to_owned()],
+            "the activating edge's environment marker must scope the propagated extras"
+        );
+
+        Ok(())
+    }
+
+    /// `Requires-Dist` metadata of bundled distributions supplied through PYTHONPATH
+    /// (dist-info beside the sources) is propagated like virtualenv installs.
+    #[test]
+    fn test_bundled_distribution_requirements_from_pythonpath_root() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let pythonpath_dir = temp_dir.path().join("vendored");
+        create_test_file(
+            &pythonpath_dir.join(format!(
+                "pythonpath_dist/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &pythonpath_dir.join("pythonpath_dist-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: pythonpath-dist\nVersion: 1.0\nImport-Name: \
+             pythonpath_dist\nRequires-Dist: pp-extra>=1\n",
+        )?;
+        let config = Config {
+            bundle_third_party: Some(true),
+            ..Default::default()
+        };
+        let pythonpath = pythonpath_dir.to_string_lossy();
+        let resolver =
+            ModuleResolver::new_with_overrides(config, Some(pythonpath.as_ref()), Some(""))?;
+
+        let mut bundled_imports: FxIndexMap<String, Vec<pep508_rs::ExtraName>> =
+            FxIndexMap::default();
+        bundled_imports.insert("pythonpath_dist".to_owned(), Vec::new());
+
+        let requirements = resolver.bundled_distribution_requirements(&bundled_imports);
+        assert_eq!(
+            requirements,
+            vec!["pp-extra>=1".to_owned()],
+            "dist-info metadata found through PYTHONPATH roots must be propagated"
+        );
+
+        Ok(())
+    }
+
+    /// `RECORD` files are CSV: quoted paths with embedded commas (and `""` escapes)
+    /// must be parsed whole so native artifacts inside them are still detected.
+    #[test]
+    fn test_record_line_first_field_handles_csv_quoting() {
+        assert_eq!(
+            ModuleResolver::record_line_first_field("frontend/__init__.py,,"),
+            "frontend/__init__.py"
+        );
+        assert_eq!(
+            ModuleResolver::record_line_first_field(
+                "\"weird,dir/_backend.cpython-312-test.so\",sha256=abc,123"
+            ),
+            "weird,dir/_backend.cpython-312-test.so"
+        );
+        assert_eq!(
+            ModuleResolver::record_line_first_field("\"quo\"\"ted\"\"/module.py\",,"),
+            "quo\"ted\"/module.py"
+        );
+        assert_eq!(ModuleResolver::record_line_first_field(""), "");
+    }
+
+    /// A native artifact whose RECORD path is CSV-quoted (contains a comma) still
+    /// marks the distribution as native-shipping.
+    #[test]
+    fn test_bundle_third_party_detects_native_artifact_in_quoted_record_path() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!(
+                "quoted_frontend/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 'frontend'\n",
+        )?;
+        create_test_file(
+            &site_packages.join("quoted_distribution-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: quoted-distribution\nVersion: 1.0\nImport-Name: \
+             quoted_frontend\n",
+        )?;
+        create_test_file(
+            &site_packages.join("quoted_distribution-1.0.dist-info/RECORD"),
+            "quoted_frontend/__init__.py,,\n\"data,dir/_accel.cpython-312-test.so\",sha256=abc,\
+             123\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let classification = resolver.classify_import("quoted_frontend");
+        assert_eq!(
+            classification.bundle,
+            BundleDisposition::External,
+            "native artifacts in quoted RECORD paths must keep the distribution external"
+        );
+
+        Ok(())
+    }
+
+    /// A distribution whose `Requires-Python` is incompatible with the configured
+    /// target version stays external so installers can reject the mismatch.
+    #[test]
+    fn test_bundle_third_party_enforces_requires_python() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        for (package, requires_python) in [
+            ("strict_pkg", ">=3.13"),
+            ("patch_pkg", "<3.10.1"),
+            ("relaxed_pkg", ">=3.8"),
+            ("interior_pkg", ">=3.8,!=3.10.5"),
+            ("other_minor_pkg", ">=3.8,!=3.9.7"),
+        ] {
+            create_test_file(
+                &site_packages.join(format!("{package}/{}", crate::python::constants::INIT_FILE)),
+                "VALUE = 1\n",
+            )?;
+            create_test_file(
+                &site_packages.join(format!("{package}-1.0.dist-info/METADATA")),
+                &format!(
+                    "Metadata-Version: 2.5\nName: {package}\nVersion: 1.0\nRequires-Python: \
+                     {requires_python}\nImport-Name: {package}\n"
+                ),
+            )?;
+        }
+        // Default target version is py310
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let strict = resolver.classify_import("strict_pkg");
+        assert_eq!(
+            strict.bundle,
+            BundleDisposition::External,
+            "Requires-Python >=3.13 must keep the distribution external for a py310 target"
+        );
+        assert!(resolver.resolve_module_path("strict_pkg")?.is_none());
+
+        // Patch-sensitive bounds cannot be verified against a minor-only target
+        let patch_sensitive = resolver.classify_import("patch_pkg");
+        assert_eq!(
+            patch_sensitive.bundle,
+            BundleDisposition::External,
+            "Requires-Python <3.10.1 must conservatively stay external for a py310 target"
+        );
+
+        let relaxed = resolver.classify_import("relaxed_pkg");
+        assert_eq!(
+            relaxed.bundle,
+            BundleDisposition::Include,
+            "compatible Requires-Python must not prevent bundling"
+        );
+
+        // An exclusion inside the target minor range passes both endpoint probes but
+        // still rejects part of the range
+        let interior = resolver.classify_import("interior_pkg");
+        assert_eq!(
+            interior.bundle,
+            BundleDisposition::External,
+            "Requires-Python !=3.10.5 must conservatively stay external for a py310 target"
+        );
+
+        // Exclusions targeting a different minor are irrelevant to the target range
+        let other_minor = resolver.classify_import("other_minor_pkg");
+        assert_eq!(
+            other_minor.bundle,
+            BundleDisposition::Include,
+            "Requires-Python !=3.9.7 must not prevent bundling for a py310 target"
+        );
+
+        Ok(())
+    }
+
+    /// Packages using dynamic imports with non-literal module names stay external
+    /// because their dynamically loaded submodules cannot be discovered statically.
+    #[test]
+    fn test_bundle_third_party_keeps_dynamic_import_distribution_external() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!(
+                "dynamic_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "import importlib\nbackend = 'json_backend'\nimpl = \
+             importlib.import_module(f'.{backend}', __package__)\n",
+        )?;
+        create_test_file(&site_packages.join("dynamic_pkg/json_backend.py"), "")?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let classification = resolver.classify_import("dynamic_pkg");
+        assert_eq!(
+            classification.bundle,
+            BundleDisposition::External,
+            "distributions with unresolved dynamic imports must stay external"
+        );
+        assert!(resolver.resolve_module_path("dynamic_pkg")?.is_none());
+
+        Ok(())
+    }
+
+    /// The dynamic-import detector flags non-literal module names but leaves literal
+    /// (statically resolvable) dynamic imports alone.
+    #[test]
+    fn test_dynamic_import_detection() {
+        for source in [
+            "import importlib\nimportlib.import_module(f'.{name}', __package__)\n",
+            // A LITERAL relative name with a non-literal package context is
+            // equally unresolvable: `__package__` cannot be evaluated statically
+            "import importlib\nimportlib.import_module('.helper', __package__)\n",
+            // An arbitrary receiver may be the real importlib passed in by the
+            // consumer: discovery never resolves such calls, even literal ones
+            "def load(loader):\n    return loader.import_module('provider.backend')\n",
+            // A directly invoked retrieved import callable is equally invisible
+            // to discovery
+            "import importlib\ndef load(name):\n    return getattr(importlib, \
+             'import_module')(name)\n",
+            "import importlib\nimportlib.import_module(module_variable)\n",
+            "from importlib import import_module\nimport_module(module_variable)\n",
+            "from importlib import import_module as load\nload(f'.{name}', __package__)\n",
+            "from importlib import (\n    import_module as _load,\n)\n_load(module_variable)\n",
+            "def load_backend(name):\n    return load(name)\n\nfrom importlib import \
+             import_module as load\n",
+            "def load_backend(name):\n    return load(name)\n\ntry:\n    from importlib import \
+             import_module as load\nexcept ImportError:\n    load = None\n",
+            "import importlib\nload = importlib.import_module\nload(module_variable)\n",
+            "import importlib\nload = importlib.import_module\nload('pkg.backend')\n",
+            "import importlib\nload: object = importlib.import_module\nload(module_variable)\n",
+            "import builtins\nbuiltins.__import__(module_variable)\n",
+            "from builtins import __import__ as dynamic_import\ndynamic_import('pkg')\n",
+            "load = __import__\nload('pkg')\n",
+            "import builtins\nload = builtins.__import__\nload(module_variable)\n",
+            "import importlib\nmeta = importlib.import_module('importlib.metadata')\n",
+            "import importlib\nres = importlib.import_module(name='pkg_resources')\n",
+            "import importlib\nimportlib.import_module('.backend', __package__)\n",
+            "import importlib\nimportlib.import_module(name='.backend', package=__package__)\n",
+            "def load_backend(name):\n    return load(name)\n\nimport importlib\nload = \
+             importlib.import_module\n",
+            "import importlib\nimportlib.import_module(name=module_variable)\n",
+            "import importlib\nimportlib.import_module(name=f'.{name}', package=__package__)\n",
+            "import importlib\nimportlib.import_module(*module_args)\n",
+            "import importlib\nimportlib.import_module('pkg', **kwargs)\n",
+            "__import__(module_variable)\n",
+            "__import__('json')\n",
+            "backend = __import__('pkg.backend', fromlist=['KIND'])\n",
+            // Reload through the importlib module or any alias of it: bundled
+            // namespaces carry no usable spec/loader
+            "import importlib\nimportlib.reload(config)\n",
+            "import importlib as il\nil.reload(config)\n",
+            "from importlib import reload\nreload(config)\n",
+            // Dynamically retrieved import callables: a literal import-callable
+            // attribute name on any object, or ANY attribute of importlib
+            "import importlib\nload = getattr(importlib, 'import_module')\nload('pkg.backend')\n",
+            "import importlib\nload = getattr(importlib, '__import__')\nload('pkg')\n",
+            "import importlib as il\nload = getattr(il, attribute_name)\nload('pkg')\n",
+            "import importlib\nload = getattr(importlib, 'reload')\nload(config)\n",
+            // Alias chains resolve to a FIXED POINT even when a link appears in a
+            // function defined before its referent's source binding
+            "def run(name):\n    load = late\n    return load(name)\n\nimport importlib\nlate = \
+             importlib.import_module\nrun('pkg.backend')\n",
+        ] {
+            assert!(
+                ModuleResolver::python_source_blocks_bundling(source),
+                "should flag non-literal dynamic import in: {source:?}"
+            );
+        }
+
+        for source in [
+            "import importlib\nimportlib.import_module('json')\n",
+            "import importlib\nimportlib.import_module('.helper', 'pkg')\n",
+            "import importlib\nimportlib.import_module(name='pkg.module')\n",
+            "from importlib import import_module as load\nload('.helper', 'pkg')\n",
+            // The package argument is evaluated but ignored for absolute names: the
+            // target is statically known and the evaluation is preserved by codegen
+            "import importlib\nimportlib.import_module('pkg.module', __package__)\n",
+            "import importlib\nimportlib.import_module('pkg.module', package=touch())\n",
+            // Statically known TypeErrors never import anything; the preserved call
+            // raises exactly like the original
+            "import importlib\nimportlib.import_module('pkg', name='other')\n",
+            "import importlib\nimportlib.import_module('pkg', invalid_keyword=1)\n",
+            // getattr with a non-import attribute on a non-importlib object is not
+            // an import callable
+            "import json\nload = getattr(json, 'dumps')\nload({})\n",
+        ] {
+            assert!(
+                !ModuleResolver::python_source_blocks_bundling(source),
+                "literal dynamic imports are statically resolvable and must not be flagged: \
+                 {source:?}"
+            );
+        }
+    }
+
+    /// `Requires-Dist` entries of bundled distributions are carried over, except those
+    /// satisfied by other bundled distributions or conditioned on extras.
+    #[test]
+    fn test_bundled_distribution_requirements_propagation() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!(
+                "pure_parent/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "import pure_child\n",
+        )?;
+        create_test_file(
+            &site_packages.join("pure_parent-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: Pure_Parent\nVersion: 1.0\nImport-Name: \
+             pure_parent\nRequires-Dist: lazy-extra<2\nRequires-Dist: pure-child>=1\nRequires-Dist: \
+             docs-tool; extra == \"docs\"\nRequires-Dist: mixed-dep; python_version < \"3.12\" or \
+             extra == \"speed\"\n",
+        )?;
+        create_test_file(
+            &site_packages.join(format!(
+                "pure_child/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("pure_child-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: pure-child\nVersion: 1.0\nImport-Name: pure_child\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let mut bundled_imports: FxIndexMap<String, Vec<pep508_rs::ExtraName>> =
+            FxIndexMap::default();
+        bundled_imports.insert("pure_parent".to_owned(), Vec::new());
+        bundled_imports.insert("pure_child".to_owned(), Vec::new());
+
+        let requirements = resolver.bundled_distribution_requirements(&bundled_imports);
+        assert_eq!(
+            requirements,
+            vec![
+                "lazy-extra<2".to_owned(),
+                // Entries are re-serialized in canonical PEP 508 form
+                "mixed-dep ; python_full_version < '3.12' or extra == 'speed'".to_owned(),
+            ],
+            "constraints for external deps and mixed markers are kept; bundled deps and \
+             extras-only markers are dropped"
+        );
+
+        Ok(())
+    }
+
+    /// Two bundled distributions declaring the same external dependency with different
+    /// specifiers produce a single requirements entry (pip rejects duplicates).
+    #[test]
+    fn test_bundled_distribution_requirements_dedupe_by_name() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        for (package, specifier) in [
+            ("first_pkg", "lazy-extra[speed]<2"),
+            ("second_pkg", "lazy_extra[security]>=1"),
+        ] {
+            create_test_file(
+                &site_packages.join(format!("{package}/{}", crate::python::constants::INIT_FILE)),
+                "VALUE = 1\n",
+            )?;
+            create_test_file(
+                &site_packages.join(format!("{package}-1.0.dist-info/METADATA")),
+                &format!(
+                    "Metadata-Version: 2.5\nName: {package}\nVersion: 1.0\nImport-Name: \
+                     {package}\nRequires-Dist: {specifier}\n"
+                ),
+            )?;
+        }
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let mut bundled_imports: FxIndexMap<String, Vec<pep508_rs::ExtraName>> =
+            FxIndexMap::default();
+        bundled_imports.insert("first_pkg".to_owned(), Vec::new());
+        bundled_imports.insert("second_pkg".to_owned(), Vec::new());
+
+        let requirements = resolver.bundled_distribution_requirements(&bundled_imports);
+        assert_eq!(
+            requirements,
+            vec!["lazy-extra[speed,security]>=1,<2".to_owned()],
+            "duplicate declarations must merge specifiers and union extras"
+        );
+
+        Ok(())
+    }
+
+    /// Duplicate declarations under different environment markers stay on separate
+    /// lines (pip evaluates each line's marker), so branch-specific constraints never
+    /// leak across platforms.
+    #[test]
+    fn test_bundled_distribution_requirements_merge_marker_branches() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        for (package, requirement) in [
+            ("win_pkg", "platform-dep<2; sys_platform == \"win32\""),
+            ("linux_pkg", "platform-dep>=2; sys_platform == \"linux\""),
+        ] {
+            create_test_file(
+                &site_packages.join(format!("{package}/{}", crate::python::constants::INIT_FILE)),
+                "VALUE = 1\n",
+            )?;
+            create_test_file(
+                &site_packages.join(format!("{package}-1.0.dist-info/METADATA")),
+                &format!(
+                    "Metadata-Version: 2.5\nName: {package}\nVersion: 1.0\nImport-Name: \
+                     {package}\nRequires-Dist: {requirement}\n"
+                ),
+            )?;
+        }
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let mut bundled_imports: FxIndexMap<String, Vec<pep508_rs::ExtraName>> =
+            FxIndexMap::default();
+        bundled_imports.insert("win_pkg".to_owned(), Vec::new());
+        bundled_imports.insert("linux_pkg".to_owned(), Vec::new());
+
+        let requirements = resolver.bundled_distribution_requirements(&bundled_imports);
+        assert_eq!(
+            requirements,
+            vec![
+                "platform-dep<2 ; sys_platform == 'win32'".to_owned(),
+                "platform-dep>=2 ; sys_platform == 'linux'".to_owned(),
+            ],
+            "branch-specific constraints must stay scoped to their own markers"
+        );
+
+        Ok(())
+    }
+
+    /// A configured interpreter is asked for its `purelib`/`platlib` when its
+    /// path has no recognizable environment layout, so PATH-resolved commands
+    /// still work.
+    #[test]
+    fn test_interpreter_site_packages_query() {
+        let python = test_python_executable();
+        let directories = ModuleResolver::interpreter_site_packages(&python);
+        assert!(
+            !directories.is_empty() && directories.iter().all(|path| path.is_dir()),
+            "a real interpreter must report existing purelib/platlib directories"
+        );
+        assert_eq!(
+            ModuleResolver::interpreter_site_packages(Path::new("/nonexistent/interpreter/python")),
+            Vec::<PathBuf>::new()
+        );
+    }
+
+    /// Locate a Python interpreter for unit tests: the repository virtualenv when
+    /// present, otherwise the PATH-resolved interpreter.
+    fn test_python_executable() -> PathBuf {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        for ancestor in manifest_dir.ancestors() {
+            let candidate = if cfg!(windows) {
+                ancestor.join(".venv/Scripts/python.exe")
+            } else {
+                ancestor.join(".venv/bin/python")
+            };
+            if candidate.is_file() {
+                return candidate;
+            }
+        }
+        PathBuf::from(if cfg!(windows) { "python" } else { "python3" })
+    }
+
+    /// A PATH-style configured interpreter (no `<env>/bin` layout) is queried for its
+    /// purelib and that root outranks other environments, even when one exists.
+    #[cfg(unix)]
+    #[test]
+    fn test_configured_interpreter_purelib_outranks_other_roots() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new()?;
+        // The interpreter's environment: a purelib containing the intended copy
+        let purelib = temp_dir.path().join("interpreter-purelib");
+        create_test_file(
+            &purelib.join(format!(
+                "shared_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "SOURCE = 'configured interpreter'\n",
+        )?;
+        // A competing virtualenv with a conflicting copy
+        let virtualenv = temp_dir.path().join("venv");
+        create_test_file(
+            &virtualenv
+                .join("lib/python3.12/site-packages")
+                .join(format!(
+                    "shared_pkg/{}",
+                    crate::python::constants::INIT_FILE
+                )),
+            "SOURCE = 'competing virtualenv'\n",
+        )?;
+        // A fake PATH-style interpreter: a script printing its purelib (placed in a
+        // directory not named bin/Scripts so lexical derivation fails)
+        let interpreter = temp_dir.path().join("shims/python3");
+        create_test_file(
+            &interpreter,
+            &format!("#!/bin/sh\necho {}\n", purelib.display()),
+        )?;
+        fs::set_permissions(&interpreter, fs::Permissions::from_mode(0o755))?;
+
+        let config = Config {
+            bundle_third_party: Some(true),
+            requirements: crate::config::RequirementsConfig {
+                python: Some(interpreter),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let virtualenv_path = virtualenv.to_string_lossy();
+        let resolver =
+            ModuleResolver::new_with_overrides(config, Some(""), Some(virtualenv_path.as_ref()))?;
+
+        let classification = resolver.classify_import("shared_pkg");
+        assert_eq!(classification.origin, ImportOrigin::ThirdParty);
+        assert_eq!(classification.bundle, BundleDisposition::Include);
+        assert_eq!(
+            resolver.resolve_module_path("shared_pkg")?,
+            Some(
+                purelib
+                    .join(format!(
+                        "shared_pkg/{}",
+                        crate::python::constants::INIT_FILE
+                    ))
+                    .canonicalize()?
+            ),
+            "the configured interpreter's purelib must outrank other environments"
+        );
+
+        Ok(())
+    }
+
+    /// Legacy `.egg-info` installs are indexed too: their `PKG-INFO` `Requires-Python`
+    /// is enforced like a `.dist-info` `METADATA` one, including the file-form layout
+    /// where the `.egg-info` entry is itself the metadata file.
+    #[test]
+    fn test_bundle_third_party_enforces_requires_python_from_egg_info() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        // Directory-form egg-info
+        create_test_file(
+            &site_packages.join(format!(
+                "legacy_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("legacy_pkg.egg-info/PKG-INFO"),
+            "Metadata-Version: 1.2\nName: legacy-pkg\nVersion: 1.0\nRequires-Python: >=3.13\n",
+        )?;
+        create_test_file(
+            &site_packages.join("legacy_pkg.egg-info/top_level.txt"),
+            "legacy_pkg\n",
+        )?;
+        // File-form egg-info: the entry is a regular file containing the metadata,
+        // with no Import-Name declaration — ownership is inferred from the name
+        create_test_file(
+            &site_packages.join(format!(
+                "file_form_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("file_form_pkg-1.0.egg-info"),
+            "Metadata-Version: 1.2\nName: file-form-pkg\nVersion: 1.0\nRequires-Python: >=3.13\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        for package in ["legacy_pkg", "file_form_pkg"] {
+            let classification = resolver.classify_import(package);
+            assert_eq!(classification.origin, ImportOrigin::ThirdParty);
+            assert_eq!(
+                classification.bundle,
+                BundleDisposition::External,
+                "egg-info Requires-Python must be enforced like dist-info metadata: {package}"
+            );
+            assert!(resolver.resolve_module_path(package)?.is_none());
+        }
+
+        Ok(())
+    }
+
+    /// Legacy egg-info installs declare dependencies in a `requires.txt` sidecar
+    /// instead of `Requires-Dist` headers: base entries and `[:marker]` sections must
+    /// be carried over into the emitted requirements, while `[extra]` sections stay
+    /// dropped when the extra is not requested.
+    #[test]
+    fn test_bundled_distribution_requirements_from_egg_info_requires_txt() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!(
+                "legacy_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("legacy_pkg.egg-info/PKG-INFO"),
+            "Metadata-Version: 1.2\nName: legacy-pkg\nVersion: 1.0\n",
+        )?;
+        create_test_file(
+            &site_packages.join("legacy_pkg.egg-info/top_level.txt"),
+            "legacy_pkg\n",
+        )?;
+        create_test_file(
+            &site_packages.join("legacy_pkg.egg-info/requires.txt"),
+            "base-dep>=1\n\n[docs]\nsphinx>=4\n\n[:python_version < \"4\"]\nconditional-dep>=2\n\n[\
+             docs:python_version < \"4\"]\nextra-marker-dep>=3\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        let mut bundled_imports: FxIndexMap<String, Vec<pep508_rs::ExtraName>> =
+            FxIndexMap::default();
+        bundled_imports.insert("legacy_pkg".to_owned(), Vec::new());
+
+        let requirements = resolver.bundled_distribution_requirements(&bundled_imports);
+        assert_eq!(
+            requirements,
+            vec![
+                "base-dep>=1".to_owned(),
+                "conditional-dep>=2 ; python_full_version < '4'".to_owned(),
+            ],
+            "requires.txt base and marker-section entries must carry over; extra-only \
+             sections must stay dropped"
+        );
+
+        Ok(())
+    }
+
+    /// Python resolves parent components before children: a plain local `pkg.py`
+    /// wins over a site-packages package `pkg/sub.py`, and `import pkg.sub` fails
+    /// there — the bundling fallback must not satisfy the child from site-packages.
+    #[test]
+    fn test_bundle_third_party_respects_local_non_package_parent() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        // The local root supplies a plain module named like the site-packages package
+        let local_root = temp_dir.path().join("src");
+        create_test_file(&local_root.join("pkg.py"), "VALUE = 'local module'\n")?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!("pkg/{}", crate::python::constants::INIT_FILE)),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(&site_packages.join("pkg/sub.py"), "VALUE = 2\n")?;
+        create_test_file(
+            &site_packages.join("pkg-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: pkg\nVersion: 1.0\nImport-Name: pkg\n",
+        )?;
+        let config = Config {
+            bundle_third_party: Some(true),
+            ..Default::default()
+        };
+        let pythonpath = local_root.to_string_lossy();
+        let virtualenv_path = virtualenv.to_string_lossy();
+        let resolver = ModuleResolver::new_with_overrides(
+            config,
+            Some(pythonpath.as_ref()),
+            Some(virtualenv_path.as_ref()),
+        )?;
+
+        assert!(
+            resolver.resolve_module_path("pkg.sub")?.is_none(),
+            "the fallback must not resolve a child whose parent is a local non-package"
+        );
+
+        Ok(())
+    }
+
+    /// A dist-info without `RECORD`, `top_level.txt`, or `Import-Name` (system-managed
+    /// or damaged installations) still names its distribution: the conventional import
+    /// root is inferred from the name, so ownership and `Requires-Dist` constraints
+    /// survive instead of being dropped.
+    #[test]
+    fn test_bundled_distribution_requirements_infer_root_without_record() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!("bare_pkg/{}", crate::python::constants::INIT_FILE)),
+            "VALUE = 1\n",
+        )?;
+        // No RECORD, no top_level.txt, no Import-Name header
+        create_test_file(
+            &site_packages.join("bare_pkg-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: bare-pkg\nVersion: 1.0\nRequires-Dist: hidden-dep>=1\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        assert_eq!(
+            resolver.classify_import("bare_pkg").bundle,
+            BundleDisposition::Include,
+            "a bare dist-info must not block bundling: its root is inferred from the name"
+        );
+        let mut bundled_imports: FxIndexMap<String, Vec<pep508_rs::ExtraName>> =
+            FxIndexMap::default();
+        bundled_imports.insert("bare_pkg".to_owned(), Vec::new());
+        assert_eq!(
+            resolver.bundled_distribution_requirements(&bundled_imports),
+            vec!["hidden-dep>=1".to_owned()],
+            "name-inferred ownership must carry the distribution's Requires-Dist constraints"
+        );
+
+        Ok(())
+    }
+
+    /// A distribution without an installed-files listing cannot be proven pure when
+    /// an UNCLAIMED native module sits beside the metadata: the listing-less
+    /// distribution may own that sibling (e.g. `frontend/` plus `_backend.so` from
+    /// the same RECORD-less wheel), so it must stay external. A native sibling
+    /// claimed by another distribution's listing does not taint it.
+    #[test]
+    fn test_bundle_third_party_keeps_listing_less_distribution_with_native_sibling_external()
+    -> Result<()> {
+        // Unclaimed native sibling: the listing-less distribution stays external
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!("frontend/{}", crate::python::constants::INIT_FILE)),
+            "VALUE = 1\n",
+        )?;
+        // No RECORD, no top_level.txt, no Import-Name header
+        create_test_file(
+            &site_packages.join("frontend-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: frontend\nVersion: 1.0\n",
+        )?;
+        create_test_file(
+            &site_packages.join("_backend.cpython-312-x86_64-linux-gnu.so"),
+            "",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+        assert_eq!(
+            resolver.classify_import("frontend").bundle,
+            BundleDisposition::External,
+            "a listing-less distribution beside an unclaimed native module may own it and \
+             cannot be proven pure"
+        );
+
+        // Control: the same native sibling CLAIMED by another distribution's RECORD
+        // leaves the listing-less pure distribution bundleable
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!("frontend/{}", crate::python::constants::INIT_FILE)),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("frontend-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: frontend\nVersion: 1.0\n",
+        )?;
+        create_test_file(
+            &site_packages.join("_backend.cpython-312-x86_64-linux-gnu.so"),
+            "",
+        )?;
+        create_test_file(
+            &site_packages.join("native_owner-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: native-owner\nVersion: 1.0\n",
+        )?;
+        create_test_file(
+            &site_packages.join("native_owner-1.0.dist-info/RECORD"),
+            "_backend.cpython-312-x86_64-linux-gnu.so,,\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+        assert_eq!(
+            resolver.classify_import("frontend").bundle,
+            BundleDisposition::Include,
+            "a native sibling claimed by another distribution's listing must not taint pure \
+             listing-less distributions"
+        );
+
+        // Native artifacts nested in an UNCLAIMED sibling DIRECTORY taint
+        // listing-less distributions too
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!("frontend/{}", crate::python::constants::INIT_FILE)),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("frontend-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: frontend\nVersion: 1.0\n",
+        )?;
+        create_test_file(&site_packages.join("frontend.libs/libhelper.so"), "")?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+        assert_eq!(
+            resolver.classify_import("frontend").bundle,
+            BundleDisposition::External,
+            "an unclaimed native sibling DIRECTORY must taint listing-less distributions"
+        );
+
+        Ok(())
+    }
+
+    /// An unclaimed top-level `.pth` startup hook beside a listing-less
+    /// distribution taints it: the hook may belong to that distribution, and
+    /// Python executes it at startup, which the bundle neither ships nor
+    /// reproduces. A hook claimed by another distribution's listing does not.
+    #[test]
+    fn test_bundle_third_party_keeps_listing_less_distribution_with_pth_sibling_external()
+    -> Result<()> {
+        // Unclaimed startup hook: the listing-less distribution stays external
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!("frontend/{}", crate::python::constants::INIT_FILE)),
+            "VALUE = 1\n",
+        )?;
+        // No RECORD, no top_level.txt, no Import-Name header
+        create_test_file(
+            &site_packages.join("frontend-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: frontend\nVersion: 1.0\n",
+        )?;
+        create_test_file(
+            &site_packages.join("frontend_startup.pth"),
+            "import frontend_startup_hook\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+        assert_eq!(
+            resolver.classify_import("frontend").bundle,
+            BundleDisposition::External,
+            "a listing-less distribution beside an unclaimed .pth hook may own it and cannot \
+             be proven hook-free"
+        );
+
+        // Control: the same hook CLAIMED by another distribution's RECORD leaves
+        // the listing-less pure distribution bundleable
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!("frontend/{}", crate::python::constants::INIT_FILE)),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("frontend-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: frontend\nVersion: 1.0\n",
+        )?;
+        create_test_file(
+            &site_packages.join("frontend_startup.pth"),
+            "import frontend_startup_hook\n",
+        )?;
+        create_test_file(
+            &site_packages.join("hook_owner-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: hook-owner\nVersion: 1.0\n",
+        )?;
+        create_test_file(
+            &site_packages.join("hook_owner-1.0.dist-info/RECORD"),
+            "frontend_startup.pth,,\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+        assert_eq!(
+            resolver.classify_import("frontend").bundle,
+            BundleDisposition::Include,
+            "a .pth hook claimed by another distribution's listing must not taint pure \
+             listing-less distributions"
+        );
+
+        Ok(())
+    }
+
+    /// Duplicate requirement declarations pinning DIFFERENT direct URLs cannot be
+    /// reconciled: both lines are kept so the installer reports the conflict, while
+    /// identical URLs deduplicate silently.
+    #[test]
+    fn test_merge_requirement_constraints_conflicting_urls() {
+        use std::str::FromStr;
+        let mut existing = pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(
+            "dep @ https://example.com/dep-1.0.tar.gz",
+        )
+        .expect("requirement should parse");
+
+        // Identical URLs deduplicate: nothing is returned
+        let duplicate = existing.clone();
+        assert!(
+            ModuleResolver::merge_requirement_constraints(&mut existing, duplicate).is_none(),
+            "identical direct URLs must deduplicate"
+        );
+
+        // Conflicting URLs are unmergeable: the incoming pin is handed back
+        let conflicting = pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(
+            "dep @ https://example.com/dep-2.0.tar.gz",
+        )
+        .expect("requirement should parse");
+        let returned = ModuleResolver::merge_requirement_constraints(&mut existing, conflicting)
+            .expect("conflicting direct URLs must be returned for separate emission");
+        assert!(returned.to_string().contains("dep-2.0.tar.gz"));
+        assert!(
+            existing.to_string().contains("dep-1.0.tar.gz"),
+            "the existing pin must stay intact"
+        );
+
+        // A URL pin and a version specifier are BOTH emitted: pip validates the
+        // explicit artifact against every collected requirement
+        let specifier =
+            pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str("dep>=2").expect("parses");
+        let returned = ModuleResolver::merge_requirement_constraints(&mut existing, specifier)
+            .expect("a version constraint alongside a URL pin must be emitted separately");
+        assert_eq!(returned.to_string(), "dep>=2");
+        assert!(existing.to_string().contains("dep-1.0.tar.gz"));
+
+        // Symmetric order: specifier first, URL second
+        let mut spec_first =
+            pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str("dep>=2").expect("parses");
+        let url = pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(
+            "dep @ https://example.com/dep-1.0.tar.gz",
+        )
+        .expect("parses");
+        let returned = ModuleResolver::merge_requirement_constraints(&mut spec_first, url)
+            .expect("a URL pin alongside a version constraint must be emitted separately");
+        assert!(returned.to_string().contains("dep-1.0.tar.gz"));
+        assert_eq!(spec_first.to_string(), "dep>=2");
+    }
+
+    /// A `requirements.module-map` entry carrying a version specifier or direct URL
+    /// blocks bundling unless the installed distribution provably satisfies it:
+    /// satisfied constraints bundle, unsatisfied or unverifiable ones stay external
+    /// so the installer enforces the user's pin.
+    #[test]
+    fn test_bundle_third_party_module_map_constraints() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        create_test_file(
+            &site_packages.join(format!(
+                "mapped_pkg/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("mapped_pkg-1.5.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: mapped-pkg\nVersion: 1.5\nImport-Name: mapped_pkg\n",
+        )?;
+        let build_resolver = |mapped: &str| -> Result<ModuleResolver> {
+            let config = Config {
+                bundle_third_party: Some(true),
+                requirements: crate::config::RequirementsConfig {
+                    module_map: IndexMap::from([("mapped_pkg".to_owned(), mapped.to_owned())]),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let virtualenv_path = virtualenv.to_string_lossy();
+            ModuleResolver::new_with_overrides(config, Some(""), Some(virtualenv_path.as_ref()))
+        };
+
+        // Installed 1.5 satisfies >=1: bundleable
+        let resolver = build_resolver("mapped-pkg[speed]>=1")?;
+        assert_eq!(
+            resolver.classify_import("mapped_pkg").bundle,
+            BundleDisposition::Include,
+            "a provably satisfied module-map constraint must not block bundling"
+        );
+
+        // Installed 1.5 does NOT satisfy >=2: the pin must stay enforced
+        let resolver = build_resolver("mapped-pkg>=2")?;
+        assert_eq!(
+            resolver.classify_import("mapped_pkg").bundle,
+            BundleDisposition::External,
+            "an unsatisfied module-map version pin must keep the import external"
+        );
+
+        // A direct URL cannot be verified against installed sources
+        let resolver = build_resolver("mapped-pkg @ https://example.com/mapped_pkg-2.0.tar.gz")?;
+        assert_eq!(
+            resolver.classify_import("mapped_pkg").bundle,
+            BundleDisposition::External,
+            "a module-map direct URL must keep the import external"
+        );
+
+        Ok(())
+    }
+
+    /// A module-map constraint blocking ONE portion of a PEP 420 namespace
+    /// taints every provider: bundling the other portions while the
+    /// constrained one stays installed would recreate the split-namespace
+    /// state that hides bundled children at runtime.
+    #[test]
+    fn test_bundle_third_party_module_map_constraint_taints_namespace() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        // PEP 420 namespace: no acme/__init__.py
+        for portion in ["plugin_a", "plugin_b"] {
+            create_test_file(
+                &site_packages.join(format!(
+                    "acme/{portion}/{}",
+                    crate::python::constants::INIT_FILE
+                )),
+                "VALUE = 1\n",
+            )?;
+            create_test_file(
+                &site_packages.join(format!("{portion}-1.0.dist-info/METADATA")),
+                &format!(
+                    "Metadata-Version: 2.5\nName: {}\nVersion: 1.0\nImport-Name: acme.{portion}\n",
+                    portion.cow_replace('_', "-")
+                ),
+            )?;
+        }
+        let config = Config {
+            bundle_third_party: Some(true),
+            requirements: crate::config::RequirementsConfig {
+                // The installed plugin-b 1.0 does NOT satisfy >=2
+                module_map: IndexMap::from([(
+                    "acme.plugin_b".to_owned(),
+                    "plugin-b>=2".to_owned(),
+                )]),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let virtualenv_path = virtualenv.to_string_lossy();
+        let resolver =
+            ModuleResolver::new_with_overrides(config, Some(""), Some(virtualenv_path.as_ref()))?;
+
+        assert_eq!(
+            resolver.classify_import("acme.plugin_b").bundle,
+            BundleDisposition::External,
+            "the constrained portion itself must stay external"
+        );
+        assert_eq!(
+            resolver.classify_import("acme.plugin_a").bundle,
+            BundleDisposition::External,
+            "sibling namespace portions must stay external together with the constrained one"
+        );
+
+        Ok(())
+    }
+
+    /// A distribution whose installed files include a top-level `.pth` startup hook
+    /// stays external: site initialization executes those files at startup (path
+    /// extensions or executable import lines), which a bundle neither ships nor
+    /// reproduces. `.pth` files in subdirectories are NOT startup hooks.
+    #[test]
+    fn test_bundle_third_party_keeps_pth_installing_distribution_external() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        for (package, record_extra) in [
+            ("hooked_pkg", "hooked_pkg_startup.pth,,\n"),
+            ("nested_pth_pkg", "nested_pth_pkg/data/inner.pth,,\n"),
+        ] {
+            create_test_file(
+                &site_packages.join(format!("{package}/{}", crate::python::constants::INIT_FILE)),
+                "VALUE = 1\n",
+            )?;
+            create_test_file(
+                &site_packages.join(format!("{package}-1.0.dist-info/METADATA")),
+                &format!("Metadata-Version: 2.5\nName: {package}\nVersion: 1.0\n"),
+            )?;
+            create_test_file(
+                &site_packages.join(format!("{package}-1.0.dist-info/RECORD")),
+                &format!("{package}/__init__.py,,\n{record_extra}"),
+            )?;
+        }
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        assert_eq!(
+            resolver.classify_import("hooked_pkg").bundle,
+            BundleDisposition::External,
+            "distributions installing top-level .pth startup hooks must stay external"
+        );
+        assert_eq!(
+            resolver.classify_import("nested_pth_pkg").bundle,
+            BundleDisposition::Include,
+            ".pth files in subdirectories are not startup hooks and must not block bundling"
+        );
+
+        Ok(())
+    }
+
+    /// Providers of one PEP 420 namespace stay external TOGETHER: when any provider
+    /// distribution is blocked (here by `Requires-Python`), bundling a sibling
+    /// would break at runtime — the preserved external import rebinds the
+    /// namespace root to the real namespace, which cannot contain bundled-only
+    /// children. A namespace whose providers are all compatible still bundles.
+    #[test]
+    fn test_bundle_third_party_namespace_split_keeps_providers_together() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        // PEP 420 namespace package: acme/ has no __init__.py
+        for (child, requires_python) in [("plugin_a", ">=3.8"), ("plugin_b", ">=3.13")] {
+            create_test_file(
+                &site_packages.join(format!(
+                    "acme/{child}/{}",
+                    crate::python::constants::INIT_FILE
+                )),
+                "VALUE = 1\n",
+            )?;
+            create_test_file(
+                &site_packages.join(format!("{child}-1.0.dist-info/METADATA")),
+                &format!(
+                    "Metadata-Version: 2.5\nName: {child}\nVersion: 1.0\nRequires-Python: \
+                     {requires_python}\nImport-Namespace: acme\n"
+                ),
+            )?;
+            create_test_file(
+                &site_packages.join(format!("{child}-1.0.dist-info/RECORD")),
+                &format!("acme/{child}/__init__.py,,\n"),
+            )?;
+        }
+        // An unrelated compatible namespace bundles normally
+        create_test_file(
+            &site_packages.join(format!(
+                "clean_ns/provider/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("clean_provider-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: clean-provider\nVersion: 1.0\nRequires-Python: \
+             >=3.8\nImport-Namespace: clean_ns\n",
+        )?;
+        create_test_file(
+            &site_packages.join("clean_provider-1.0.dist-info/RECORD"),
+            "clean_ns/provider/__init__.py,,\n",
+        )?;
+        let resolver = bundle_third_party_resolver(&virtualenv)?;
+
+        // plugin_b is record-owned by the incompatible distribution and stays external
+        let plugin_b = resolver.classify_import("acme.plugin_b");
+        assert_eq!(
+            plugin_b.bundle,
+            BundleDisposition::External,
+            "record ownership must apply the incompatible Requires-Python policy"
+        );
+        assert!(resolver.resolve_module_path("acme.plugin_b")?.is_none());
+
+        // plugin_a is compatible on its own, but shares the namespace with an
+        // external provider: it must stay external too
+        let plugin_a = resolver.classify_import("acme.plugin_a");
+        assert_eq!(
+            plugin_a.bundle,
+            BundleDisposition::External,
+            "a namespace with an external provider must keep ALL its providers external"
+        );
+
+        // A namespace whose providers are all bundleable is unaffected
+        assert_eq!(
+            resolver.classify_import("clean_ns.provider").bundle,
+            BundleDisposition::Include,
+            "namespaces without external providers must keep bundling"
+        );
+
+        Ok(())
+    }
+
+    /// Namespace provider policy aggregates across ALL active roots: a pure
+    /// provider on PYTHONPATH shares its namespace with a blocked provider in
+    /// site-packages, so both stay external together.
+    #[test]
+    fn test_bundle_third_party_namespace_split_across_roots_keeps_providers_together() -> Result<()>
+    {
+        let temp_dir = TempDir::new()?;
+        let virtualenv = temp_dir.path().join("venv");
+        let site_packages = virtualenv.join("lib/python3.12/site-packages");
+        // Blocked provider in site-packages (incompatible Requires-Python)
+        create_test_file(
+            &site_packages.join(format!(
+                "acme/plugin_native/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &site_packages.join("plugin_native-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: plugin-native\nVersion: 1.0\nRequires-Python: \
+             >=3.13\nImport-Namespace: acme\n",
+        )?;
+        create_test_file(
+            &site_packages.join("plugin_native-1.0.dist-info/RECORD"),
+            "acme/plugin_native/__init__.py,,\n",
+        )?;
+        // Pure provider of the SAME namespace on a PYTHONPATH root
+        let pythonpath_dir = temp_dir.path().join("vendored");
+        create_test_file(
+            &pythonpath_dir.join(format!(
+                "acme/plugin_pure/{}",
+                crate::python::constants::INIT_FILE
+            )),
+            "VALUE = 1\n",
+        )?;
+        create_test_file(
+            &pythonpath_dir.join("plugin_pure-1.0.dist-info/METADATA"),
+            "Metadata-Version: 2.5\nName: plugin-pure\nVersion: 1.0\nRequires-Python: \
+             >=3.8\nImport-Namespace: acme\n",
+        )?;
+        create_test_file(
+            &pythonpath_dir.join("plugin_pure-1.0.dist-info/RECORD"),
+            "acme/plugin_pure/__init__.py,,\n",
+        )?;
+
+        let config = Config {
+            bundle_third_party: Some(true),
+            ..Default::default()
+        };
+        let pythonpath = pythonpath_dir.to_string_lossy();
+        let virtualenv_path = virtualenv.to_string_lossy();
+        let resolver = ModuleResolver::new_with_overrides(
+            config,
+            Some(pythonpath.as_ref()),
+            Some(virtualenv_path.as_ref()),
+        )?;
+
+        assert_eq!(
+            resolver.classify_import("acme.plugin_native").bundle,
+            BundleDisposition::External,
+            "the blocked provider stays external"
+        );
+        assert_eq!(
+            resolver.classify_import("acme.plugin_pure").bundle,
+            BundleDisposition::External,
+            "a pure provider on another root shares the namespace and must stay external too"
         );
 
         Ok(())

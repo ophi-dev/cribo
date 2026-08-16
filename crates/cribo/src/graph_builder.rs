@@ -766,6 +766,10 @@ pub(crate) struct GraphBuilder<'a> {
     /// Maps local name -> module path (e.g., "il" -> "importlib", "im" ->
     /// "`importlib.import_module`")
     import_aliases: FxIndexMap<String, String>,
+    /// Names rebound by non-import local bindings in the enclosing function scopes
+    /// (parameters, assignments, loop/with targets); such names must not be treated
+    /// as `importlib` or one of its aliases
+    shadowed_bindings: FxIndexSet<String>,
     python_version: u8,
     /// Qualified identity of the function or class currently being traversed.
     scope_path: Option<ScopePath>,
@@ -778,6 +782,7 @@ impl<'a> GraphBuilder<'a> {
         Self {
             graph,
             import_aliases: FxIndexMap::default(),
+            shadowed_bindings: FxIndexSet::default(),
             python_version,
             scope_path: None,
             next_scope_id: 0,
@@ -810,6 +815,10 @@ impl<'a> GraphBuilder<'a> {
             "process_statement: Processing statement type: {:?}",
             std::mem::discriminant(stmt)
         );
+        // A static import_module call is a real import in ANY expression
+        // position of ANY statement (a match subject, a while test, a raise
+        // operand); record them all so tree-shaking keeps the targets' symbols
+        self.record_static_importlib_calls_in_stmt(stmt);
         // Inside functions, process imports, functions, and classes normally
         // Skip other statements as they're tracked via eventual_read_vars
         if self
@@ -869,6 +878,10 @@ impl<'a> GraphBuilder<'a> {
                 self.process_expr_stmt(&expr_stmt.value);
                 Ok(())
             }
+            Stmt::AugAssign(aug_assign) => {
+                self.process_aug_assign(aug_assign);
+                Ok(())
+            }
             Stmt::Assert(assert_stmt) => {
                 self.process_assert_stmt(assert_stmt);
                 Ok(())
@@ -881,6 +894,16 @@ impl<'a> GraphBuilder<'a> {
             Stmt::Match(match_stmt) => self.process_match_stmt(match_stmt),
             Stmt::Raise(raise_stmt) => {
                 self.process_raise_stmt(raise_stmt);
+                Ok(())
+            }
+            // `del name` kills the binding: later uses raise NameError, so the
+            // name must no longer be treated as an import alias
+            Stmt::Delete(delete_stmt) => {
+                for target in &delete_stmt.targets {
+                    if let Expr::Name(name) = target {
+                        self.shadowed_bindings.insert(name.id.to_string());
+                    }
+                }
                 Ok(())
             }
             _ => Ok(()), // Other statements
@@ -897,6 +920,16 @@ impl<'a> GraphBuilder<'a> {
                 .map_or(module_name, ruff_python_ast::Identifier::as_str);
 
             log::trace!("Processing import: {module_name} as {local_name}");
+
+            // The import statement makes its binding live from here on: lift any
+            // body-wide shadow recorded for the bound name (a dotted import
+            // without alias binds only the root)
+            let bound_name = if alias.asname.is_some() {
+                local_name
+            } else {
+                module_name.split('.').next().unwrap_or(module_name)
+            };
+            self.shadowed_bindings.shift_remove(bound_name);
 
             // Track importlib aliases for later detection
             if module_name == "importlib" {
@@ -1000,6 +1033,9 @@ impl<'a> GraphBuilder<'a> {
                     .map_or(imported_name, ruff_python_ast::Identifier::as_str);
 
                 imported_names.insert(local_name.to_owned());
+                // The import statement makes its binding live from here on: lift
+                // any body-wide shadow recorded for the bound name
+                self.shadowed_bindings.shift_remove(local_name);
                 names.push((
                     imported_name.to_owned(),
                     alias.asname.as_ref().map(ToString::to_string),
@@ -1120,12 +1156,51 @@ impl<'a> GraphBuilder<'a> {
 
         self.graph.add_item(item_data);
 
+        // Python scoping makes parameters and any name assigned in the function local
+        // for the WHOLE body: precompute them so calls through shadowed names (e.g. a
+        // parameter named `importlib`) are not recorded as real imports
+        let saved_shadowed_bindings = self.shadowed_bindings.clone();
+        for param in func_def
+            .parameters
+            .posonlyargs
+            .iter()
+            .chain(&func_def.parameters.args)
+            .chain(&func_def.parameters.kwonlyargs)
+        {
+            self.shadowed_bindings
+                .insert(param.parameter.name.as_str().to_owned());
+        }
+        if let Some(vararg) = &func_def.parameters.vararg {
+            self.shadowed_bindings
+                .insert(vararg.name.as_str().to_owned());
+        }
+        if let Some(kwarg) = &func_def.parameters.kwarg {
+            self.shadowed_bindings
+                .insert(kwarg.name.as_str().to_owned());
+        }
+        {
+            // Import bindings shadow the whole body too (UnboundLocalError before
+            // the import statement); `process_import`/`process_from_import` lift
+            // the shadow when the statement is reached. `global`-declared names
+            // rebind the module scope instead of shadowing.
+            let mut body_bindings = FxIndexSet::default();
+            let scope_globals = crate::visitors::collect_scope_global_declarations(&func_def.body);
+            crate::visitors::LocalVarCollector::new(&mut body_bindings, &scope_globals)
+                .collect_from_stmts(&func_def.body);
+            self.shadowed_bindings.extend(body_bindings);
+        }
+
         // Process the function body in function scope
         let old_scope_path = self.scope_path.replace(function_scope);
         for stmt in &func_def.body {
             self.process_statement(stmt)?;
         }
         self.scope_path = old_scope_path;
+        self.shadowed_bindings = saved_shadowed_bindings;
+
+        // The definition's NAME rebinds in the enclosing scope from here on: a
+        // later `def importlib(): ...` kills an earlier import alias
+        self.shadowed_bindings.insert(func_def.name.to_string());
 
         Ok(())
     }
@@ -1273,6 +1348,10 @@ impl<'a> GraphBuilder<'a> {
             self.process_statement(stmt)?;
         }
         self.scope_path = old_scope_path;
+
+        // The definition's NAME rebinds in the enclosing scope from here on: a
+        // later `class importlib: ...` kills an earlier import alias
+        self.shadowed_bindings.insert(class_def.name.to_string());
 
         Ok(())
     }
@@ -1542,6 +1621,46 @@ impl<'a> GraphBuilder<'a> {
         self.graph.add_item(item_data);
     }
 
+    /// Process an augmented assignment at module level.
+    ///
+    /// The mutation reads its target AND its value: without an item,
+    /// tree-shaking cannot see either — a module mutating another module's
+    /// global (`state.ATTEMPTS[0] += 1`) must keep that global alive.
+    /// `__all__ += [...]` stays a metadata operation handled by export
+    /// analysis, exactly like the side-effect detector treats it.
+    fn process_aug_assign(&mut self, aug_assign: &ast::StmtAugAssign) {
+        if matches!(&*aug_assign.target, Expr::Name(name) if name.id.as_str() == "__all__") {
+            return;
+        }
+
+        let mut read_vars = FxIndexSet::default();
+        let mut attribute_accesses = FxIndexMap::default();
+        self.collect_vars_in_expr_with_attrs(
+            &aug_assign.value,
+            &mut read_vars,
+            &mut attribute_accesses,
+        );
+        // A name target rebinds an existing binding (read + write) but carries
+        // Store context, which the collector skips; attribute and subscript
+        // targets read their base object to mutate it
+        if let Expr::Name(name) = &*aug_assign.target {
+            read_vars.insert(name.id.to_string());
+        } else {
+            self.collect_vars_in_expr_with_attrs(
+                &aug_assign.target,
+                &mut read_vars,
+                &mut attribute_accesses,
+            );
+        }
+
+        log::debug!(
+            "Processing augmented assignment, read_vars: {read_vars:?}, attribute_accesses: \
+             {attribute_accesses:?}"
+        );
+
+        self.add_control_flow_item(ItemType::Other, read_vars, attribute_accesses, true);
+    }
+
     /// Process assert statement
     fn process_assert_stmt(&mut self, assert_stmt: &ast::StmtAssert) {
         let mut read_vars = FxIndexSet::default();
@@ -1586,9 +1705,25 @@ impl<'a> GraphBuilder<'a> {
 
     /// Process if statement
     fn process_if_stmt(&mut self, if_stmt: &ast::StmtIf) -> Result<()> {
-        // Process condition
+        // Every clause condition executes at module import: collect reads AND
+        // attribute accesses (a test like `state.ATTEMPTS[0] == 1` must keep
+        // the accessed global alive) from the `if` test and all `elif` tests
         let mut read_vars = FxIndexSet::default();
-        self.collect_vars_in_expr(&if_stmt.test, &mut read_vars);
+        let mut attribute_accesses = FxIndexMap::default();
+        self.collect_vars_in_expr_with_attrs(
+            &if_stmt.test,
+            &mut read_vars,
+            &mut attribute_accesses,
+        );
+        for clause in &if_stmt.elif_else_clauses {
+            if let Some(condition) = &clause.test {
+                self.collect_vars_in_expr_with_attrs(
+                    condition,
+                    &mut read_vars,
+                    &mut attribute_accesses,
+                );
+            }
+        }
 
         let item_data = ItemData {
             item_type: ItemType::If {
@@ -1604,7 +1739,7 @@ impl<'a> GraphBuilder<'a> {
             reexported_names: FxIndexSet::default(),
             defined_symbols: FxIndexSet::default(),
             symbol_dependencies: FxIndexMap::default(),
-            attribute_accesses: FxIndexMap::default(),
+            attribute_accesses,
             containing_scope: self.scope_path.clone(),
         };
 
@@ -1617,11 +1752,6 @@ impl<'a> GraphBuilder<'a> {
 
         // Process elif/else branches
         for clause in &if_stmt.elif_else_clauses {
-            if let Some(condition) = &clause.test {
-                let mut read_vars = FxIndexSet::default();
-                self.collect_vars_in_expr(condition, &mut read_vars);
-                // Could add as separate If item
-            }
             for stmt in &clause.body {
                 self.process_statement(stmt)?;
             }
@@ -1633,7 +1763,12 @@ impl<'a> GraphBuilder<'a> {
     /// Process for loop
     fn process_for_stmt(&mut self, for_stmt: &ast::StmtFor) -> Result<()> {
         let mut read_vars = FxIndexSet::default();
-        self.collect_vars_in_expr(&for_stmt.iter, &mut read_vars);
+        let mut attribute_accesses = FxIndexMap::default();
+        self.collect_vars_in_expr_with_attrs(
+            &for_stmt.iter,
+            &mut read_vars,
+            &mut attribute_accesses,
+        );
 
         // Extract loop variables
         let mut write_vars = FxIndexSet::default();
@@ -1653,7 +1788,7 @@ impl<'a> GraphBuilder<'a> {
             reexported_names: FxIndexSet::default(),
             defined_symbols: FxIndexSet::default(),
             symbol_dependencies: FxIndexMap::default(),
-            attribute_accesses: FxIndexMap::default(),
+            attribute_accesses,
             containing_scope: self.scope_path.clone(),
         };
 
@@ -1675,9 +1810,14 @@ impl<'a> GraphBuilder<'a> {
     /// Process while loop
     fn process_while_stmt(&mut self, while_stmt: &ast::StmtWhile) -> Result<()> {
         let mut read_vars = FxIndexSet::default();
-        self.collect_vars_in_expr(&while_stmt.test, &mut read_vars);
+        let mut attribute_accesses = FxIndexMap::default();
+        self.collect_vars_in_expr_with_attrs(
+            &while_stmt.test,
+            &mut read_vars,
+            &mut attribute_accesses,
+        );
 
-        self.add_control_flow_item(ItemType::Other, read_vars, FxIndexMap::default(), true);
+        self.add_control_flow_item(ItemType::Other, read_vars, attribute_accesses, true);
 
         // Process body
         for stmt in &while_stmt.body {
@@ -1695,12 +1835,17 @@ impl<'a> GraphBuilder<'a> {
     /// Process with statement
     fn process_with_stmt(&mut self, with_stmt: &ast::StmtWith) -> Result<()> {
         let mut read_vars = FxIndexSet::default();
+        let mut attribute_accesses = FxIndexMap::default();
 
         for item in &with_stmt.items {
-            self.collect_vars_in_expr(&item.context_expr, &mut read_vars);
+            self.collect_vars_in_expr_with_attrs(
+                &item.context_expr,
+                &mut read_vars,
+                &mut attribute_accesses,
+            );
         }
 
-        self.add_control_flow_item(ItemType::Other, read_vars, FxIndexMap::default(), true);
+        self.add_control_flow_item(ItemType::Other, read_vars, attribute_accesses, true);
 
         // Process body
         for stmt in &with_stmt.body {
@@ -1998,7 +2143,92 @@ impl<'a> GraphBuilder<'a> {
         }
     }
 
-    /// Check if an expression is an `importlib.import_module()` call with a static string argument
+    /// Record every static `importlib.import_module()` call in the
+    /// statement's IMMEDIATE expressions as an Import item (no alias binding).
+    ///
+    /// Assignments whose VALUE is a direct static call record it with a
+    /// binding in `process_assign`, but a static call is a real import in ANY
+    /// expression position — a match subject, an `if`/`while` test, a `with`
+    /// item, a nested call argument; without an Import item tree-shaking would
+    /// drop the target's symbols even though the rewritten access needs them.
+    /// Recording is conservative: an extra edge only keeps a module alive.
+    ///
+    /// Nested statements are NOT visited: `process_statement` recurses into
+    /// them and records their expressions on its own.
+    fn record_static_importlib_calls_in_stmt(&mut self, stmt: &Stmt) {
+        use ruff_python_ast::visitor::source_order::{SourceOrderVisitor, walk_expr, walk_stmt};
+
+        struct CallCollector<'v> {
+            builder: &'v GraphBuilder<'v>,
+            found: Vec<String>,
+        }
+        impl<'a> SourceOrderVisitor<'a> for CallCollector<'_> {
+            fn visit_body(&mut self, _body: &'a [Stmt]) {
+                // Nested suites are processed by process_statement recursion
+            }
+
+            fn visit_expr(&mut self, expr: &'a Expr) {
+                if let Some(module_name) = self.builder.is_static_importlib_call(expr) {
+                    self.found.push(module_name);
+                }
+                walk_expr(self, expr);
+            }
+        }
+        let mut collector = CallCollector {
+            builder: self,
+            found: Vec::new(),
+        };
+        if let Stmt::Assign(assign) = stmt
+            && self.is_static_importlib_call(&assign.value).is_some()
+        {
+            // A direct-call VALUE is recorded with its binding in
+            // `process_assign`; an anonymous edge on top of it would retain
+            // the whole namespace and defeat attribute-level tracking. Its
+            // arguments are literals with no calls inside, so only the
+            // targets can carry further static calls (`d[import_module(...)]
+            // = import_module(...)`)
+            for target in &assign.targets {
+                collector.visit_expr(target);
+            }
+        } else {
+            walk_stmt(&mut collector, stmt);
+        }
+        let found = collector.found;
+        for module_name in found {
+            log::debug!(
+                "Found importlib.import_module('{module_name}') in expression position; \
+                 recording import edge"
+            );
+            let mut imported_names = FxIndexSet::default();
+            imported_names.insert(module_name.clone());
+            self.graph.add_item(ItemData {
+                item_type: ItemType::Import {
+                    module: module_name,
+                    alias: None,
+                },
+                var_decls: FxIndexSet::default(),
+                read_vars: FxIndexSet::default(),
+                eventual_read_vars: FxIndexSet::default(),
+                write_vars: FxIndexSet::default(),
+                eventual_write_vars: FxIndexSet::default(),
+                has_side_effects: true,
+                imported_names,
+                reexported_names: FxIndexSet::default(),
+                defined_symbols: FxIndexSet::default(),
+                symbol_dependencies: FxIndexMap::default(),
+                attribute_accesses: FxIndexMap::default(),
+                containing_scope: self.scope_path.clone(),
+            });
+        }
+    }
+
+    /// Check if an expression is an `importlib.import_module()` call with a static
+    /// string argument.
+    ///
+    /// A callee whose base name is rebound by a local binding (function parameter,
+    /// assignment) dispatches to that binding at runtime, not to `importlib`, and
+    /// calls whose remaining arguments cannot be safely discarded stay runtime calls;
+    /// neither is recorded as a real import.
     fn is_static_importlib_call(&self, expr: &Expr) -> Option<String> {
         if let Expr::Call(call) = expr {
             // Check if this is importlib.import_module() or an alias
@@ -2008,11 +2238,12 @@ impl<'a> GraphBuilder<'a> {
                     if let Expr::Name(name) = &*attr.value {
                         let name_str = name.id.as_str();
                         // Check if it's importlib directly or an alias
-                        name_str == "importlib"
-                            || self
-                                .import_aliases
-                                .get(name_str)
-                                .is_some_and(|v| v == "importlib")
+                        !self.shadowed_bindings.contains(name_str)
+                            && (name_str == "importlib"
+                                || self
+                                    .import_aliases
+                                    .get(name_str)
+                                    .is_some_and(|v| v == "importlib"))
                     } else {
                         false
                     }
@@ -2021,22 +2252,35 @@ impl<'a> GraphBuilder<'a> {
                 Expr::Name(name) => {
                     let name_str = name.id.as_str();
                     // Check if this is import_module or an alias for it
-                    name_str == "import_module"
-                        || self
-                            .import_aliases
-                            .get(name_str)
-                            .is_some_and(|v| v == "importlib.import_module")
+                    !self.shadowed_bindings.contains(name_str)
+                        && (name_str == "import_module"
+                            || self
+                                .import_aliases
+                                .get(name_str)
+                                .is_some_and(|v| v == "importlib.import_module"))
                 }
                 _ => false,
             };
 
-            if is_import_module {
-                // Extract the module name if it's a static string
-                if let Some(arg) = call.arguments.args.first()
-                    && let Expr::StringLiteral(string_lit) = arg
-                {
-                    return Some(string_lit.value.to_string());
+            if is_import_module
+                && (crate::python::importlib_call::arguments_safely_discardable(call)
+                    || crate::python::importlib_call::evaluable_package_argument(call).is_some())
+            {
+                // Extract the module name if it's a static string, from either the
+                // first positional argument or the `name=` keyword argument
+                let module_name = crate::python::importlib_call::literal_module_name(call)?;
+                // A relative name anchors at the literal package context, exactly
+                // like CPython's `_resolve_name`: record the ABSOLUTE name so
+                // tree-shaking connects the alias to the bundled module (a raw
+                // ".backend" string matches nothing in the module graph)
+                if module_name.starts_with('.') {
+                    let package = crate::python::importlib_call::literal_package_context(call)?;
+                    return crate::python::importlib_call::resolve_relative_name(
+                        module_name,
+                        package,
+                    );
                 }
+                return Some(module_name.to_owned());
             }
         }
         None

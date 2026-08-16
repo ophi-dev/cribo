@@ -10,144 +10,279 @@ import sys as _sys
 import importlib as _importlib
 class _CriboModule():
 
-    def __init__(self, m, p):
-        self._m, self._p = m, p
+    def __init__(_cribo_self, m, p):
+        _cribo_self._m, _cribo_self._p = m, p
 
-    def __getattr__(self, n):
-        f = self._p + '.' + n
+    def __getattr__(_cribo_self, n, *, _getattr=getattr):
+        f = _cribo_self._p + '.' + n
         try:
             return _CriboModule(_importlib.import_module(f), f)
         except ImportError:
-            return getattr(self._m, n)
+            return _getattr(_cribo_self._m, n)
 
-    def __getattribute__(self, n):
-        return object.__getattribute__(self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else getattr(object.__getattribute__(self, '_m'), n)
+    def __getattribute__(_cribo_self, n, *, _getattr=getattr, _object=object):
+        return _object.__getattribute__(_cribo_self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else _getattr(_object.__getattribute__(_cribo_self, '_m'), n)
 class _Cribo():
 
-    def __getattr__(self, n):
+    def __getattr__(_cribo_self, n):
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
+_cribo_captured = {}
+class _CriboPreservedLoader:
+    _pristine = {}
+
+    def __init__(self, entry, namespace=None, reload_target=None):
+        self._entry = entry
+        self._namespace = namespace
+        self._reload_target = reload_target
+
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
+        module = None
+        if self._namespace is not None:
+            module = self._namespace
+        elif self._entry[1] is not None:
+            module = _globals()[self._entry[1]]
+        if module is not None:
+            if _getattr(module, '_cribo_machinery_loaded', False) or _getattr(module, '_cribo_failed_life', False) or _getattr(module, '__initialized__', False) and _getattr(module, '_cribo_registered', False):
+                saved = _type(self)._pristine.get(_id(module))
+                fresh = _ModuleType(spec.name)
+                fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
+                fresh._cribo_fresh_life = True
+                return fresh
+            return module
+        module = _ModuleType(spec.name)
+        for export, binding in self._entry[3].items():
+            _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
+        return module
+
+    def exec_module(self, module, *, _BaseException=BaseException, _dict=dict, _getattr=getattr, _globals=globals, _id=id, _type=type):
+        init = self._entry[0]
+        pristine = _type(self)._pristine
+        key = _id(module)
+        record_snapshot = not _getattr(module, '_cribo_fresh_life', False) and not _getattr(module, '__initialized__', False) and (self._namespace is not None or self._entry[1] is not None)
+        if init is None:
+            if record_snapshot and key not in pristine:
+                pristine[key] = _dict(module.__dict__)
+            module._cribo_machinery_loaded = True
+            return
+        is_reload = self._reload_target is module
+        if is_reload:
+            module.__initialized__ = False
+            module.__initializing__ = False
+        state = _dict(module.__dict__)
+        if record_snapshot and key not in pristine:
+            pristine[key] = _dict(state)
+        try:
+            _globals()[init](module)
+            module._cribo_machinery_loaded = True
+        except _BaseException:
+            if is_reload:
+                module.__initializing__ = False
+            else:
+                module.__dict__.clear()
+                module.__dict__.update(state)
+                module.__initializing__ = False
+                module._cribo_failed_life = True
+            raise
+class _CriboPreservedFinder:
+
+    def __init__(self):
+        self._targets = {}
+        self._namespaces = {}
+        self._registry = {}
+        self._loader = _CriboPreservedLoader
+
+    def register(self, name, init, namespace, is_package, exports=None):
+        entry = init, namespace, is_package, exports or {}
+        self._targets[name] = entry
+        self._registry[name] = entry
+
+    def bind(self, name, namespace):
+        self._namespaces[name] = namespace
+
+    def find_spec(self, name, path=None, target=None, *, _getattr=getattr, _globals=globals):
+        entry = self._targets.get(name)
+        if entry is None:
+            return None
+        parent_name = name.rpartition('.')[0]
+        if parent_name:
+            parent = _sys.modules.get(parent_name)
+            expected = self._namespaces.get(parent_name)
+            if expected is None:
+                parent_entry = self._registry.get(parent_name)
+                if parent_entry is not None and parent_entry[1] is not None:
+                    expected = _globals().get(parent_entry[1])
+            if parent is not None and expected is not None and parent is not expected and not _getattr(parent, '_cribo_fresh_life', False) and not _getattr(parent, '_cribo_machinery_loaded', False):
+                return None
+        from importlib.machinery import ModuleSpec
+        return ModuleSpec(name, self._loader(entry, self._namespaces.get(name), target), is_package=entry[2])
+_cribo_finder = _CriboPreservedFinder()
+_sys.meta_path.append(_cribo_finder)
+_cribo_finder_local = _CriboPreservedFinder()
+_cribo_finder_local._namespaces = _cribo_finder._namespaces
+_cribo_finder_local._registry = _cribo_finder._registry
+for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
+    if getattr(_cribo_meta_finder, '__name__', '') == 'PathFinder':
+        _sys.meta_path.insert(_cribo_index, _cribo_finder_local)
+        break
+else:
+    _sys.meta_path.insert(0, _cribo_finder_local)
+_cribo_finder_local.register('logger', '_cribo_init___cribo_0639af_logger', 'logger', False)
+_cribo_finder_local.register('config', '_cribo_init___cribo_f96d2c_config', 'config', False)
+_cribo_finder_local.register('utils', None, None, False, {'format_message': 'format_message', 'get_timestamp': 'get_timestamp'})
+_cribo_finder_local.register('app', None, None, False, {'Application': 'Application', 'get_logger': 'get_logger', 'format_message': 'format_message', 'get_config': 'get_config'})
 utils = _cribo.types.SimpleNamespace(__name__='utils', __doc__='\nUtility module with no dependencies on other modules in this package.\nThis can be safely imported at module level by everyone.\n')
 """\nUtility module with no dependencies on other modules in this package.\nThis can be safely imported at module level by everyone.\n"""
 def format_message(message):
     """Format a message with decorative borders"""
     return f">>> {message} <<<"
+format_message.__module__ = 'utils'
 def get_timestamp():
     """Get current timestamp for logging"""
     return "00:00:00"
+get_timestamp.__module__ = 'utils'
 utils.format_message = format_message
 utils.get_timestamp = get_timestamp
 config = _cribo.types.SimpleNamespace(__name__='config', __initializing__=False, __initialized__=False)
+_cribo_finder.bind('config', config)
 logger = _cribo.types.SimpleNamespace(__name__='logger', __initializing__=False, __initialized__=False)
+_cribo_finder.bind('logger', logger)
 _cribo_config__config = None
-def _cribo_init___cribo_f96d2c_config(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    global _cribo_config__config
-    global logger
-    """\nConfiguration module that logs its initialization process.\nThis creates a circular dependency: config -> logger -> config\n"""
-    logger = _cribo_init___cribo_0639af_logger(logger)
-    get_logger = logger.get_logger
-    self.get_logger = get_logger
-    self.get_logger = get_logger
-    format_message = utils.format_message
-    config.format_message = format_message
-
-    class Config:
-
-        def __init__(self):
-            self.debug_mode = True
-            self.app_name = "CircularImportDemo"
-            self.version = "1.0.0"
-            self._logger_configured = False
-            logger = get_logger()
-            logger.log("Initializing configuration system")
-
-        def ensure_logger_configured(self):
-            """Configure logger after config is ready"""
-            if not self._logger_configured:
-                logger = get_logger()
-                logger.configure()
-                logger.log("Configuration system initialized", "INFO")
-                self._logger_configured = True
-
-        def get_setting(self, key):
-            return getattr(self, key, None)
-    Config.__module__ = 'config'
-    self.Config = Config
-    _config = None
-    _cribo_config__config = _config
-    self._config = _cribo_config__config
-
-    def get_config():
+def _cribo_init___cribo_f96d2c_config(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
+    if _cribo_getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if _cribo_getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = '\nConfiguration module that logs its initialization process.\nThis creates a circular dependency: config -> logger -> config\n'
         global _cribo_config__config
-        if _cribo_config__config is None:
-            _cribo_config__config = self.Config()
-        return _cribo_config__config
-    self.get_config = get_config
+        global logger
+        """\nConfiguration module that logs its initialization process.\nThis creates a circular dependency: config -> logger -> config\n"""
+        logger = _cribo_init___cribo_0639af_logger(logger)
+        get_logger = logger.get_logger
+        _cribo_self.get_logger = get_logger
+        _cribo_self.get_logger = get_logger
+        format_message = utils.format_message
+        config.format_message = format_message
 
-    def get_log_level():
-        """Get log level from config - used by logger module"""
-        if self._config is None:
-            return "INFO"
-        return "DEBUG" if self._config.debug_mode else "INFO"
-    self.get_log_level = get_log_level
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+        class Config:
+
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'config'), _cribo_f)[1])
+            def __init__(self):
+                self.debug_mode = True
+                self.app_name = "CircularImportDemo"
+                self.version = "1.0.0"
+                self._logger_configured = False
+                logger = get_logger()
+                logger.log("Initializing configuration system")
+
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'config'), _cribo_f)[1])
+            def ensure_logger_configured(self):
+                """Configure logger after config is ready"""
+                if not self._logger_configured:
+                    logger = get_logger()
+                    logger.configure()
+                    logger.log("Configuration system initialized", "INFO")
+                    self._logger_configured = True
+
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'config'), _cribo_f)[1])
+            def get_setting(self, key):
+                return getattr(self, key, None)
+        Config.__module__ = 'config'
+        Config.__qualname__ = 'Config'
+        _cribo_self.Config = Config
+        _config = None
+        _cribo_config__config = _config
+        _cribo_self._config = _cribo_config__config
+
+        def get_config():
+            global _cribo_config__config
+            if _cribo_config__config is None:
+                _cribo_config__config = _cribo_self.Config()
+            return _cribo_config__config
+        get_config.__module__ = 'config'
+        get_config.__qualname__ = 'get_config'
+        _cribo_self.get_config = get_config
+
+        def get_log_level():
+            """Get log level from config - used by logger module"""
+            if _cribo_self._config is None:
+                return "INFO"
+            return "DEBUG" if _cribo_self._config.debug_mode else "INFO"
+        get_log_level.__module__ = 'config'
+        get_log_level.__qualname__ = 'get_log_level'
+        _cribo_self.get_log_level = get_log_level
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 config.__init__ = _cribo_init___cribo_f96d2c_config
 _cribo_logger__logger = None
-def _cribo_init___cribo_0639af_logger(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    global _cribo_logger__logger
-    """\nLogger module that needs configuration to determine log level.\nThis creates a circular dependency: logger -> config -> logger\n"""
-    format_message = utils.format_message
-    logger.format_message = format_message
-    get_timestamp = utils.get_timestamp
-    logger.get_timestamp = get_timestamp
-
-    class Logger:
-
-        def __init__(self):
-            self.log_level = "INFO"
-            print(format_message("[Logger] Initializing logger system"))
-
-        def configure(self):
-            """Configure logger with settings from config module"""
-            get_log_level = _cribo_init___cribo_f96d2c_config(globals()['config']).get_log_level
-            self.log_level = get_log_level()
-            self.log(f"Logger configured with level: {self.log_level}")
-
-        def log(self, message, level="INFO"):
-            if self._should_log(level):
-                print(f"[{level}] {message}")
-
-        def _should_log(self, level):
-            levels = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3}
-            return levels.get(level, 1) >= levels.get(self.log_level, 1)
-    Logger.__module__ = 'logger'
-    self.Logger = Logger
-    _logger = None
-    _cribo_logger__logger = _logger
-    self._logger = _cribo_logger__logger
-
-    def get_logger():
+def _cribo_init___cribo_0639af_logger(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
+    if _cribo_getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if _cribo_getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = '\nLogger module that needs configuration to determine log level.\nThis creates a circular dependency: logger -> config -> logger\n'
         global _cribo_logger__logger
-        if _cribo_logger__logger is None:
-            _cribo_logger__logger = self.Logger()
-        return _cribo_logger__logger
-    self.get_logger = get_logger
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+        """\nLogger module that needs configuration to determine log level.\nThis creates a circular dependency: logger -> config -> logger\n"""
+        format_message = utils.format_message
+        logger.format_message = format_message
+        get_timestamp = utils.get_timestamp
+        logger.get_timestamp = get_timestamp
+
+        class Logger:
+
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'logger'), _cribo_f)[1])
+            def __init__(self):
+                self.log_level = "INFO"
+                print(format_message("[Logger] Initializing logger system"))
+
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'logger'), _cribo_f)[1])
+            def configure(self):
+                """Configure logger with settings from config module"""
+                get_log_level = _cribo_init___cribo_f96d2c_config(globals()['config']).get_log_level
+                self.log_level = get_log_level()
+                self.log(f"Logger configured with level: {self.log_level}")
+
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'logger'), _cribo_f)[1])
+            def log(self, message, level="INFO"):
+                if self._should_log(level):
+                    print(f"[{level}] {message}")
+
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'logger'), _cribo_f)[1])
+            def _should_log(self, level):
+                levels = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3}
+                return levels.get(level, 1) >= levels.get(self.log_level, 1)
+        Logger.__module__ = 'logger'
+        Logger.__qualname__ = 'Logger'
+        _cribo_self.Logger = Logger
+        _logger = None
+        _cribo_logger__logger = _logger
+        _cribo_self._logger = _cribo_logger__logger
+
+        def get_logger():
+            global _cribo_logger__logger
+            if _cribo_logger__logger is None:
+                _cribo_logger__logger = _cribo_self.Logger()
+            return _cribo_logger__logger
+        get_logger.__module__ = 'logger'
+        get_logger.__qualname__ = 'get_logger'
+        _cribo_self.get_logger = get_logger
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 logger.__init__ = _cribo_init___cribo_0639af_logger
 app = _cribo.types.SimpleNamespace(__name__='app', __doc__='\nApplication module that uses both config and logger.\nNo circular dependencies here - just normal imports.\n')
 """\nApplication module that uses both config and logger.\nNo circular dependencies here - just normal imports.\n"""
@@ -157,11 +292,13 @@ logger = logger.__init__(logger)
 get_logger = logger.get_logger
 class Application:
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'app'), _cribo_f)[1])
     def __init__(self):
         self.config = config.get_config()
         self.logger = logger.get_logger()
         self.logger.log(f"Creating {self.config.app_name} v{self.config.version} application instance")
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'app'), _cribo_f)[1])
     def run(self):
         """Run the application with various logging examples"""
         self.logger.log("Application.run() called", "DEBUG")
@@ -169,6 +306,7 @@ class Application:
         self.demonstrate_import_patterns()
         self.logger.log("Application tasks completed", "INFO")
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'app'), _cribo_f)[1])
     def demonstrate_import_patterns(self):
         """Show how the same module can be imported different ways"""
         global logger
@@ -180,6 +318,11 @@ class Application:
         local_logger.log("Function-level import gives same logger instance", "DEBUG")
 Application.__module__ = 'app'
 app.Application = Application
+_cribo_captured['format_message'] = format_message
+_cribo_captured['get_timestamp'] = get_timestamp
+_cribo_captured['Application'] = Application
+_cribo_captured['get_logger'] = get_logger
+_cribo_captured['get_config'] = get_config
 """\nSimulates a software architecture with:\n- A logger that needs configuration\n- A configuration system that logs its initialization\n- An application that uses both\n- Utilities that are used everywhere (no circular deps)\n"""
 def main():
     print(format_message("=== Application Starting ==="))

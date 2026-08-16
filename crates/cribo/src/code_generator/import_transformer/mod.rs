@@ -601,6 +601,15 @@ impl<'a> RecursiveImportTransformer<'a> {
                     Stmt::Assert(assert_stmt) => {
                         StatementsHandler::handle_assert(self, assert_stmt);
                     }
+                    // `del name` kills the binding: later uses raise NameError, so
+                    // the name must no longer be rewritten as an import alias
+                    Stmt::Delete(delete_stmt) => {
+                        for target in &delete_stmt.targets {
+                            if let Expr::Name(name) = target {
+                                self.state.shadowed_bindings.insert(name.id.to_string());
+                            }
+                        }
+                    }
                     _ => {}
                 }
                 i += 1;
@@ -694,6 +703,33 @@ impl<'a> RecursiveImportTransformer<'a> {
     fn transform_statement(&mut self, stmt: &mut Stmt) -> Vec<Stmt> {
         // Check if it's a hoisted import before matching
         let is_hoisted = import_deduplicator::is_hoisted_import(self.state.bundler, stmt);
+
+        // An import statement makes its bindings live from here on: lift any
+        // body-wide shadows recorded for the bound names, so usage AFTER a
+        // function-local import resolves through it while usage before it still
+        // sees the shadow (UnboundLocalError semantics)
+        match &stmt {
+            Stmt::Import(import_stmt) => {
+                for alias in &import_stmt.names {
+                    let name_str = alias.name.as_str();
+                    let bound = alias.asname.as_ref().map_or_else(
+                        || name_str.split('.').next().unwrap_or(name_str),
+                        ruff_python_ast::Identifier::as_str,
+                    );
+                    self.state.shadowed_bindings.shift_remove(bound);
+                }
+            }
+            Stmt::ImportFrom(import_from) => {
+                for alias in &import_from.names {
+                    if alias.name.as_str() == "*" {
+                        continue;
+                    }
+                    let bound = alias.asname.as_ref().unwrap_or(&alias.name).as_str();
+                    self.state.shadowed_bindings.shift_remove(bound);
+                }
+            }
+            _ => {}
+        }
 
         match stmt {
             Stmt::Import(import_stmt) => {

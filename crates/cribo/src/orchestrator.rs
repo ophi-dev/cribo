@@ -105,6 +105,14 @@ pub struct BundleOrchestrator {
     conflict_resolver: SymbolConflictResolver,
     /// Cache of processed modules to ensure we only parse and transform once
     module_cache: std::sync::Mutex<FxIndexMap<PathBuf, ProcessedModule>>,
+    /// Static `importlib.import_module` targets that stayed external during discovery;
+    /// they never enter the module graph as imports, but their distributions must
+    /// still reach requirements generation
+    external_importlib_targets: std::sync::Mutex<crate::types::FxIndexSet<String>>,
+    /// Absolute literal targets of preserved `import_module` calls (arguments not
+    /// safely discardable): the call executes as a real runtime import even when the
+    /// target is also bundled, so its distribution must stay installed
+    preserved_importlib_targets: std::sync::Mutex<crate::types::FxIndexSet<String>>,
 }
 
 impl BundleOrchestrator {
@@ -114,6 +122,8 @@ impl BundleOrchestrator {
             config,
             conflict_resolver: SymbolConflictResolver::new(),
             module_cache: std::sync::Mutex::new(FxIndexMap::default()),
+            external_importlib_targets: std::sync::Mutex::new(crate::types::FxIndexSet::default()),
+            preserved_importlib_targets: std::sync::Mutex::new(crate::types::FxIndexSet::default()),
         }
     }
 
@@ -226,6 +236,17 @@ impl BundleOrchestrator {
         Vec<ParsedModuleData>,
         Option<CircularDependencyAnalysis>,
     )> {
+        // Discovery state from a previous bundle run on this orchestrator must not
+        // leak into this run's requirements
+        self.external_importlib_targets
+            .lock()
+            .expect("external importlib targets lock poisoned")
+            .clear();
+        self.preserved_importlib_targets
+            .lock()
+            .expect("preserved importlib targets lock poisoned")
+            .clear();
+
         // Store the original entry path before transformation
         let original_entry_path = entry_path.to_path_buf();
 
@@ -783,15 +804,78 @@ impl BundleOrchestrator {
             // Parse the module and cache its reusable facts.
             let processed = self.process_module(&module_path, &module_name)?;
 
+            // Record literal distribution-metadata queries (importlib.metadata.version
+            // et al.) and package-resource reads (importlib.resources.files,
+            // pkgutil.get_data) before classifying this module's imports, so queried
+            // providers and resource targets are kept external and installed
+            if self.config.bundle_third_party()
+                && (processed.source.contains("importlib")
+                    || processed.source.contains("pkg_resources")
+                    || processed.source.contains("pkgutil"))
+            {
+                let usage = crate::resolver::queried_distribution_requirements(&processed.ast);
+                params
+                    .resolver
+                    .record_queried_distributions(usage.requirements);
+                params
+                    .resolver
+                    .record_resource_read_imports(usage.resource_import_targets);
+                if usage.enumerates_distributions {
+                    params.resolver.record_global_distribution_enumeration();
+                }
+            }
+
+            // Record imported providers whose filesystem/import-spec globals this
+            // module reads (provider.__file__, provider.__spec__.origin, ...),
+            // that are passed to source-inspection or module-identity APIs
+            // (inspect.getsource, ismodule, isinstance against ModuleType), or
+            // that appear in hash-requiring contexts (dict keys, set elements):
+            // generated namespaces carry no faithful values and are unhashable,
+            // so observed targets keep their installed module identity. No
+            // cheap textual prefilter exists for the hash contexts, so the
+            // collector runs on every module (one AST pass).
+            if self.config.bundle_third_party() {
+                params.resolver.record_resource_read_imports(
+                    crate::visitors::utils::imported_module_dunder_read_targets(
+                        &processed.ast.body,
+                    ),
+                );
+            }
+
+            // Record module names whose sys.modules entries this module observes
+            // (sys.modules["dep"], sys.modules[dep.__name__]): bundled targets must
+            // register in sys.modules when their init runs, because static imports
+            // invoke the initializer directly rather than the import machinery
+            if processed.source.contains("modules") {
+                params.resolver.record_sys_modules_observed_targets(
+                    crate::visitors::utils::sys_modules_observed_module_names(&processed.ast.body),
+                );
+            }
+
             // Extract imports from the processed AST
             let imports_with_context = self.extract_imports_from_facts(
                 &processed.facts.discovered_imports,
                 &module_path,
                 Some(params.resolver),
             );
+            // Reachability pruning consumes these edges as ABSOLUTE module names:
+            // normalize relative importlib targets (".backend" with package="pkg")
+            // the same way discovery queueing does, so the pruning pass sees
+            // "pkg.backend" rather than a raw relative string it can never match
             let imports: Vec<String> = imports_with_context
                 .iter()
-                .map(|(m, _, _, _)| m.clone())
+                .map(|(m, _, import_type, package_context)| {
+                    if *import_type == Some(crate::visitors::ImportType::ImportlibStatic)
+                        && m.starts_with('.')
+                        && let Some((resolved_name, _)) = params
+                            .resolver
+                            .resolve_importlib_static_with_context(m, package_context.as_deref())
+                    {
+                        resolved_name
+                    } else {
+                        m.clone()
+                    }
+                })
                 .collect();
             debug!("Extracted imports from {module_name}: {imports:?}");
 
@@ -821,6 +905,48 @@ impl BundleOrchestrator {
             "Phase 1 complete: discovered {} modules",
             discovered_modules.len()
         );
+
+        // Metadata queries recorded late in discovery can flip earlier bundling
+        // decisions; drop modules whose final classification is external before they
+        // enter the graph. Dropped names are recorded as external importlib targets:
+        // modules reached only through literal import_module calls leave no graph
+        // import item, so requirements generation would otherwise never see them
+        if self.config.bundle_third_party() {
+            let modules_before_drop = discovered_modules.len();
+            let mut external_targets = self
+                .external_importlib_targets
+                .lock()
+                .expect("external importlib targets lock poisoned");
+            discovered_modules.retain(|(module_id, module_path, _, _)| {
+                if module_id.is_entry() {
+                    return true;
+                }
+                let Some(module_name) = params.resolver.get_module_name(*module_id) else {
+                    return true;
+                };
+                let keep = params
+                    .resolver
+                    .classify_import(&module_name)
+                    .should_bundle();
+                if !keep {
+                    debug!(
+                        "Dropping module '{module_name}' ({}) after discovery: final \
+                         classification is external",
+                        module_path.display()
+                    );
+                    external_targets.insert(module_name);
+                }
+                keep
+            });
+            drop(external_targets);
+            // Dropping a module can orphan dependencies it alone pulled in: a
+            // transitive module no longer reachable from the retained graph must not
+            // be bundled, or its side effects would execute while the external parent
+            // loads its own installed copy of the dependency
+            if discovered_modules.len() != modules_before_drop {
+                Self::prune_unreachable_modules(&mut discovered_modules, params.resolver);
+            }
+        }
 
         // PHASE 2: Add all modules to graph and create dependency edges
         info!("Phase 2: Adding modules to graph...");
@@ -975,6 +1101,81 @@ impl BundleOrchestrator {
         Ok(())
     }
 
+    /// Drop discovered modules that are no longer reachable from the entry module
+    /// through the retained modules' imports.
+    ///
+    /// Reachability follows resolved import names plus their ancestor packages
+    /// (importing a submodule imports its parents). Orphans are simply dropped, not
+    /// recorded as external targets: bundled code never references them directly, and
+    /// the external parent's own distribution requirements cover their installation.
+    fn prune_unreachable_modules(
+        discovered_modules: &mut Vec<(ModuleId, PathBuf, Vec<String>, ProcessedModule)>,
+        resolver: &ModuleResolver,
+    ) {
+        let module_names: Vec<Option<String>> = discovered_modules
+            .iter()
+            .map(|(module_id, _, _, _)| resolver.get_module_name(*module_id))
+            .collect();
+        let mut index_by_name: FxIndexMap<String, usize> = FxIndexMap::default();
+        for (index, name) in module_names.iter().enumerate() {
+            if let Some(name) = name {
+                index_by_name.insert(name.clone(), index);
+            }
+        }
+
+        let mut reachable = vec![false; discovered_modules.len()];
+        let mut queue: Vec<usize> = Vec::new();
+        // Mark a name and its ancestor packages reachable
+        let mark = |name: &str, reachable: &mut Vec<bool>, queue: &mut Vec<usize>| {
+            let mut current = name;
+            loop {
+                if let Some(&index) = index_by_name.get(current)
+                    && !reachable[index]
+                {
+                    reachable[index] = true;
+                    queue.push(index);
+                }
+                match current.rsplit_once('.') {
+                    Some((parent, _)) => current = parent,
+                    None => break,
+                }
+            }
+        };
+
+        for (index, (module_id, _, _, _)) in discovered_modules.iter().enumerate() {
+            if module_id.is_entry() {
+                reachable[index] = true;
+                queue.push(index);
+                // The entry's ancestor packages are bundled alongside it (a package
+                // __main__ entry pulls in its package initializer)
+                if let Some(name) = &module_names[index] {
+                    mark(name, &mut reachable, &mut queue);
+                }
+            }
+        }
+        while let Some(index) = queue.pop() {
+            // Split borrows: clone the imports to walk them while marking
+            for import in discovered_modules[index].2.clone() {
+                mark(&import, &mut reachable, &mut queue);
+            }
+        }
+
+        let mut index = 0;
+        discovered_modules.retain(|(_, module_path, _, _)| {
+            let keep = reachable[index];
+            if !keep {
+                debug!(
+                    "Pruning module '{}' ({}) after discovery: it is only reachable through \
+                     dropped external modules",
+                    module_names[index].as_deref().unwrap_or("<unknown>"),
+                    module_path.display()
+                );
+            }
+            index += 1;
+            keep
+        });
+    }
+
     /// Resolve imports from precomputed module facts with full context information.
     fn extract_imports_from_facts(
         &self,
@@ -999,8 +1200,9 @@ impl BundleOrchestrator {
             let extracted_imports = if matches!(
                 import.import_type,
                 crate::visitors::ImportType::ImportlibStatic
+                    | crate::visitors::ImportType::ImportlibPreserved
             ) {
-                self.handle_importlib_static(import, is_in_error_handler)
+                self.handle_importlib_static(import, file_path, resolver, is_in_error_handler)
             } else if import.level > 0 {
                 self.handle_relative_import(import, file_path, &mut resolver, is_in_error_handler)
             } else if let Some(ref module_name) = import.module_name {
@@ -1018,9 +1220,19 @@ impl BundleOrchestrator {
     }
 
     /// Handle `ImportlibStatic` imports and preserve package context metadata.
+    ///
+    /// A PRESERVED relative call (`import_module(".backend", __package__, **{})`)
+    /// resolves its absolute candidate here: through the literal package
+    /// context when present, otherwise against the containing file's location —
+    /// discovery only records anchor-less relative targets whose package
+    /// argument is provably `__package__`, so the file-path fallback stands in
+    /// for exactly that runtime value. The verbatim runtime call then finds
+    /// the bundled target registered with the finder.
     fn handle_importlib_static(
         &self,
         import: &DiscoveredImport,
+        file_path: &Path,
+        resolver: Option<&ModuleResolver>,
         is_in_error_handler: bool,
     ) -> ImportExtractionResult {
         let mut imports_set = IndexSet::new();
@@ -1028,13 +1240,31 @@ impl BundleOrchestrator {
 
         imports_set
             .into_iter()
-            .map(|module_name| {
-                (
-                    module_name,
+            .filter_map(|module_name| {
+                let resolved_name = if import.import_type
+                    == crate::visitors::ImportType::ImportlibPreserved
+                    && module_name.starts_with('.')
+                {
+                    if let Some(package) = &import.package_context {
+                        crate::python::importlib_call::resolve_relative_name(&module_name, package)?
+                    } else {
+                        let name_part = module_name.trim_start_matches('.');
+                        let level = (module_name.len() - name_part.len()) as u32;
+                        resolver?.resolve_relative_to_absolute_module_name(
+                            level,
+                            (!name_part.is_empty()).then_some(name_part),
+                            file_path,
+                        )?
+                    }
+                } else {
+                    module_name
+                };
+                Some((
+                    resolved_name,
                     is_in_error_handler,
                     Some(import.import_type),
                     import.package_context.clone(),
-                )
+                ))
             })
             .collect()
     }
@@ -1296,7 +1526,15 @@ impl BundleOrchestrator {
                     let import_parts = import.split('.').count();
                     let derived_parts = derived_name.split('.').count();
 
-                    if derived_parts > import_parts {
+                    // A derived name is only usable when every component is a valid
+                    // Python identifier; paths through e.g. a virtualenv inside the
+                    // entry directory (".venv/lib/python3.12/site-packages/...") must
+                    // not override the import name
+                    let derived_is_importable = derived_name
+                        .split('.')
+                        .all(ruff_python_stdlib::identifiers::is_identifier);
+
+                    if derived_parts > import_parts && derived_is_importable {
                         // The derived name has more context (e.g., "rich.jupyter" vs "jupyter")
                         log::debug!(
                             "Using derived module name '{}' instead of '{}' for path {}",
@@ -1401,6 +1639,34 @@ impl BundleOrchestrator {
         params: &mut DiscoveryParams<'_>,
     ) -> Result<()> {
         // Special handling for ImportlibStatic imports that might have invalid Python identifiers
+        if import_type == Some(crate::visitors::ImportType::ImportlibPreserved) {
+            // The call is preserved verbatim and executes as a real runtime import.
+            // A bundleable target (first-party module or pure third-party package)
+            // must be BUNDLED and registered in sys.modules so the runtime call
+            // resolves it inside the single-file bundle; anything else must reach
+            // requirements generation instead.
+            let classification = params.resolver.classify_import(import);
+            if classification.should_bundle()
+                && let Ok(Some(import_path)) = params.resolver.resolve_module_path(import)
+            {
+                debug!(
+                    "Preserved importlib target '{import}' is bundleable; queueing it and \
+                     registering it in sys.modules"
+                );
+                params
+                    .resolver
+                    .record_preserved_importlib_target(import.to_owned());
+                self.add_to_discovery_queue_if_new(import, import_path, params)?;
+                self.add_parent_packages_to_discovery(import, params)?;
+            } else {
+                debug!("Recording preserved importlib target as external: {import}");
+                self.preserved_importlib_targets
+                    .lock()
+                    .expect("preserved importlib targets lock poisoned")
+                    .insert(import.to_owned());
+            }
+            return Ok(());
+        }
         if import_type == Some(crate::visitors::ImportType::ImportlibStatic) {
             debug!("Processing ImportlibStatic import: {import}");
 
@@ -1409,12 +1675,33 @@ impl BundleOrchestrator {
                 .resolver
                 .resolve_importlib_static_with_context(import, package_context.map(String::as_str))
             {
-                debug!(
-                    "Resolved ImportlibStatic '{import}' to module '{resolved_name}' at path: {}",
-                    import_path.display()
-                );
-                // Use the resolved name instead of the original import
-                self.add_to_discovery_queue_if_new(&resolved_name, import_path, params)?;
+                // The resolved target is subject to the same bundling policy as any
+                // other import: external classifications (known_third_party, native
+                // artifacts, metadata usage) must not be bypassed by literal calls
+                let classification = params.resolver.classify_import(&resolved_name);
+                if classification.should_bundle() {
+                    debug!(
+                        "Resolved ImportlibStatic '{import}' to module '{resolved_name}' at \
+                         path: {}",
+                        import_path.display()
+                    );
+                    // Use the resolved name instead of the original import
+                    self.add_to_discovery_queue_if_new(&resolved_name, import_path, params)?;
+                    // Python executes parent package initializers before loading a
+                    // submodule; queue them like the normal-import path does
+                    self.add_parent_packages_to_discovery(&resolved_name, params)?;
+                } else {
+                    debug!(
+                        "ImportlibStatic '{import}' resolved to '{resolved_name}' but classified \
+                         as external (preserving)"
+                    );
+                    if !resolved_name.starts_with('.') {
+                        self.external_importlib_targets
+                            .lock()
+                            .expect("external importlib targets lock poisoned")
+                            .insert(resolved_name);
+                    }
+                }
             } else {
                 // Try normal resolution in case it's a valid Python identifier
                 let classification = params.resolver.classify_import(import);
@@ -1434,6 +1721,14 @@ impl BundleOrchestrator {
                     }
                 } else {
                     debug!("ImportlibStatic '{import}' classified as external (preserving)");
+                    // The preserved runtime call never enters the module graph as an
+                    // import item; record it so requirements generation still sees it
+                    if !import.starts_with('.') {
+                        self.external_importlib_targets
+                            .lock()
+                            .expect("external importlib targets lock poisoned")
+                            .insert(import.to_owned());
+                    }
                 }
             }
         } else {
@@ -1747,6 +2042,38 @@ impl BundleOrchestrator {
         graph: &DependencyGraph,
     ) -> Result<String> {
         let mut requirement_imports = IndexMap::new();
+        // Bundled third-party import -> extras requested for it via module-map
+        let mut bundled_third_party_imports: FxIndexMap<String, Vec<pep508_rs::ExtraName>> =
+            FxIndexMap::default();
+
+        // Collect every bundled third-party module by ID, not by import statement:
+        // modules reached only through literal importlib.import_module calls have no
+        // Import/FromImport graph items, but their distributions' declared
+        // dependencies must still be propagated
+        if self.config.bundle_third_party() {
+            for module_id in module_ids {
+                let Some(module_name) = resolver.get_module_name(*module_id) else {
+                    continue;
+                };
+                let classification = resolver.classify_import(&module_name);
+                // Namespace-package parents are synthetic containers claimed by every
+                // provider distribution in the namespace; ownership must come from the
+                // concrete bundled descendants only
+                if classification.should_bundle()
+                    && matches!(classification.origin, ImportOrigin::ThirdParty)
+                    && !matches!(
+                        classification.source,
+                        crate::resolver::ImportSource::NamespacePackage
+                    )
+                {
+                    let extras = self.module_map_extras(&module_name)?;
+                    bundled_third_party_imports
+                        .entry(module_name)
+                        .or_default()
+                        .extend(extras);
+                }
+            }
+        }
 
         // TODO: Use TYPE_CHECKING information from the dependency graph to filter out
         // dependencies that are only used for type checking. These could be placed
@@ -1759,6 +2086,12 @@ impl BundleOrchestrator {
                 for import in &imports {
                     debug!("Checking import '{import}' for requirements");
                     let classification = resolver.classify_import(import);
+                    // Under --bundle-third-party, imports whose source is inlined into
+                    // the bundle need no requirement entry, but their distributions'
+                    // declared dependencies are still carried over below
+                    if self.config.bundle_third_party() && classification.should_bundle() {
+                        continue;
+                    }
                     if matches!(
                         classification.origin,
                         ImportOrigin::ThirdParty | ImportOrigin::Unknown
@@ -1771,14 +2104,198 @@ impl BundleOrchestrator {
             }
         }
 
+        // Static importlib targets preserved as runtime calls never appear as graph
+        // import items; include the recorded ones in requirement collection
+        for import in self
+            .external_importlib_targets
+            .lock()
+            .expect("external importlib targets lock poisoned")
+            .iter()
+        {
+            let classification = resolver.classify_import(import);
+            if matches!(
+                classification.origin,
+                ImportOrigin::ThirdParty | ImportOrigin::Unknown
+            ) && !(self.config.bundle_third_party() && classification.should_bundle())
+            {
+                requirement_imports
+                    .entry(import.clone())
+                    .or_insert_with(|| resolver.get_import_search_root(import));
+            }
+        }
+
+        // Targets of preserved import_module calls execute as real runtime imports
+        // even when their source is also bundled, so their distributions must stay
+        // installed regardless of the target's own bundling classification
+        for import in self
+            .preserved_importlib_targets
+            .lock()
+            .expect("preserved importlib targets lock poisoned")
+            .iter()
+        {
+            let classification = resolver.classify_import(import);
+            if matches!(
+                classification.origin,
+                ImportOrigin::ThirdParty | ImportOrigin::Unknown
+            ) {
+                requirement_imports
+                    .entry(import.clone())
+                    .or_insert_with(|| resolver.get_import_search_root(import));
+            }
+        }
+
         let requirement_resolver = RequirementResolver::new(
             &self.config.requirements,
             resolver.get_distribution_metadata_search_directories(),
         );
         let resolved_requirements = requirement_resolver.resolve(&requirement_imports)?;
-        let mut requirements: Vec<String> = resolved_requirements.into_iter().collect();
+        let requirements: Vec<String> = resolved_requirements.into_iter().collect();
+
+        // Carry over Requires-Dist constraints declared by bundled distributions for
+        // their external (or dynamically imported) dependencies. Entries are grouped
+        // by normalized name; within one name, equal-marker declarations are merged
+        // (preferring a constrained declaration over a bare resolved name) while
+        // distinct marker branches stay on separate lines, since pip evaluates each
+        // line's marker independently
+        use std::str::FromStr;
+        type ParsedRequirement = pep508_rs::Requirement<pep508_rs::VerbatimUrl>;
+        let mut entries_by_name: IndexMap<String, Vec<ParsedRequirement>> = IndexMap::new();
+        let mut unparsable_entries: Vec<String> = Vec::new();
+        let mut record_entry =
+            |entry: String, entries: &mut IndexMap<String, Vec<ParsedRequirement>>| {
+                let Ok(parsed) = ParsedRequirement::from_str(&entry) else {
+                    if !unparsable_entries.contains(&entry) {
+                        unparsable_entries.push(entry);
+                    }
+                    return;
+                };
+                let name = parsed.name.to_string();
+                let branches = entries.entry(name).or_default();
+                if let Some(existing) = branches
+                    .iter_mut()
+                    .find(|existing| existing.marker == parsed.marker)
+                {
+                    // Same-marker duplicates intersect their constraints: extras are
+                    // unioned and version-specifier sets combined, so a module-map
+                    // override and a bundled distribution's Requires-Dist entry both
+                    // apply, like a normal installation would resolve them.
+                    // Conflicting direct URLs are unmergeable: both lines are
+                    // emitted so the installer reports the conflict.
+                    if let Some(unmergeable) =
+                        ModuleResolver::merge_requirement_constraints(existing, parsed)
+                    {
+                        branches.push(unmergeable);
+                    }
+                } else {
+                    branches.push(parsed);
+                }
+            };
+        for entry in requirements {
+            record_entry(entry, &mut entries_by_name);
+        }
+        // Distributions whose metadata bundled code queries at runtime (e.g.
+        // `importlib.metadata.version("provider")`) need their dist-info installed
+        // even when no module of theirs is imported; the query alone is a dependency,
+        // and constrained literals (`pkg_resources.require("provider[speed]>=2")`)
+        // keep their extras and version specifiers
+        if self.config.bundle_third_party() {
+            for requirement in resolver.queried_installed_distribution_requirements() {
+                record_entry(requirement, &mut entries_by_name);
+            }
+            // Global enumeration (entry_points(), packages_distributions())
+            // observes EVERY installed distribution, including plugin providers
+            // that are never imported: carry them all into requirements
+            for requirement in resolver.globally_enumerated_distribution_requirements() {
+                record_entry(requirement, &mut entries_by_name);
+            }
+        }
+        for declared in resolver.bundled_distribution_requirements(&bundled_third_party_imports) {
+            record_entry(declared, &mut entries_by_name);
+        }
+        let mut requirements: Vec<String> = entries_by_name
+            .into_values()
+            .flatten()
+            .map(|requirement| requirement.to_string())
+            .collect();
+        requirements.extend(unparsable_entries);
         requirements.sort();
 
         Ok(requirements.join("\n"))
+    }
+
+    /// Return the extras requested for a bundled import through a
+    /// `requirements.module-map` entry (e.g. `provider = "provider[speed]"`), matched
+    /// by longest prefix like requirement resolution itself.
+    ///
+    /// An invalid mapping is a hard error: bundled imports skip
+    /// `RequirementResolver::override_for`, so this is the only place the
+    /// configuration problem can surface for them.
+    fn module_map_extras(&self, import_name: &str) -> Result<Vec<pep508_rs::ExtraName>> {
+        use std::str::FromStr;
+        let mapping = self
+            .config
+            .requirements
+            .module_map
+            .iter()
+            .filter(|(prefix, _)| RequirementResolver::matches_prefix(prefix, import_name))
+            .max_by_key(|(prefix, _)| prefix.split('.').count());
+        let Some((prefix, requirement)) = mapping else {
+            return Ok(Vec::new());
+        };
+        let parsed = pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(requirement)
+            .with_context(|| {
+                format!(
+                    "Invalid PEP 508 requirement '{requirement}' configured for import prefix \
+                     '{prefix}'"
+                )
+            })?;
+        Ok(parsed.extras)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::TempDir;
+
+    use super::*;
+
+    /// External importlib targets recorded during one bundle run must not leak into a
+    /// later run on the same orchestrator instance.
+    #[test]
+    fn test_external_importlib_targets_cleared_between_runs() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        let first_entry = temp_dir.path().join("first.py");
+        fs::write(
+            &first_entry,
+            "import importlib\n\ntry:\n    \
+             importlib.import_module(\"totally_unknown_dist\")\nexcept ImportError:\n    pass\n",
+        )?;
+        let second_entry = temp_dir.path().join("second.py");
+        fs::write(&second_entry, "print(\"plain\")\n")?;
+
+        let mut orchestrator = BundleOrchestrator::new(Config::default());
+        orchestrator.bundle_to_string(&first_entry, false)?;
+        assert!(
+            orchestrator
+                .external_importlib_targets
+                .lock()
+                .expect("lock")
+                .contains("totally_unknown_dist"),
+            "the first run must record its external importlib target"
+        );
+
+        orchestrator.bundle_to_string(&second_entry, false)?;
+        assert!(
+            orchestrator
+                .external_importlib_targets
+                .lock()
+                .expect("lock")
+                .is_empty(),
+            "run-specific discovery state must be cleared between bundle runs"
+        );
+
+        Ok(())
     }
 }

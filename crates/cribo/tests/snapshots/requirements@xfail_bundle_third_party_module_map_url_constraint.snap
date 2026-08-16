@@ -1,0 +1,8 @@
+---
+source: crates/cribo/tests/test_bundling_snapshots.rs
+input_file: crates/cribo/tests/fixtures/xfail_bundle_third_party_module_map_url_constraint/main.py
+---
+packages:
+  - "external-dep @ https://example.invalid/external_dep-1.0-py3-none-any.whl"
+  - external-dep<2
+count: 2

@@ -431,3 +431,138 @@ pub(crate) fn try_stmt(
         node_index: AtomicNodeIndex::NONE,
     })
 }
+
+/// Stamp the provider module's identity onto every definition executed inside
+/// a bundled suite, by appending an INNERMOST decorator to each function and
+/// class definition found at any nesting depth — inside compound suites
+/// (`if`/`for`/`while`/`with`/`try`/`match`) and inside other definitions'
+/// bodies (methods, factory-created inner functions, nested classes):
+///
+/// ```python
+/// @lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'records'), _cribo_f)[1]
+/// def __init__(self): ...
+/// ```
+///
+/// Functions and classes created while bundled code executes read the BUNDLE
+/// entry's `__name__` for their `__module__`; post-definition stamps can only
+/// correct the objects bound at module scope. The innermost decorator runs
+/// FIRST (before any user decorator observes the object), so decorator-time
+/// reads of `f.__module__` and later introspection both see the provider
+/// module. `setattr` is captured as a parameter default when the lambda is
+/// created.
+///
+/// Callers pass a CLASS body or a FUNCTION body — never the module-level
+/// statement list, whose definitions receive guarded post-definition stamps
+/// instead (pre-stamping them would defeat the imported-callable provenance
+/// check those guards perform).
+pub(crate) fn stamp_nested_definitions(suite: &mut [Stmt], module_name: &str) {
+    for stmt in suite {
+        match stmt {
+            Stmt::FunctionDef(func_def) => {
+                stamp_nested_definitions(&mut func_def.body, module_name);
+                func_def
+                    .decorator_list
+                    .push(module_stamp_decorator(module_name));
+            }
+            Stmt::ClassDef(class_def) => {
+                stamp_nested_definitions(&mut class_def.body, module_name);
+                class_def
+                    .decorator_list
+                    .push(module_stamp_decorator(module_name));
+            }
+            Stmt::If(if_stmt) => {
+                stamp_nested_definitions(&mut if_stmt.body, module_name);
+                for clause in &mut if_stmt.elif_else_clauses {
+                    stamp_nested_definitions(&mut clause.body, module_name);
+                }
+            }
+            Stmt::For(for_stmt) => {
+                stamp_nested_definitions(&mut for_stmt.body, module_name);
+                stamp_nested_definitions(&mut for_stmt.orelse, module_name);
+            }
+            Stmt::While(while_stmt) => {
+                stamp_nested_definitions(&mut while_stmt.body, module_name);
+                stamp_nested_definitions(&mut while_stmt.orelse, module_name);
+            }
+            Stmt::With(with_stmt) => {
+                stamp_nested_definitions(&mut with_stmt.body, module_name);
+            }
+            Stmt::Try(try_stmt) => {
+                stamp_nested_definitions(&mut try_stmt.body, module_name);
+                for handler in &mut try_stmt.handlers {
+                    let ExceptHandler::ExceptHandler(handler) = handler;
+                    stamp_nested_definitions(&mut handler.body, module_name);
+                }
+                stamp_nested_definitions(&mut try_stmt.orelse, module_name);
+                stamp_nested_definitions(&mut try_stmt.finalbody, module_name);
+            }
+            Stmt::Match(match_stmt) => {
+                for case in &mut match_stmt.cases {
+                    stamp_nested_definitions(&mut case.body, module_name);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Build the innermost `__module__`-stamping decorator used by
+/// [`stamp_nested_definitions`].
+fn module_stamp_decorator(module_name: &str) -> Decorator {
+    use ruff_python_ast::{ExprLambda, Parameter, ParameterWithDefault};
+
+    let parameter = |name: &str, default: Option<Expr>| ParameterWithDefault {
+        range: TextRange::default(),
+        node_index: AtomicNodeIndex::NONE,
+        parameter: Parameter {
+            range: TextRange::default(),
+            node_index: AtomicNodeIndex::NONE,
+            name: Identifier::new(name, TextRange::default()),
+            annotation: None,
+        },
+        default: default.map(Box::new),
+    };
+    let parameters = Parameters {
+        range: TextRange::default(),
+        node_index: AtomicNodeIndex::NONE,
+        posonlyargs: vec![].into(),
+        args: vec![
+            parameter("_cribo_f", None),
+            parameter(
+                "_cribo_setattr",
+                Some(expressions::name("setattr", ExprContext::Load)),
+            ),
+        ]
+        .into(),
+        vararg: None,
+        kwonlyargs: vec![].into(),
+        kwarg: None,
+    };
+    let stamp_call = expressions::call(
+        expressions::name("_cribo_setattr", ExprContext::Load),
+        vec![
+            expressions::name("_cribo_f", ExprContext::Load),
+            expressions::string_literal("__module__"),
+            expressions::string_literal(module_name),
+        ],
+        vec![],
+    );
+    let body = expressions::subscript(
+        expressions::tuple(vec![
+            stamp_call,
+            expressions::name("_cribo_f", ExprContext::Load),
+        ]),
+        expressions::integer_literal(1),
+        ExprContext::Load,
+    );
+    Decorator {
+        range: TextRange::default(),
+        node_index: AtomicNodeIndex::NONE,
+        expression: Expr::Lambda(ExprLambda {
+            range: TextRange::default(),
+            node_index: AtomicNodeIndex::NONE,
+            parameters: Some(Box::new(parameters)),
+            body: Box::new(body),
+        }),
+    }
+}

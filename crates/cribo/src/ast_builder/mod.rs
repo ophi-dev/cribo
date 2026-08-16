@@ -54,10 +54,13 @@ pub(crate) mod expressions;
 pub(crate) mod module_attr_merge;
 pub(crate) mod module_wrapper;
 pub(crate) mod other;
+pub(crate) mod preserved_finder;
 pub(crate) mod proxy_generator;
 pub(crate) mod statements;
 
 /// Internal namespace prefix used for hoisted stdlib access.
 pub(crate) const CRIBO_PREFIX: &str = "_cribo";
+/// Alias under which the proxy prelude imports `sys` (`import sys as _sys`).
+pub(crate) const CRIBO_SYS_ALIAS: &str = "_sys";
 
 // Re-export commonly used functions for convenience

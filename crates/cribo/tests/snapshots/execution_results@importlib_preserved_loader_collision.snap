@@ -1,0 +1,9 @@
+---
+source: crates/cribo/tests/test_bundling_snapshots.rs
+input_file: crates/cribo/tests/fixtures/importlib_preserved_loader_collision/main.py
+---
+ExecutionResults {
+    status: Success,
+    stdout: "collision_helper imported\nVALUE: collision-proof\nshadow: None",
+    stderr: "",
+}

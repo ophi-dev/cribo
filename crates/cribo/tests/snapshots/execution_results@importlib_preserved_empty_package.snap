@@ -1,0 +1,9 @@
+---
+source: crates/cribo/tests/test_bundling_snapshots.rs
+input_file: crates/cribo/tests/fixtures/importlib_preserved_empty_package/main.py
+---
+ExecutionResults {
+    status: Success,
+    stdout: "TypeError raised for empty package anchor\nhelper: statically imported helper",
+    stderr: "",
+}

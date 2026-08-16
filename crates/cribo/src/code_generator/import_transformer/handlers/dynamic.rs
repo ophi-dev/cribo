@@ -10,10 +10,15 @@ use crate::{
 pub(crate) struct DynamicHandler;
 
 impl DynamicHandler {
-    /// Check if this is an `importlib.import_module()` call
+    /// Check if this is an `importlib.import_module()` call.
+    ///
+    /// A callee whose base name is rebound by a local binding (function parameter,
+    /// assignment, loop variable) is not recognized: the call dispatches to that
+    /// binding's own `import_module` at runtime, not to `importlib`.
     pub(in crate::code_generator::import_transformer) fn is_importlib_import_module_call(
         call: &ExprCall,
         import_aliases: &FxIndexMap<String, String>,
+        shadowed_bindings: &FxIndexSet<String>,
     ) -> bool {
         match &call.func.as_ref() {
             // Direct call: importlib.import_module()
@@ -21,6 +26,9 @@ impl DynamicHandler {
                 match &attr.value.as_ref() {
                     Expr::Name(name) => {
                         let name_str = name.id.as_str();
+                        if shadowed_bindings.contains(name_str) {
+                            return false;
+                        }
                         // Check if it's 'importlib' directly or an alias that maps to 'importlib'
                         name_str == "importlib"
                             || import_aliases.get(name_str) == Some(&"importlib".to_owned())
@@ -30,74 +38,66 @@ impl DynamicHandler {
             }
             // Function call: im() where im is import_module
             Expr::Name(name) => {
+                let name_str = name.id.as_str();
+                if shadowed_bindings.contains(name_str) {
+                    return false;
+                }
                 // Check if this name is an alias for importlib.import_module
                 import_aliases
-                    .get(name.id.as_str())
+                    .get(name_str)
                     .is_some_and(|module| module == "importlib.import_module")
             }
             _ => false,
         }
     }
 
-    /// Resolve `importlib.import_module()` target module name, handling relative imports
-    fn resolve_importlib_target(call: &ExprCall, bundler: &Bundler<'_>) -> Option<String> {
-        if let Some(arg) = call.arguments.args.first()
-            && let Expr::StringLiteral(lit) = arg
+    /// Resolve `importlib.import_module()` target module name, handling relative imports.
+    /// Both argument forms are supported: positional (`import_module(".m", "pkg")`) and
+    /// keyword (`import_module(name=".m", package="pkg")`).
+    ///
+    /// Two argument shapes resolve: fully discardable arguments, and the
+    /// evaluable-package form (`import_module("pkg", package=touch())`), whose extra
+    /// expression the rewrite must still evaluate (see
+    /// [`Self::transform_importlib_import_module`]). Anything else stays a runtime
+    /// call.
+    fn resolve_importlib_target(call: &ExprCall) -> Option<String> {
+        if !(crate::python::importlib_call::arguments_safely_discardable(call)
+            || crate::python::importlib_call::evaluable_package_argument(call).is_some())
         {
-            let module_name = lit.value.to_str();
-
-            // Handle relative imports with package context
-            let resolved_name = if module_name.starts_with('.') && call.arguments.args.len() >= 2 {
-                // Get the package context from the second argument
-                if let Expr::StringLiteral(package_lit) = &call.arguments.args[1] {
-                    let package = package_lit.value.to_str();
-
-                    // Resolve package to path, then use resolver
-                    if let Ok(Some(package_path)) = bundler.resolver.resolve_module_path(package) {
-                        let level = module_name.chars().take_while(|&c| c == '.').count() as u32;
-                        let name_part = module_name.trim_start_matches('.');
-
-                        bundler
-                            .resolver
-                            .resolve_relative_to_absolute_module_name(
-                                level,
-                                if name_part.is_empty() {
-                                    None
-                                } else {
-                                    Some(name_part)
-                                },
-                                &package_path,
-                            )
-                            .unwrap_or_else(|| module_name.to_owned())
-                    } else {
-                        // Use resolver's method for package name resolution when path not found
-                        let level = module_name.chars().take_while(|&c| c == '.').count() as u32;
-                        let name_part = module_name.trim_start_matches('.');
-
-                        bundler.resolver.resolve_relative_import_from_package_name(
-                            level,
-                            if name_part.is_empty() {
-                                None
-                            } else {
-                                Some(name_part)
-                            },
-                            package,
-                        )
-                    }
-                } else {
-                    module_name.to_owned()
-                }
-            } else {
-                module_name.to_owned()
-            };
-
-            Some(resolved_name)
-        } else {
-            None
+            return None;
         }
+        let module_name = crate::python::importlib_call::literal_module_name(call)?;
+
+        // Handle relative imports with package context, exactly like CPython's
+        // `_resolve_name`: the literal package string is the verbatim anchor. No
+        // path-based module-vs-package adjustment is applied — Python computes the
+        // target textually and only then validates it, so a call anchored at a plain
+        // module (e.g. `import_module(".sub", "pkg.mod")` → `pkg.mod.sub`) resolves
+        // to a name that is not bundled, stays preserved, and raises at runtime like
+        // the original.
+        let package_argument = crate::python::importlib_call::literal_package_context(call);
+        let resolved_name = if module_name.starts_with('.') {
+            let package = package_argument?;
+            crate::python::importlib_call::resolve_relative_name(module_name, package)?
+        } else {
+            module_name.to_owned()
+        };
+
+        Some(resolved_name)
     }
 
-    /// Transform importlib.import_module("module-name") to direct module reference
+    /// Wrap a bundled-module access expression with a `sys.modules` consult.
+    /// Delegates to the shared helper used by static wrapper imports too.
+    fn sys_modules_entry_or(module_name: &str, access: Expr) -> Expr {
+        crate::ast_builder::module_wrapper::sys_modules_consult_or(module_name, access)
+    }
+
+    /// Transform importlib.import_module("module-name") to direct module reference.
+    ///
+    /// For the evaluable-package form (`import_module("pkg", package=touch())`), the
+    /// package expression is evaluated but ignored by CPython for absolute names, so
+    /// the rewrite preserves its evaluation (and any exception or side effect) with
+    /// `(touch(), <module access>)[1]`.
     pub(in crate::code_generator::import_transformer) fn transform_importlib_import_module(
         call: &ExprCall,
         bundler: &Bundler<'_>,
@@ -105,7 +105,7 @@ impl DynamicHandler {
         create_module_access_expr: impl Fn(&str) -> Expr,
     ) -> Option<Expr> {
         // Get the module name and resolve relative imports
-        if let Some(resolved_name) = Self::resolve_importlib_target(call, bundler) {
+        if let Some(resolved_name) = Self::resolve_importlib_target(call) {
             // Check if this module is part of the bundle (wrapper or inlined)
             if bundler.get_module_id(&resolved_name).is_some_and(|id| {
                 bundler.bundled_modules.contains(&id) || bundler.inlined_modules.contains(&id)
@@ -122,10 +122,39 @@ impl DynamicHandler {
                     *created_namespace_objects = true;
                 }
 
-                // Use common logic for module access
-                return Some(create_module_access_expr(&resolved_name));
+                // Use common logic for module access, but honor a PRELOADED
+                // sys.modules entry first: Python consults sys.modules before
+                // any loading, so `sys.modules["provider"] = replacement`
+                // installed ahead of the call must yield the replacement
+                // rather than (re)initializing the bundled module
+                let access = Self::sys_modules_entry_or(
+                    &resolved_name,
+                    create_module_access_expr(&resolved_name),
+                );
+                // Preserve the evaluation of a non-literal package expression:
+                // Python evaluates it before importing, so its side effects and
+                // exceptions must survive the rewrite
+                if let Some(package_expr) =
+                    crate::python::importlib_call::evaluable_package_argument(call)
+                {
+                    use ruff_python_ast::ExprContext;
+
+                    use crate::ast_builder::expressions;
+                    return Some(expressions::subscript(
+                        expressions::tuple(vec![package_expr.clone(), access]),
+                        expressions::integer_literal(1),
+                        ExprContext::Load,
+                    ));
+                }
+                return Some(access);
             }
         }
+        // Preserved calls with opaque arguments stay fully verbatim: the bundle's
+        // sys.meta_path finder (emitted in post-processing) maps bundled target
+        // names to their init functions, so Python's own import machinery
+        // evaluates and validates the arguments, initializes parent packages in
+        // order, and manages sys.modules — with exact runtime semantics and
+        // without eager initialization at bundle load.
         None
     }
 
@@ -179,7 +208,7 @@ impl DynamicHandler {
         importlib_inlined_modules: &mut FxIndexMap<String, String>,
     ) {
         // Get the module name and resolve relative imports
-        if let Some(resolved_name) = Self::resolve_importlib_target(call, bundler)
+        if let Some(resolved_name) = Self::resolve_importlib_target(call)
             && bundler
                 .get_module_id(&resolved_name)
                 .is_some_and(|id| bundler.inlined_modules.contains(&id))

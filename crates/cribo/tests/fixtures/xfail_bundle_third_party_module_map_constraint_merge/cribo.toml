@@ -1,0 +1,2 @@
+[requirements]
+module-map = { external_dep = "external-dep>=1" }

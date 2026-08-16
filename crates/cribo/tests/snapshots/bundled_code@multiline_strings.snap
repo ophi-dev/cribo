@@ -10,24 +10,127 @@ import sys as _sys
 import importlib as _importlib
 class _CriboModule():
 
-    def __init__(self, m, p):
-        self._m, self._p = m, p
+    def __init__(_cribo_self, m, p):
+        _cribo_self._m, _cribo_self._p = m, p
 
-    def __getattr__(self, n):
-        f = self._p + '.' + n
+    def __getattr__(_cribo_self, n, *, _getattr=getattr):
+        f = _cribo_self._p + '.' + n
         try:
             return _CriboModule(_importlib.import_module(f), f)
         except ImportError:
-            return getattr(self._m, n)
+            return _getattr(_cribo_self._m, n)
 
-    def __getattribute__(self, n):
-        return object.__getattribute__(self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else getattr(object.__getattribute__(self, '_m'), n)
+    def __getattribute__(_cribo_self, n, *, _getattr=getattr, _object=object):
+        return _object.__getattribute__(_cribo_self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else _getattr(_object.__getattribute__(_cribo_self, '_m'), n)
 class _Cribo():
 
-    def __getattr__(self, n):
+    def __getattr__(_cribo_self, n):
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
+_cribo_captured = {}
+class _CriboPreservedLoader:
+    _pristine = {}
+
+    def __init__(self, entry, namespace=None, reload_target=None):
+        self._entry = entry
+        self._namespace = namespace
+        self._reload_target = reload_target
+
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
+        module = None
+        if self._namespace is not None:
+            module = self._namespace
+        elif self._entry[1] is not None:
+            module = _globals()[self._entry[1]]
+        if module is not None:
+            if _getattr(module, '_cribo_machinery_loaded', False) or _getattr(module, '_cribo_failed_life', False) or _getattr(module, '__initialized__', False) and _getattr(module, '_cribo_registered', False):
+                saved = _type(self)._pristine.get(_id(module))
+                fresh = _ModuleType(spec.name)
+                fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
+                fresh._cribo_fresh_life = True
+                return fresh
+            return module
+        module = _ModuleType(spec.name)
+        for export, binding in self._entry[3].items():
+            _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
+        return module
+
+    def exec_module(self, module, *, _BaseException=BaseException, _dict=dict, _getattr=getattr, _globals=globals, _id=id, _type=type):
+        init = self._entry[0]
+        pristine = _type(self)._pristine
+        key = _id(module)
+        record_snapshot = not _getattr(module, '_cribo_fresh_life', False) and not _getattr(module, '__initialized__', False) and (self._namespace is not None or self._entry[1] is not None)
+        if init is None:
+            if record_snapshot and key not in pristine:
+                pristine[key] = _dict(module.__dict__)
+            module._cribo_machinery_loaded = True
+            return
+        is_reload = self._reload_target is module
+        if is_reload:
+            module.__initialized__ = False
+            module.__initializing__ = False
+        state = _dict(module.__dict__)
+        if record_snapshot and key not in pristine:
+            pristine[key] = _dict(state)
+        try:
+            _globals()[init](module)
+            module._cribo_machinery_loaded = True
+        except _BaseException:
+            if is_reload:
+                module.__initializing__ = False
+            else:
+                module.__dict__.clear()
+                module.__dict__.update(state)
+                module.__initializing__ = False
+                module._cribo_failed_life = True
+            raise
+class _CriboPreservedFinder:
+
+    def __init__(self):
+        self._targets = {}
+        self._namespaces = {}
+        self._registry = {}
+        self._loader = _CriboPreservedLoader
+
+    def register(self, name, init, namespace, is_package, exports=None):
+        entry = init, namespace, is_package, exports or {}
+        self._targets[name] = entry
+        self._registry[name] = entry
+
+    def bind(self, name, namespace):
+        self._namespaces[name] = namespace
+
+    def find_spec(self, name, path=None, target=None, *, _getattr=getattr, _globals=globals):
+        entry = self._targets.get(name)
+        if entry is None:
+            return None
+        parent_name = name.rpartition('.')[0]
+        if parent_name:
+            parent = _sys.modules.get(parent_name)
+            expected = self._namespaces.get(parent_name)
+            if expected is None:
+                parent_entry = self._registry.get(parent_name)
+                if parent_entry is not None and parent_entry[1] is not None:
+                    expected = _globals().get(parent_entry[1])
+            if parent is not None and expected is not None and parent is not expected and not _getattr(parent, '_cribo_fresh_life', False) and not _getattr(parent, '_cribo_machinery_loaded', False):
+                return None
+        from importlib.machinery import ModuleSpec
+        return ModuleSpec(name, self._loader(entry, self._namespaces.get(name), target), is_package=entry[2])
+_cribo_finder = _CriboPreservedFinder()
+_sys.meta_path.append(_cribo_finder)
+_cribo_finder_local = _CriboPreservedFinder()
+_cribo_finder_local._namespaces = _cribo_finder._namespaces
+_cribo_finder_local._registry = _cribo_finder._registry
+for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
+    if getattr(_cribo_meta_finder, '__name__', '') == 'PathFinder':
+        _sys.meta_path.insert(_cribo_index, _cribo_finder_local)
+        break
+else:
+    _sys.meta_path.insert(0, _cribo_finder_local)
+_cribo_finder_local.register('side_effect_module', '_cribo_init___cribo_2f952c_side_effect_module', 'side_effect_module', False)
+_cribo_finder_local.register('strings_inline', None, None, False, {'format_report': 'format_report', 'DOUBLE_QUOTED': 'DOUBLE_QUOTED', 'HEADER': 'HEADER', 'TAIL': 'TAIL'})
+_cribo_finder_local.register('docstring_module', None, None, False, {'simple_function': 'simple_function', 'multiline_function': 'multiline_function', 'indented_docstring': 'indented_docstring', 'DocumentedClass': 'DocumentedClass', 'triple_quoted_variations': 'triple_quoted_variations', 'docstring_with_formatting': 'docstring_with_formatting'})
 strings_inline = _cribo.types.SimpleNamespace(__name__='strings_inline', __doc__='Inline-only module mixing multiline literal patterns.')
 """Inline-only module mixing multiline literal patterns."""
 HEADER = '''Inline Section\n- maintains indentation\n- uses single quotes\n'''
@@ -38,66 +141,83 @@ def format_report(data: dict[str, object]) -> str:
     body = f"""Report:\n    name={data['name']}\n    value={data['value']}\n    """
     extra = f'''Summary:\n    keys={", ".join(data.keys())}\n    '''
     return HEADER + DOUBLE_QUOTED + body + TAIL + extra
+format_report.__module__ = 'strings_inline'
 strings_inline.DOUBLE_QUOTED = DOUBLE_QUOTED
 strings_inline.HEADER = HEADER
 strings_inline.TAIL = TAIL
 strings_inline.format_report = format_report
 side_effect_module = _cribo.types.SimpleNamespace(__name__='side_effect_module', __initializing__=False, __initialized__=False)
-def _cribo_init___cribo_2f952c_side_effect_module(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    """Module with side effects and diverse multiline literals."""
-    START_BANNER = """Loading side effect module:\n    - timestamps\n    - values\n"""
-    self.START_BANNER = START_BANNER
-    DETAILS = '''        Captured context:\n        module={__name__}\n    ''' "        status=ready"
-    self.DETAILS = DETAILS
+_cribo_finder.bind('side_effect_module', side_effect_module)
+def _cribo_init___cribo_2f952c_side_effect_module(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
+    if _cribo_getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if _cribo_getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = 'Module with side effects and diverse multiline literals.'
+        """Module with side effects and diverse multiline literals."""
+        START_BANNER = """Loading side effect module:\n    - timestamps\n    - values\n"""
+        _cribo_self.START_BANNER = START_BANNER
+        DETAILS = '''        Captured context:\n        module={__name__}\n    ''' "        status=ready"
+        _cribo_self.DETAILS = DETAILS
 
-    def _render_start() -> str:
-        """Produce a multiline message with runtime data."""
-        message = f"""Start Time:\n    2024-01-02 03:04:05\n    Module: multiline_strings.side_effect_module\n    Status: {"ready"}\n    """
-        more = """Computed Values:\n        length=62\n    """
-        note = """Generated output\n        includes a blank line\n        """ "appended"
-        return message + more + note
-    self._render_start = _render_start
-    SUMMARY_TEXT = START_BANNER + DETAILS
-    self.SUMMARY_TEXT = SUMMARY_TEXT
-    print(_render_start())
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+        def _render_start() -> str:
+            """Produce a multiline message with runtime data."""
+            message = f"""Start Time:\n    2024-01-02 03:04:05\n    Module: multiline_strings.side_effect_module\n    Status: {"ready"}\n    """
+            more = """Computed Values:\n        length=62\n    """
+            note = """Generated output\n        includes a blank line\n        """ "appended"
+            return message + more + note
+        _render_start.__module__ = 'side_effect_module'
+        _render_start.__qualname__ = '_render_start'
+        _cribo_self._render_start = _render_start
+        SUMMARY_TEXT = START_BANNER + DETAILS
+        _cribo_self.SUMMARY_TEXT = SUMMARY_TEXT
+        print(_render_start())
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 side_effect_module.__init__ = _cribo_init___cribo_2f952c_side_effect_module
 docstring_module = _cribo.types.SimpleNamespace(__name__='docstring_module', __doc__='Module demonstrating multiline docstrings preservation.\n\nThis docstring spans multiple lines and contains:\n    - Indented sections\n    - Special characters: "quotes", \'apostrophes\', and symbols !@#$%\n    - Empty lines above\n')
 """Module demonstrating multiline docstrings preservation.\n\nThis docstring spans multiple lines and contains:\n    - Indented sections\n    - Special characters: \"quotes\", 'apostrophes', and symbols !@#$%\n    - Empty lines above\n"""
 def simple_function():
     """Single line docstring for simple function."""
     return "simple"
+simple_function.__module__ = 'docstring_module'
 def multiline_function(x: int, y: int) -> int:
     """Calculate the sum of two numbers.\n\n    Args:\n        x: First number\n        y: Second number\n\n    Returns:\n        The sum of x and y\n\n    Examples:\n        >>> multiline_function(1, 2)\n        3\n    """
     return x + y
+multiline_function.__module__ = 'docstring_module'
 def indented_docstring():
     """\n    This docstring has intentional indentation patterns:\n        - Indented list item 1\n        - Indented list item 2\n            - Nested item\n\n    Code example:\n        def example():\n            return True\n\n    More text after code block.\n    """
     return "indented"
+indented_docstring.__module__ = 'docstring_module'
 class DocumentedClass:
     """A class with comprehensive documentation.\n\n    This class demonstrates various docstring patterns:\n        - Class-level documentation\n        - Method documentation\n        - Special method documentation\n\n    Attributes:\n        value: An integer value\n        name: A string identifier\n    """
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'docstring_module'), _cribo_f)[1])
     def __init__(self, value: int, name: str):
         """Initialize the DocumentedClass.\n\n        Args:\n            value: The initial value\n            name: The name identifier\n        """
         self.value = value
         self.name = name
 
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'docstring_module'), _cribo_f)[1])
     def get_info(self) -> str:
         """Return formatted information about this instance.\n\n        Returns:\n            A multiline string containing:\n                - The instance name\n                - The instance value\n                - Additional metadata\n        """
         return f"""Instance Info:\n    name={self.name}\n    value={self.value}\n    type={type(self).__name__}\n"""
 
     @staticmethod
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'docstring_module'), _cribo_f)[1])
     def static_method():
         """Static method with docstring.\n\n        This method doesn't access instance state.\n        It exists to demonstrate static method docstrings.\n        """
         return "static"
 
     @classmethod
+    @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'docstring_module'), _cribo_f)[1])
     def class_method(cls):
         """Class method with docstring.\n\n        Returns:\n            The class name as a string.\n        """
         return cls.__name__
@@ -105,9 +225,11 @@ DocumentedClass.__module__ = 'docstring_module'
 def triple_quoted_variations():
     '''This docstring uses single triple quotes.\n\n    It should be preserved identically to double-quoted docstrings.\n    Special characters: "double quotes" work fine here.\n    '''
     return "single-triple-quoted"
+triple_quoted_variations.__module__ = 'docstring_module'
 def docstring_with_formatting():
     """\n    ╔═══════════════════════════════════╗\n    ║  Fancy Box-Drawing Characters     ║\n    ╠═══════════════════════════════════╣\n    ║  - Unicode support                ║\n    ║  - Special formatting             ║\n    ║  - Emoji: 🎯 ✅ 🚀                ║\n    ╚═══════════════════════════════════╝\n\n    This tests preservation of:\n        • Unicode box-drawing characters\n        • Emoji and special symbols\n        • Mixed indentation levels\n    """
     return "formatted"
+docstring_with_formatting.__module__ = 'docstring_module'
 """This is a module-level constant docstring.\n\nConstants can have docstrings too, though they're less common.\nThis tests that such docstrings are preserved.\n"""
 docstring_module.DocumentedClass = DocumentedClass
 docstring_module.docstring_with_formatting = docstring_with_formatting
@@ -115,6 +237,16 @@ docstring_module.indented_docstring = indented_docstring
 docstring_module.multiline_function = multiline_function
 docstring_module.simple_function = simple_function
 docstring_module.triple_quoted_variations = triple_quoted_variations
+_cribo_captured['format_report'] = format_report
+_cribo_captured['DOUBLE_QUOTED'] = DOUBLE_QUOTED
+_cribo_captured['HEADER'] = HEADER
+_cribo_captured['TAIL'] = TAIL
+_cribo_captured['simple_function'] = simple_function
+_cribo_captured['multiline_function'] = multiline_function
+_cribo_captured['indented_docstring'] = indented_docstring
+_cribo_captured['DocumentedClass'] = DocumentedClass
+_cribo_captured['triple_quoted_variations'] = triple_quoted_variations
+_cribo_captured['docstring_with_formatting'] = docstring_with_formatting
 """Entry point exercising multiline string handling across modules."""
 side_effect_module = _cribo_init___cribo_2f952c_side_effect_module(side_effect_module)
 def validate_docstring(obj, expected_keywords: list[str], label: str) -> None:

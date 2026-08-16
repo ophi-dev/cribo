@@ -10,219 +10,396 @@ import sys as _sys
 import importlib as _importlib
 class _CriboModule():
 
-    def __init__(self, m, p):
-        self._m, self._p = m, p
+    def __init__(_cribo_self, m, p):
+        _cribo_self._m, _cribo_self._p = m, p
 
-    def __getattr__(self, n):
-        f = self._p + '.' + n
+    def __getattr__(_cribo_self, n, *, _getattr=getattr):
+        f = _cribo_self._p + '.' + n
         try:
             return _CriboModule(_importlib.import_module(f), f)
         except ImportError:
-            return getattr(self._m, n)
+            return _getattr(_cribo_self._m, n)
 
-    def __getattribute__(self, n):
-        return object.__getattribute__(self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else getattr(object.__getattribute__(self, '_m'), n)
+    def __getattribute__(_cribo_self, n, *, _getattr=getattr, _object=object):
+        return _object.__getattribute__(_cribo_self, n) if n in ('_m', '_p', '__getattr__', '__class__', '__dict__', '__dir__', '__module__', '__qualname__') else _getattr(_object.__getattribute__(_cribo_self, '_m'), n)
 class _Cribo():
 
-    def __getattr__(self, n):
+    def __getattr__(_cribo_self, n):
         m = _sys.modules.get(n) or _importlib.import_module(n)
         return _CriboModule(m, n)
 _cribo = _Cribo()
+_cribo_captured = {}
+class _CriboPreservedLoader:
+    _pristine = {}
+
+    def __init__(self, entry, namespace=None, reload_target=None):
+        self._entry = entry
+        self._namespace = namespace
+        self._reload_target = reload_target
+
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
+        module = None
+        if self._namespace is not None:
+            module = self._namespace
+        elif self._entry[1] is not None:
+            module = _globals()[self._entry[1]]
+        if module is not None:
+            if _getattr(module, '_cribo_machinery_loaded', False) or _getattr(module, '_cribo_failed_life', False) or _getattr(module, '__initialized__', False) and _getattr(module, '_cribo_registered', False):
+                saved = _type(self)._pristine.get(_id(module))
+                fresh = _ModuleType(spec.name)
+                fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
+                fresh._cribo_fresh_life = True
+                return fresh
+            return module
+        module = _ModuleType(spec.name)
+        for export, binding in self._entry[3].items():
+            _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
+        return module
+
+    def exec_module(self, module, *, _BaseException=BaseException, _dict=dict, _getattr=getattr, _globals=globals, _id=id, _type=type):
+        init = self._entry[0]
+        pristine = _type(self)._pristine
+        key = _id(module)
+        record_snapshot = not _getattr(module, '_cribo_fresh_life', False) and not _getattr(module, '__initialized__', False) and (self._namespace is not None or self._entry[1] is not None)
+        if init is None:
+            if record_snapshot and key not in pristine:
+                pristine[key] = _dict(module.__dict__)
+            module._cribo_machinery_loaded = True
+            return
+        is_reload = self._reload_target is module
+        if is_reload:
+            module.__initialized__ = False
+            module.__initializing__ = False
+        state = _dict(module.__dict__)
+        if record_snapshot and key not in pristine:
+            pristine[key] = _dict(state)
+        try:
+            _globals()[init](module)
+            module._cribo_machinery_loaded = True
+        except _BaseException:
+            if is_reload:
+                module.__initializing__ = False
+            else:
+                module.__dict__.clear()
+                module.__dict__.update(state)
+                module.__initializing__ = False
+                module._cribo_failed_life = True
+            raise
+class _CriboPreservedFinder:
+
+    def __init__(self):
+        self._targets = {}
+        self._namespaces = {}
+        self._registry = {}
+        self._loader = _CriboPreservedLoader
+
+    def register(self, name, init, namespace, is_package, exports=None):
+        entry = init, namespace, is_package, exports or {}
+        self._targets[name] = entry
+        self._registry[name] = entry
+
+    def bind(self, name, namespace):
+        self._namespaces[name] = namespace
+
+    def find_spec(self, name, path=None, target=None, *, _getattr=getattr, _globals=globals):
+        entry = self._targets.get(name)
+        if entry is None:
+            return None
+        parent_name = name.rpartition('.')[0]
+        if parent_name:
+            parent = _sys.modules.get(parent_name)
+            expected = self._namespaces.get(parent_name)
+            if expected is None:
+                parent_entry = self._registry.get(parent_name)
+                if parent_entry is not None and parent_entry[1] is not None:
+                    expected = _globals().get(parent_entry[1])
+            if parent is not None and expected is not None and parent is not expected and not _getattr(parent, '_cribo_fresh_life', False) and not _getattr(parent, '_cribo_machinery_loaded', False):
+                return None
+        from importlib.machinery import ModuleSpec
+        return ModuleSpec(name, self._loader(entry, self._namespaces.get(name), target), is_package=entry[2])
+_cribo_finder = _CriboPreservedFinder()
+_sys.meta_path.append(_cribo_finder)
+_cribo_finder_local = _CriboPreservedFinder()
+_cribo_finder_local._namespaces = _cribo_finder._namespaces
+_cribo_finder_local._registry = _cribo_finder._registry
+for _cribo_index, _cribo_meta_finder in enumerate(_sys.meta_path):
+    if getattr(_cribo_meta_finder, '__name__', '') == 'PathFinder':
+        _sys.meta_path.insert(_cribo_index, _cribo_finder_local)
+        break
+else:
+    _sys.meta_path.insert(0, _cribo_finder_local)
+_cribo_finder_local.register('2024-config', '_cribo_init___cribo_5687a6__2024_config', '_2024_config', False)
+_cribo_finder_local.register('for', '_cribo_init___cribo_ec6681_for_', 'for_', False)
+_cribo_finder_local.register('def', '_cribo_init___cribo_944eb6_def_', 'def_', False)
+_cribo_finder_local.register('class', '_cribo_init___cribo_004e55_class_', 'class_', False)
+_cribo_finder_local.register('api-client', '_cribo_init___cribo_64c186_api_client', 'api_client', False)
+_cribo_finder_local.register('data-processor', '_cribo_init___cribo_d8297b_data_processor', 'data_processor', False)
 data_processor = _cribo.types.SimpleNamespace(__name__='data-processor', __initializing__=False, __initialized__=False)
-def _cribo_init___cribo_d8297b_data_processor(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    """Module with hyphen in name - can't be imported with regular import statement."""
+_cribo_finder.bind('data-processor', data_processor)
+def _cribo_init___cribo_d8297b_data_processor(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
+    if _cribo_getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if _cribo_getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = "Module with hyphen in name - can't be imported with regular import statement."
+        """Module with hyphen in name - can't be imported with regular import statement."""
 
-    class DataProcessor:
+        class DataProcessor:
 
-        def __init__(self):
-            self.name = "Data Processor with Hyphen"
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'data-processor'), _cribo_f)[1])
+            def __init__(self):
+                self.name = "Data Processor with Hyphen"
 
-        def process(self, data):
-            return f"Processing {data} with hyphenated module"
-    DataProcessor.__module__ = 'data-processor'
-    self.DataProcessor = DataProcessor
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'data-processor'), _cribo_f)[1])
+            def process(self, data):
+                return f"Processing {data} with hyphenated module"
+        DataProcessor.__module__ = 'data-processor'
+        DataProcessor.__qualname__ = 'DataProcessor'
+        _cribo_self.DataProcessor = DataProcessor
 
-    def get_processor_info():
-        return "This is a data processor from a module with a hyphen"
-    self.get_processor_info = get_processor_info
-    PROCESSOR_VERSION = "1.0-hyphenated"
-    self.PROCESSOR_VERSION = PROCESSOR_VERSION
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+        def get_processor_info():
+            return "This is a data processor from a module with a hyphen"
+        get_processor_info.__module__ = 'data-processor'
+        get_processor_info.__qualname__ = 'get_processor_info'
+        _cribo_self.get_processor_info = get_processor_info
+        PROCESSOR_VERSION = "1.0-hyphenated"
+        _cribo_self.PROCESSOR_VERSION = PROCESSOR_VERSION
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 data_processor.__init__ = _cribo_init___cribo_d8297b_data_processor
 api_client = _cribo.types.SimpleNamespace(__name__='api-client', __initializing__=False, __initialized__=False)
-def _cribo_init___cribo_64c186_api_client(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    """Another module with hyphen - demonstrating API client functionality."""
+_cribo_finder.bind('api-client', api_client)
+def _cribo_init___cribo_64c186_api_client(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
+    if _cribo_getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if _cribo_getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = 'Another module with hyphen - demonstrating API client functionality.'
+        """Another module with hyphen - demonstrating API client functionality."""
 
-    class APIClient:
+        class APIClient:
 
-        def __init__(self, base_url="https://api.example.com"):
-            self.base_url = base_url
-            self.headers = {"User-Agent": "Hyphenated-Module-Client/1.0"}
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'api-client'), _cribo_f)[1])
+            def __init__(self, base_url="https://api.example.com"):
+                self.base_url = base_url
+                self.headers = {"User-Agent": "Hyphenated-Module-Client/1.0"}
 
-        def make_request(self, endpoint):
-            return f"Making request to {self.base_url}/{endpoint}"
-    APIClient.__module__ = 'api-client'
-    self.APIClient = APIClient
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'api-client'), _cribo_f)[1])
+            def make_request(self, endpoint):
+                return f"Making request to {self.base_url}/{endpoint}"
+        APIClient.__module__ = 'api-client'
+        APIClient.__qualname__ = 'APIClient'
+        _cribo_self.APIClient = APIClient
 
-    def create_client(url=None):
-        return APIClient(url) if url else APIClient()
-    self.create_client = create_client
-    API_VERSION = "2.0-stable"
-    self.API_VERSION = API_VERSION
-    SUPPORTED_ENDPOINTS = ["users", "posts", "comments"]
-    self.SUPPORTED_ENDPOINTS = SUPPORTED_ENDPOINTS
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+        def create_client(url=None):
+            return APIClient(url) if url else APIClient()
+        create_client.__module__ = 'api-client'
+        create_client.__qualname__ = 'create_client'
+        _cribo_self.create_client = create_client
+        API_VERSION = "2.0-stable"
+        _cribo_self.API_VERSION = API_VERSION
+        SUPPORTED_ENDPOINTS = ["users", "posts", "comments"]
+        _cribo_self.SUPPORTED_ENDPOINTS = SUPPORTED_ENDPOINTS
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 api_client.__init__ = _cribo_init___cribo_64c186_api_client
 class_ = _cribo.types.SimpleNamespace(__name__='class', __initializing__=False, __initialized__=False)
-def _cribo_init___cribo_004e55_class_(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    """Module named 'class' - a Python keyword that can't be used in import statements."""
+_cribo_finder.bind('class', class_)
+def _cribo_init___cribo_004e55_class_(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
+    if _cribo_getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if _cribo_getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = "Module named 'class' - a Python keyword that can't be used in import statements."
+        """Module named 'class' - a Python keyword that can't be used in import statements."""
 
-    class MetaClass:
+        class MetaClass:
 
-        def __init__(self, name):
-            self.name = name
-            self.type = "metaclass"
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'class'), _cribo_f)[1])
+            def __init__(self, name):
+                self.name = name
+                self.type = "metaclass"
 
-        def describe(self):
-            return f"This is a {self.type} named {self.name}"
-    MetaClass.__module__ = 'class'
-    self.MetaClass = MetaClass
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'class'), _cribo_f)[1])
+            def describe(self):
+                return f"This is a {self.type} named {self.name}"
+        MetaClass.__module__ = 'class'
+        MetaClass.__qualname__ = 'MetaClass'
+        _cribo_self.MetaClass = MetaClass
 
-    def create_class_instance(class_name):
-        return MetaClass(class_name)
-    self.create_class_instance = create_class_instance
-    CLASS_TYPES = ["abstract", "concrete", "meta"]
-    self.CLASS_TYPES = CLASS_TYPES
-    DEFAULT_CLASS_NAME = "KeywordModule"
-    self.DEFAULT_CLASS_NAME = DEFAULT_CLASS_NAME
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+        def create_class_instance(class_name):
+            return MetaClass(class_name)
+        create_class_instance.__module__ = 'class'
+        create_class_instance.__qualname__ = 'create_class_instance'
+        _cribo_self.create_class_instance = create_class_instance
+        CLASS_TYPES = ["abstract", "concrete", "meta"]
+        _cribo_self.CLASS_TYPES = CLASS_TYPES
+        DEFAULT_CLASS_NAME = "KeywordModule"
+        _cribo_self.DEFAULT_CLASS_NAME = DEFAULT_CLASS_NAME
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 class_.__init__ = _cribo_init___cribo_004e55_class_
 def_ = _cribo.types.SimpleNamespace(__name__='def', __initializing__=False, __initialized__=False)
-def _cribo_init___cribo_944eb6_def_(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    """Module named 'def' - another Python keyword."""
+_cribo_finder.bind('def', def_)
+def _cribo_init___cribo_944eb6_def_(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
+    if _cribo_getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if _cribo_getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = "Module named 'def' - another Python keyword."
+        """Module named 'def' - another Python keyword."""
 
-    class FunctionDefinition:
+        class FunctionDefinition:
 
-        def __init__(self, func_name, params=None):
-            self.name = func_name
-            self.params = params or []
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'def'), _cribo_f)[1])
+            def __init__(self, func_name, params=None):
+                self.name = func_name
+                self.params = params or []
 
-        def __str__(self):
-            params_str = ", ".join(self.params)
-            return f"def {self.name}({params_str})"
-    FunctionDefinition.__module__ = 'def'
-    self.FunctionDefinition = FunctionDefinition
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'def'), _cribo_f)[1])
+            def __str__(self):
+                params_str = ", ".join(self.params)
+                return f"def {self.name}({params_str})"
+        FunctionDefinition.__module__ = 'def'
+        FunctionDefinition.__qualname__ = 'FunctionDefinition'
+        _cribo_self.FunctionDefinition = FunctionDefinition
 
-    def define_function(name, *args):
-        return FunctionDefinition(name, list(args))
-    self.define_function = define_function
-    BUILTIN_FUNCTIONS = ["print", "len", "range", "sorted"]
-    self.BUILTIN_FUNCTIONS = BUILTIN_FUNCTIONS
-    DEFINITION_TEMPLATE = "def {}(): pass"
-    self.DEFINITION_TEMPLATE = DEFINITION_TEMPLATE
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+        def define_function(name, *args):
+            return FunctionDefinition(name, list(args))
+        define_function.__module__ = 'def'
+        define_function.__qualname__ = 'define_function'
+        _cribo_self.define_function = define_function
+        BUILTIN_FUNCTIONS = ["print", "len", "range", "sorted"]
+        _cribo_self.BUILTIN_FUNCTIONS = BUILTIN_FUNCTIONS
+        DEFINITION_TEMPLATE = "def {}(): pass"
+        _cribo_self.DEFINITION_TEMPLATE = DEFINITION_TEMPLATE
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 def_.__init__ = _cribo_init___cribo_944eb6_def_
 for_ = _cribo.types.SimpleNamespace(__name__='for', __initializing__=False, __initialized__=False)
-def _cribo_init___cribo_ec6681_for_(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    """Module named 'for' - a Python keyword for loops."""
+_cribo_finder.bind('for', for_)
+def _cribo_init___cribo_ec6681_for_(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
+    if _cribo_getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if _cribo_getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = "Module named 'for' - a Python keyword for loops."
+        """Module named 'for' - a Python keyword for loops."""
 
-    class ForLoop:
+        class ForLoop:
 
-        def __init__(self, iterable):
-            self.iterable = iterable
-            self.index = 0
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'for'), _cribo_f)[1])
+            def __init__(self, iterable):
+                self.iterable = iterable
+                self.index = 0
 
-        def iterate(self):
-            results = []
-            for item in self.iterable:
-                results.append(f"Processing: {item}")
-            return results
-    ForLoop.__module__ = 'for'
-    self.ForLoop = ForLoop
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'for'), _cribo_f)[1])
+            def iterate(self):
+                results = []
+                for item in self.iterable:
+                    results.append(f"Processing: {item}")
+                return results
+        ForLoop.__module__ = 'for'
+        ForLoop.__qualname__ = 'ForLoop'
+        _cribo_self.ForLoop = ForLoop
 
-    def create_loop(items):
-        return ForLoop(items)
-    self.create_loop = create_loop
-    LOOP_TYPES = ["for", "while", "comprehension"]
-    self.LOOP_TYPES = LOOP_TYPES
-    MAX_ITERATIONS = 1000
-    self.MAX_ITERATIONS = MAX_ITERATIONS
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+        def create_loop(items):
+            return ForLoop(items)
+        create_loop.__module__ = 'for'
+        create_loop.__qualname__ = 'create_loop'
+        _cribo_self.create_loop = create_loop
+        LOOP_TYPES = ["for", "while", "comprehension"]
+        _cribo_self.LOOP_TYPES = LOOP_TYPES
+        MAX_ITERATIONS = 1000
+        _cribo_self.MAX_ITERATIONS = MAX_ITERATIONS
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 for_.__init__ = _cribo_init___cribo_ec6681_for_
 _2024_config = _cribo.types.SimpleNamespace(__name__='2024-config', __initializing__=False, __initialized__=False)
-def _cribo_init___cribo_5687a6__2024_config(self):
-    if getattr(self, '__initialized__', False):
-        return self
-    if getattr(self, '__initializing__', False):
-        return self
-    self.__initializing__ = True
-    """Module starting with a number - can't be imported with regular import."""
+_cribo_finder.bind('2024-config', _2024_config)
+def _cribo_init___cribo_5687a6__2024_config(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
+    if _cribo_getattr(_cribo_self, '__initialized__', False):
+        return _cribo_self
+    if _cribo_getattr(_cribo_self, '__initializing__', False):
+        return _cribo_self
+    _cribo_self.__initializing__ = True
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = "Module starting with a number - can't be imported with regular import."
+        """Module starting with a number - can't be imported with regular import."""
 
-    class Config2024:
-        YEAR = 2024
-        VERSION = "2024.1.0"
-        FEATURES = ["new-ui", "dark-mode", "api-v3"]
+        class Config2024:
+            YEAR = 2024
+            VERSION = "2024.1.0"
+            FEATURES = ["new-ui", "dark-mode", "api-v3"]
 
-        @classmethod
-        def get_config(cls):
-            return {"year": cls.YEAR, "version": cls.VERSION, "features": cls.FEATURES}
-    Config2024.__module__ = '2024-config'
-    self.Config2024 = Config2024
+            @classmethod
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', '2024-config'), _cribo_f)[1])
+            def get_config(cls):
+                return {"year": cls.YEAR, "version": cls.VERSION, "features": cls.FEATURES}
+        Config2024.__module__ = '2024-config'
+        Config2024.__qualname__ = 'Config2024'
+        _cribo_self.Config2024 = Config2024
 
-    def load_yearly_config():
-        return Config2024()
-    self.load_yearly_config = load_yearly_config
-    SUPPORTED_YEARS = [2022, 2023, 2024]
-    self.SUPPORTED_YEARS = SUPPORTED_YEARS
-    CONFIG_PREFIX = "config-"
-    self.CONFIG_PREFIX = CONFIG_PREFIX
-    self.__initialized__ = True
-    self.__initializing__ = False
-    return self
+        def load_yearly_config():
+            return Config2024()
+        load_yearly_config.__module__ = '2024-config'
+        load_yearly_config.__qualname__ = 'load_yearly_config'
+        _cribo_self.load_yearly_config = load_yearly_config
+        SUPPORTED_YEARS = [2022, 2023, 2024]
+        _cribo_self.SUPPORTED_YEARS = SUPPORTED_YEARS
+        CONFIG_PREFIX = "config-"
+        _cribo_self.CONFIG_PREFIX = CONFIG_PREFIX
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 _2024_config.__init__ = _cribo_init___cribo_5687a6__2024_config
 """Main module demonstrating importlib usage with static string literals."""
 importlib = _cribo.importlib
-data_processor = _cribo_init___cribo_d8297b_data_processor(data_processor)
-api_client = _cribo_init___cribo_64c186_api_client(api_client)
-class_module = _cribo_init___cribo_004e55_class_(class_)
-def_module = _cribo_init___cribo_944eb6_def_(def_)
-for_module = _cribo_init___cribo_ec6681_for_(for_)
-config_2024 = _cribo_init___cribo_5687a6__2024_config(_2024_config)
+data_processor = _cribo.importlib.import_module('data-processor') if 'data-processor' in _cribo.sys.modules else _cribo_init___cribo_d8297b_data_processor(data_processor)
+api_client = _cribo.importlib.import_module('api-client') if 'api-client' in _cribo.sys.modules else _cribo_init___cribo_64c186_api_client(api_client)
+class_module = _cribo.importlib.import_module('class') if 'class' in _cribo.sys.modules else _cribo_init___cribo_004e55_class_(class_)
+def_module = _cribo.importlib.import_module('def') if 'def' in _cribo.sys.modules else _cribo_init___cribo_944eb6_def_(def_)
+for_module = _cribo.importlib.import_module('for') if 'for' in _cribo.sys.modules else _cribo_init___cribo_ec6681_for_(for_)
+config_2024 = _cribo.importlib.import_module('2024-config') if '2024-config' in _cribo.sys.modules else _cribo_init___cribo_5687a6__2024_config(_2024_config)
 def main():
     processor = data_processor.DataProcessor()
     print(f"Processor: {processor.name}")

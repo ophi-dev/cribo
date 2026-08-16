@@ -20,6 +20,71 @@ use super::{
 };
 use crate::{ast_builder::statements, types::FxIndexMap};
 
+/// Emit serializable-identity stamps for an inlined definition: `__module__`
+/// names the original module (pickle and multiprocessing resolve objects
+/// through `__import__(obj.__module__)` + getattr by qualified name), and
+/// renamed bindings restore the original `__name__`/`__qualname__`. Decorated
+/// definitions may evaluate to unrelated replacement objects, so their stamps
+/// only apply when the result still carries the definition's `__name__`
+/// (original object or functools.wraps-style copy), wrapped in try/except
+/// (`AttributeError`, `TypeError`) for objects rejecting attribute writes.
+fn emit_inlined_identity_stamps(
+    inlined_stmts: &mut Vec<Stmt>,
+    binding: &str,
+    module_name: &str,
+    original_name: &str,
+    renamed: bool,
+    decorated: bool,
+) {
+    let mut stamps = vec![statements::set_string_attribute(
+        binding,
+        "__module__",
+        module_name,
+    )];
+    if renamed {
+        stamps.push(statements::set_string_attribute(
+            binding,
+            "__name__",
+            original_name,
+        ));
+        stamps.push(statements::set_string_attribute(
+            binding,
+            "__qualname__",
+            original_name,
+        ));
+    }
+    if !decorated {
+        inlined_stmts.extend(stamps);
+        return;
+    }
+    use ruff_python_ast::{
+        AtomicNodeIndex, ExceptHandler, ExceptHandlerExceptHandler, ExprContext,
+    };
+    // Only stamp a decorator RESULT that still carries the inlined
+    // definition's identity (the original object, or a functools.wraps-style
+    // replacement copying its attributes): normal Python leaves unrelated
+    // replacement objects untouched, and stamping a shared imported object
+    // would corrupt its introspection for every other reference. The inlined
+    // `def` statement itself uses the (possibly renamed) binding name, so that
+    // is the runtime __name__ the decorator observed; the __module__ probe
+    // rejects same-named IMPORTED callables, which carry their defining
+    // module's attribution rather than the creating scope's.
+    let carries_identity =
+        crate::ast_builder::expressions::decorated_identity_guard(binding, binding);
+    let guarded = vec![statements::if_stmt(carries_identity, stamps, vec![])];
+    let handler = ExceptHandler::ExceptHandler(ExceptHandlerExceptHandler {
+        node_index: AtomicNodeIndex::NONE,
+        range: TextRange::default(),
+        type_: Some(Box::new(crate::ast_builder::expressions::tuple(vec![
+            crate::ast_builder::expressions::name("AttributeError", ExprContext::Load),
+            crate::ast_builder::expressions::name("TypeError", ExprContext::Load),
+        ]))),
+        name: None,
+        body: vec![statements::pass()].into(),
+    });
+    inlined_stmts.push(statements::try_stmt(guarded, vec![handler], vec![], vec![]));
+}
+
 impl Bundler<'_> {
     /// Resolve the renamed name for a symbol, considering semantic renames and conflicts
     fn resolve_renamed_name(
@@ -83,6 +148,32 @@ impl Bundler<'_> {
 
         // Copy import aliases from the transformer to the inline context
         ctx.import_aliases = transformer.import_aliases().clone();
+
+        // Inlined statements execute in the bundle entry's global namespace,
+        // whose __name__/__package__/__doc__ describe the ENTRY module. The
+        // inlined module's import-system values are static, so rewrite reads
+        // of these globals to their literal values, scope-aware (rebinding
+        // scopes keep their own resolution).
+        {
+            let module_is_package = self.resolver.is_package_init(module_id)
+                || self.resolver.is_namespace_package(module_id);
+            let package_value = if module_is_package {
+                module_name.to_owned()
+            } else {
+                module_name
+                    .rsplit_once('.')
+                    .map(|(parent, _)| parent.to_owned())
+                    .unwrap_or_default()
+            };
+            let doc_value =
+                crate::code_generator::docstring_extractor::extract_module_docstring(&ast);
+            crate::code_generator::module_transformer::rewrite_import_globals_to_literals(
+                &mut ast.body,
+                module_name,
+                &package_value,
+                doc_value.as_deref(),
+            );
+        }
 
         // Reorder statements to ensure proper declaration order
         let statements = if self.circular_modules.contains(&module_id) {
@@ -206,6 +297,12 @@ impl Bundler<'_> {
                         Self::resolve_import_aliases_in_stmt(body_stmt, &ctx.import_aliases);
                     }
 
+                    // Inner definitions created when this function RUNS read the
+                    // bundle entry's __name__: stamp them with the provider module
+                    // before user decorators observe them (the function itself gets
+                    // a guarded post-definition stamp below)
+                    statements::stamp_nested_definitions(&mut func_def_clone.body, module_name);
+
                     // Create a temporary statement to rewrite the entire function properly
                     let mut temp_stmt = Stmt::FunctionDef(func_def_clone);
 
@@ -222,6 +319,21 @@ impl Bundler<'_> {
                     }
 
                     ctx.inlined_stmts.push(temp_stmt);
+
+                    // Preserve the function's serializable identity: without a
+                    // stamp it reports the bundle entry's module (and a renamed
+                    // binding's name), so pickles referencing it cannot resolve
+                    // the original `module.qualname` path
+                    emit_inlined_identity_stamps(
+                        ctx.inlined_stmts,
+                        module_renames
+                            .get(&func_name)
+                            .map_or(func_name.as_str(), String::as_str),
+                        module_name,
+                        &func_name,
+                        module_renames.get(&func_name) != Some(&func_name),
+                        !func_def.decorator_list.is_empty(),
+                    );
                 }
                 Stmt::ClassDef(class_def) => {
                     self.inline_class(class_def, module_name, module_id, &mut module_renames, ctx);
@@ -576,30 +688,113 @@ impl Bundler<'_> {
             }
         }
 
+        // Definitions executed INSIDE the class body read the bundle entry's
+        // __name__ at creation: stamp methods and nested classes with the
+        // provider module before any decorator or introspection observes them
+        statements::stamp_nested_definitions(&mut class_def_clone.body, module_name);
+
         ctx.inlined_stmts.push(Stmt::ClassDef(class_def_clone));
 
-        // Set the __module__ attribute to preserve the original module name
-        ctx.inlined_stmts.push(statements::set_string_attribute(
+        // Preserve the class's serializable identity: __module__ names the
+        // original module, and renamed bindings restore the original
+        // __name__/__qualname__ for repr() and pickle resolution
+        emit_inlined_identity_stamps(
+            ctx.inlined_stmts,
             &renamed_name,
-            "__module__",
             module_name,
-        ));
+            &class_name,
+            renamed_name != class_name,
+            !class_def.decorator_list.is_empty(),
+        );
+    }
 
-        // If the class was renamed, also set __name__ to preserve the original class name
-        if renamed_name != class_name {
-            ctx.inlined_stmts.push(statements::set_string_attribute(
-                &renamed_name,
-                "__name__",
-                &class_name,
-            ));
-
-            // Set __qualname__ to match __name__ for proper repr()
-            ctx.inlined_stmts.push(statements::set_string_attribute(
-                &renamed_name,
-                "__qualname__",
-                &class_name,
-            ));
+    /// Inline a destructuring assignment (`LEFT, RIGHT = values`, including
+    /// list and starred forms) whose targets are all plain names: the
+    /// statement binds every name at once, so it is included when ANY bound
+    /// name passes the inlining policy, with renames registered and applied
+    /// for each. Mixed targets (attributes, subscripts) are skipped like
+    /// before — mutation targets do not define module-scope symbols.
+    fn inline_destructured_assignment(
+        &self,
+        assign: &StmtAssign,
+        module_name: &str,
+        module_renames: &mut FxIndexMap<String, String>,
+        ctx: &mut InlineContext<'_>,
+    ) {
+        fn collect_plain_names(target: &Expr, names: &mut Vec<String>) -> bool {
+            match target {
+                Expr::Name(name) => {
+                    names.push(name.id.to_string());
+                    true
+                }
+                Expr::Tuple(tuple) => tuple
+                    .elts
+                    .iter()
+                    .all(|element| collect_plain_names(element, names)),
+                Expr::List(list) => list
+                    .elts
+                    .iter()
+                    .all(|element| collect_plain_names(element, names)),
+                Expr::Starred(starred) => collect_plain_names(&starred.value, names),
+                _ => false,
+            }
         }
+        let mut bound_names = Vec::new();
+        if assign.targets.is_empty()
+            || !assign
+                .targets
+                .iter()
+                .all(|target| collect_plain_names(target, &mut bound_names))
+            || bound_names.is_empty()
+        {
+            log::debug!(
+                "Skipping non-simple assignment in '{module_name}' - targets are not plain names",
+            );
+            return;
+        }
+
+        let module_id = self
+            .resolver
+            .get_module_id_by_name(module_name)
+            .expect("Module should exist");
+        if !bound_names
+            .iter()
+            .any(|name| self.should_inline_symbol(name, module_id, ctx.module_exports_map))
+        {
+            log::debug!(
+                "Not inlining destructuring assignment in '{module_name}' - no bound name passes \
+                 should_inline_symbol"
+            );
+            return;
+        }
+
+        let mut assign_clone = assign.clone();
+        // Apply aliases and existing renames to the RHS before renaming targets
+        expression_handlers::resolve_import_aliases_in_expr(
+            &mut assign_clone.value,
+            &ctx.import_aliases,
+        );
+        expression_handlers::rewrite_aliases_in_expr(&mut assign_clone.value, module_renames);
+        if let Some(semantic_renames) = ctx.module_renames.get(&module_id) {
+            expression_handlers::rewrite_aliases_in_expr(&mut assign_clone.value, semantic_renames);
+        }
+
+        // Register and apply the rename for every bound name
+        let mut renames_for_targets: FxIndexMap<String, String> = FxIndexMap::default();
+        for name in &bound_names {
+            let renamed = self.resolve_renamed_name(name, module_name, ctx);
+            module_renames.insert(name.clone(), renamed.clone());
+            ctx.global_symbols.insert(renamed.clone());
+            if renamed != *name {
+                renames_for_targets.insert(name.clone(), renamed);
+            }
+        }
+        if !renames_for_targets.is_empty() {
+            for target in &mut assign_clone.targets {
+                expression_handlers::rewrite_aliases_in_expr(target, &renames_for_targets);
+            }
+        }
+        ctx.inlined_stmts.push(Stmt::Assign(assign_clone));
     }
 
     /// Inline an assignment statement
@@ -658,9 +853,9 @@ impl Bundler<'_> {
         }
 
         let Some(name) = expression_handlers::extract_simple_assign_target(assign) else {
-            log::debug!(
-                "Skipping non-simple assignment in '{module_name}' - target is not a simple name",
-            );
+            // Tuple/list destructuring binds multiple module-scope names
+            // (`LEFT, RIGHT = values`): inline it like plain assignments
+            self.inline_destructured_assignment(assign, module_name, module_renames, ctx);
             return;
         };
 

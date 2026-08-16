@@ -125,6 +125,114 @@ impl SideEffectDetector {
         matches!(&assign.targets[0], Expr::Name(name) if name.id.as_str() == "__all__")
     }
 
+    /// Return whether a name is an import global whose module-level rebinding
+    /// requires the wrapper path: inlined code shares the bundle entry's
+    /// globals, so rebinding would mutate the entry's own values, while the
+    /// wrapper namespace carries the rebound value in source order.
+    fn is_import_global(name: &str) -> bool {
+        matches!(name, "__name__" | "__package__" | "__doc__")
+    }
+
+    /// Return whether a statement list references `globals` anywhere (including
+    /// nested scopes). Inlined modules execute in the bundle entry's global
+    /// namespace: `globals()` inside their functions would read or mutate the
+    /// ENTRY module's state, so such modules take the wrapper path, which
+    /// rewrites `globals()` to the module's own namespace dictionary.
+    ///
+    /// Scope-aware: a function or lambda that BINDS `globals` (parameter or
+    /// local) resolves the name to its own binding for its whole body,
+    /// including nested scopes, so references inside it are not the builtin.
+    fn body_references_globals(body: &[Stmt]) -> bool {
+        use ruff_python_ast::visitor::{Visitor, walk_expr, walk_stmt};
+
+        fn scope_binds_globals(
+            parameters: Option<&ruff_python_ast::Parameters>,
+            body: &[Stmt],
+        ) -> bool {
+            if let Some(parameters) = parameters
+                && parameters
+                    .iter()
+                    .any(|param| param.name().as_str() == "globals")
+            {
+                return true;
+            }
+            let mut bound = crate::types::FxIndexSet::default();
+            let scope_globals = crate::visitors::collect_scope_global_declarations(body);
+            crate::visitors::LocalVarCollector::new(&mut bound, &scope_globals)
+                .collect_from_stmts(body);
+            bound.contains("globals")
+        }
+
+        struct GlobalsFinder {
+            found: bool,
+        }
+
+        impl<'a> Visitor<'a> for GlobalsFinder {
+            fn visit_stmt(&mut self, stmt: &'a Stmt) {
+                if self.found {
+                    return;
+                }
+                if let Stmt::FunctionDef(func) = stmt
+                    && scope_binds_globals(Some(&func.parameters), &func.body)
+                {
+                    // Definition-time expressions still evaluate in the
+                    // enclosing scope
+                    for decorator in &func.decorator_list {
+                        self.visit_expr(&decorator.expression);
+                    }
+                    for param in &func.parameters {
+                        if let Some(annotation) = param.annotation() {
+                            self.visit_expr(annotation);
+                        }
+                        if let Some(default) = param.default() {
+                            self.visit_expr(default);
+                        }
+                    }
+                    if let Some(returns) = &func.returns {
+                        self.visit_expr(returns);
+                    }
+                    return;
+                }
+                walk_stmt(self, stmt);
+            }
+
+            fn visit_expr(&mut self, expr: &'a Expr) {
+                if self.found {
+                    return;
+                }
+                if let Expr::Lambda(lambda) = expr
+                    && lambda
+                        .parameters
+                        .as_deref()
+                        .is_some_and(|parameters| scope_binds_globals(Some(parameters), &[]))
+                {
+                    if let Some(parameters) = &lambda.parameters {
+                        for param in parameters {
+                            if let Some(default) = param.default() {
+                                self.visit_expr(default);
+                            }
+                        }
+                    }
+                    return;
+                }
+                if matches!(expr, Expr::Name(name) if name.id.as_str() == "globals") {
+                    self.found = true;
+                    return;
+                }
+                walk_expr(self, expr);
+            }
+        }
+
+        let mut finder = GlobalsFinder { found: false };
+        for stmt in body {
+            finder.visit_stmt(stmt);
+            if finder.found {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Check if a statement is an augmented assignment to __all__
     fn is_all_augmented_assignment(&self, stmt: &Stmt) -> bool {
         if let Stmt::AugAssign(aug_assign) = stmt {
@@ -157,6 +265,13 @@ impl<'a> Visitor<'a> for SideEffectDetector {
         match stmt {
             // Function definitions need to check decorators and defaults for side effects
             Stmt::FunctionDef(func) => {
+                // A globals() reference in the body would read or mutate the
+                // bundle ENTRY's namespace if the module were inlined; the
+                // wrapper path rewrites it to the module's own dictionary
+                if Self::body_references_globals(&func.body) {
+                    self.has_side_effects = true;
+                    return;
+                }
                 // Check decorators for side effects (executed at import time)
                 self.in_expression_context = true;
                 for decorator in &func.decorator_list {
@@ -271,8 +386,15 @@ impl<'a> Visitor<'a> for SideEffectDetector {
                 // (but not method bodies - those are only executed when called)
                 for stmt in &class_def.body {
                     match stmt {
-                        // Method definitions are not side effects
-                        Stmt::FunctionDef(_) => {}
+                        // Method definitions are not side effects, but a
+                        // globals() reference inside one still needs the
+                        // wrapper path (see the FunctionDef arm)
+                        Stmt::FunctionDef(method) => {
+                            if Self::body_references_globals(&method.body) {
+                                self.has_side_effects = true;
+                                return;
+                            }
+                        }
 
                         // Assignments in class body could be side effects if they call functions
                         Stmt::Assign(assign) => {
@@ -298,6 +420,16 @@ impl<'a> Visitor<'a> for SideEffectDetector {
 
             // Annotated assignments need checking if they have a value
             Stmt::AnnAssign(ann_assign) => {
+                // Rebinding an import global (__name__/__package__/__doc__) at
+                // module scope needs the wrapper path: the namespace attribute
+                // then carries the rebound value in source order, while inlined
+                // code would mutate the bundle entry's own global
+                if ann_assign.value.is_some()
+                    && matches!(&*ann_assign.target, Expr::Name(name) if Self::is_import_global(name.id.as_str()))
+                {
+                    self.has_side_effects = true;
+                    return;
+                }
                 if let Some(value) = &ann_assign.value {
                     // Check if the assignment value has side effects
                     self.in_expression_context = true;
@@ -309,6 +441,14 @@ impl<'a> Visitor<'a> for SideEffectDetector {
 
             // Assignments need checking
             Stmt::Assign(assign) => {
+                // Rebinding an import global at module scope needs the wrapper
+                // path (see the AnnAssign arm)
+                if assign.targets.iter().any(
+                    |target| matches!(target, Expr::Name(name) if Self::is_import_global(name.id.as_str())),
+                ) {
+                    self.has_side_effects = true;
+                    return;
+                }
                 // Special case: __all__ assignments are metadata, not side effects
                 if !self.is_all_assignment(assign) {
                     // Check if the assignment value has side effects

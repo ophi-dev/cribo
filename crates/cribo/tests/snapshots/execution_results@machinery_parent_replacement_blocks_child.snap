@@ -1,0 +1,9 @@
+---
+source: crates/cribo/tests/test_bundling_snapshots.rs
+input_file: crates/cribo/tests/fixtures/machinery_parent_replacement_blocks_child/main.py
+---
+ExecutionResults {
+    status: Success,
+    stdout: "first: child\nblocked",
+    stderr: "",
+}

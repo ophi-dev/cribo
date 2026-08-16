@@ -18,6 +18,37 @@ enum Introspection {
     Globals,
 }
 
+impl Introspection {
+    /// The builtin's name.
+    const fn callable_name(self) -> &'static str {
+        match self {
+            Self::Locals => "locals",
+            Self::Globals => "globals",
+        }
+    }
+}
+
+/// Whether a scope BINDS the introspection callable's name (parameter or
+/// body-local): references inside it — including nested scopes — then resolve
+/// to that binding rather than the builtin, so the rewrite must not touch its
+/// body.
+fn scope_shadows_introspection(
+    parameters: Option<&ruff_python_ast::Parameters>,
+    body: &[Stmt],
+    target_fn: Introspection,
+) -> bool {
+    let name = target_fn.callable_name();
+    if let Some(parameters) = parameters
+        && parameters.iter().any(|param| param.name().as_str() == name)
+    {
+        return true;
+    }
+    let mut bound = crate::types::FxIndexSet::default();
+    let scope_globals = crate::visitors::collect_scope_global_declarations(body);
+    crate::visitors::LocalVarCollector::new(&mut bound, &scope_globals).collect_from_stmts(body);
+    bound.contains(name)
+}
+
 /// Sanitize a variable name for use in a Python identifier
 /// This ensures variable names only contain valid Python identifier characters
 fn sanitize_var_name(name: &str) -> String {
@@ -135,7 +166,14 @@ fn transform_introspection_in_expr(
                 );
             }
         }
-        Expr::Lambda(lambda_expr) if recurse_into_scopes => {
+        Expr::Lambda(lambda_expr)
+            if recurse_into_scopes
+                && !scope_shadows_introspection(
+                    lambda_expr.parameters.as_deref(),
+                    &[],
+                    target_fn,
+                ) =>
+        {
             // Only recurse into lambda if allowed (for globals)
             transform_introspection_in_expr(
                 &mut lambda_expr.body,
@@ -557,8 +595,16 @@ fn transform_introspection_in_stmt(
                 }
             }
 
-            // Only recurse into function body if allowed
-            if recurse_into_scopes {
+            // Only recurse into function body if allowed; a function that
+            // BINDS the introspection name resolves it to its own binding for
+            // the whole body (including nested scopes)
+            if recurse_into_scopes
+                && !scope_shadows_introspection(
+                    Some(&func_def.parameters),
+                    &func_def.body,
+                    target_fn,
+                )
+            {
                 for stmt in &mut func_def.body {
                     transform_introspection_in_stmt(
                         stmt,

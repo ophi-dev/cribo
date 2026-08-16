@@ -1,0 +1,9 @@
+---
+source: crates/cribo/tests/test_bundling_snapshots.rs
+input_file: crates/cribo/tests/fixtures/importlib_preserved_arg_errors/main.py
+---
+ExecutionResults {
+    status: Success,
+    stdout: "TypeError raised before target import\neffectful_helper imported\nVALUE: effectful value",
+    stderr: "",
+}

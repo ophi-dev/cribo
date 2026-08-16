@@ -1,0 +1,7 @@
+---
+source: crates/cribo/tests/test_bundling_snapshots.rs
+input_file: crates/cribo/tests/fixtures/xfail_bundle_third_party_egg_info_requires_python/main.py
+---
+packages:
+  - legacy-pkg
+count: 1
