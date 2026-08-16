@@ -11,7 +11,7 @@ use ruff_python_ast::{
     FStringPart, FStringValue, Int, Keyword, Number, Operator, StringLiteral, StringLiteralFlags,
     StringLiteralValue, UnaryOp,
 };
-use ruff_text_size::TextRange;
+use ruff_text_size::{TextRange, TextSize};
 
 /// Creates a name expression node.
 ///
@@ -168,7 +168,7 @@ pub(crate) fn call(func: Expr, args: Vec<Expr>, keywords: Vec<Keyword>) -> Expr 
             range: TextRange::default(),
             node_index: AtomicNodeIndex::NONE,
         },
-        range: TextRange::default(),
+        range_start: TextSize::default(),
         node_index: AtomicNodeIndex::NONE,
     })
 }
