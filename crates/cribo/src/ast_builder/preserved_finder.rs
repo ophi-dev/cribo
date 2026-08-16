@@ -79,12 +79,16 @@ class _CriboPreservedLoader:
                 # Eviction re-import: CPython executes a FRESH module object,
                 # and references to the EVICTED module keep observing its old
                 # namespace; rebuild from the pre-initialization snapshot so
-                # the two lives are distinct objects
+                # the two lives are distinct objects. The fresh life is marked
+                # so exec_module does not record ANOTHER snapshot for it: only
+                # the long-lived registered object needs one, and per-life
+                # entries would accumulate (and their ids could be reused)
                 saved = _type(self)._pristine.get(_id(module))
                 fresh = _SimpleNamespace()
                 fresh.__dict__.update(
                     saved if saved is not None else {'__name__': spec.name}
                 )
+                fresh._cribo_fresh_life = True
                 return fresh
             return module
         module = _SimpleNamespace(__name__=spec.name)
@@ -101,19 +105,24 @@ class _CriboPreservedLoader:
 
     def exec_module(
         self, module, *,
-        _BaseException=BaseException, _dict=dict, _globals=globals, _id=id, _type=type,
+        _BaseException=BaseException, _dict=dict, _getattr=getattr, _globals=globals,
+        _id=id, _type=type,
     ):
         init = self._entry[0]
         # The class GLOBAL may be legally rebound or deleted by user code;
         # reach the shared snapshot store through the instance's own type
         pristine = _type(self)._pristine
         key = _id(module)
+        # Fresh eviction lives are transient: recording snapshots for them
+        # would grow the store per re-import (and object ids can be reused);
+        # only the long-lived registered object needs one
+        record_snapshot = not _getattr(module, '_cribo_fresh_life', False)
         if init is None:
             # Init-less registrations (inlined ancestors) have no initializer
             # to re-execute — their code ran at bundle load — but an eviction
             # re-import must still observe a DISTINCT fresh life, so record the
             # snapshot and the marker consumed by create_module
-            if key not in pristine:
+            if record_snapshot and key not in pristine:
                 pristine[key] = _dict(module.__dict__)
             module._cribo_machinery_loaded = True
             return
@@ -127,7 +136,7 @@ class _CriboPreservedLoader:
             module.__initialized__ = False
             module.__initializing__ = False
         state = _dict(module.__dict__)
-        if key not in pristine:
+        if record_snapshot and key not in pristine:
             pristine[key] = _dict(state)
         try:
             _globals()[init](module)

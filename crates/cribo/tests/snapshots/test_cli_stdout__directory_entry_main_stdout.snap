@@ -49,6 +49,7 @@ class _CriboPreservedLoader:
                 saved = _type(self)._pristine.get(_id(module))
                 fresh = _SimpleNamespace()
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
+                fresh._cribo_fresh_life = True
                 return fresh
             return module
         module = _SimpleNamespace(__name__=spec.name)
@@ -56,12 +57,13 @@ class _CriboPreservedLoader:
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
 
-    def exec_module(self, module, *, _BaseException=BaseException, _dict=dict, _globals=globals, _id=id, _type=type):
+    def exec_module(self, module, *, _BaseException=BaseException, _dict=dict, _getattr=getattr, _globals=globals, _id=id, _type=type):
         init = self._entry[0]
         pristine = _type(self)._pristine
         key = _id(module)
+        record_snapshot = not _getattr(module, '_cribo_fresh_life', False)
         if init is None:
-            if key not in pristine:
+            if record_snapshot and key not in pristine:
                 pristine[key] = _dict(module.__dict__)
             module._cribo_machinery_loaded = True
             return
@@ -70,7 +72,7 @@ class _CriboPreservedLoader:
             module.__initialized__ = False
             module.__initializing__ = False
         state = _dict(module.__dict__)
-        if key not in pristine:
+        if record_snapshot and key not in pristine:
             pristine[key] = _dict(state)
         try:
             _globals()[init](module)

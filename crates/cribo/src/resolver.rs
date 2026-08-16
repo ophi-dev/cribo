@@ -487,6 +487,17 @@ impl UnbundlablePatternDetector {
                     Some(DynamicImportKind::Undiscoverable)
                 }
             }
+            // An import callable stored behind an ATTRIBUTE (e.g. `class Loader:
+            // load = staticmethod(importlib.import_module)` then `Loader.load(x)`)
+            // performs dynamic imports discovery never resolves; the recorded
+            // assigned-alias NAME is matched conservatively on any receiver
+            Expr::Attribute(attribute)
+                if self
+                    .assigned_import_aliases
+                    .contains(attribute.attr.as_str()) =>
+            {
+                Some(DynamicImportKind::Undiscoverable)
+            }
             Expr::Name(name) if name.id.as_str() == "__import__" => {
                 Some(DynamicImportKind::Undiscoverable)
             }
@@ -944,12 +955,38 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for UnbundlablePatternDetector {
         // Indirect reads of the same import globals through the module dict:
         // `globals()["__file__"]`, `globals().get("__spec__")`. Wrapper
         // generation rewrites globals() to the namespace dictionary, which
-        // carries no faithful values for these keys.
-        if let Expr::StringLiteral(literal) = expr
-            && matches!(
+        // carries no faithful values for these keys. Only actual dictionary
+        // lookups count — unrelated string DATA (`SPECIAL_NAMES = {"__file__"}`)
+        // never reads an import global.
+        let is_globals_call = |expr: &Expr| {
+            matches!(expr, Expr::Call(call)
+                if matches!(&*call.func, Expr::Name(callee) if callee.id.as_str() == "globals")
+                    && call.arguments.args.is_empty()
+                    && call.arguments.keywords.is_empty())
+        };
+        let is_import_global_key = |expr: &Expr| {
+            matches!(expr, Expr::StringLiteral(literal)
+            if matches!(
                 literal.value.to_str(),
                 "__file__" | "__spec__" | "__path__" | "__loader__" | "__cached__"
-            )
+            ))
+        };
+        if let Expr::Subscript(subscript) = expr
+            && is_globals_call(&subscript.value)
+            && is_import_global_key(&subscript.slice)
+        {
+            self.found = true;
+            return;
+        }
+        if let Expr::Call(call) = expr
+            && let Expr::Attribute(method) = &*call.func
+            && matches!(method.attr.as_str(), "get" | "pop" | "setdefault")
+            && is_globals_call(&method.value)
+            && call
+                .arguments
+                .args
+                .first()
+                .is_some_and(is_import_global_key)
         {
             self.found = true;
             return;
@@ -3505,12 +3542,63 @@ impl ModuleResolver {
                         .is_some_and(Self::target_binds_module_hook)
                 }) || Self::stmts_bind_module_hook(&with_stmt.body)
             }
-            Stmt::Match(match_stmt) => match_stmt
-                .cases
-                .iter()
-                .any(|case| Self::stmts_bind_module_hook(&case.body)),
+            Stmt::Match(match_stmt) => match_stmt.cases.iter().any(|case| {
+                // `case {"hook": __getattr__}:` — pattern captures bind at
+                // module scope too
+                let mut pattern_binds = false;
+                crate::visitors::patterns::visit_binding_names(&case.pattern, &mut |name| {
+                    pattern_binds |= matches!(name, "__getattr__" | "__dir__");
+                });
+                pattern_binds || Self::stmts_bind_module_hook(&case.body)
+            }),
             _ => false,
-        })
+        } || Self::stmt_expressions_bind_module_hook(stmt))
+    }
+
+    /// Whether any EXPRESSION in a module-scope statement binds a PEP 562 hook
+    /// through a named expression (`(__getattr__ := lambda name: value)`),
+    /// skipping nested function, class, and lambda scopes whose walrus targets
+    /// bind those scopes instead.
+    fn stmt_expressions_bind_module_hook(stmt: &ruff_python_ast::Stmt) -> bool {
+        use ruff_python_ast::{
+            AnyNodeRef, Expr,
+            visitor::source_order::{SourceOrderVisitor, TraversalSignal, walk_expr, walk_stmt},
+        };
+
+        struct WalrusHookFinder {
+            found: bool,
+        }
+        impl<'a> SourceOrderVisitor<'a> for WalrusHookFinder {
+            fn enter_node(&mut self, node: AnyNodeRef<'a>) -> TraversalSignal {
+                if self.found {
+                    return TraversalSignal::Skip;
+                }
+                match node {
+                    AnyNodeRef::StmtFunctionDef(_)
+                    | AnyNodeRef::StmtClassDef(_)
+                    | AnyNodeRef::ExprLambda(_) => TraversalSignal::Skip,
+                    _ => TraversalSignal::Traverse,
+                }
+            }
+
+            fn visit_expr(&mut self, expr: &'a Expr) {
+                if self.found {
+                    return;
+                }
+                if let Expr::Named(named) = expr
+                    && matches!(&*named.target, Expr::Name(name)
+                        if matches!(name.id.as_str(), "__getattr__" | "__dir__"))
+                {
+                    self.found = true;
+                    return;
+                }
+                walk_expr(self, expr);
+            }
+        }
+
+        let mut finder = WalrusHookFinder { found: false };
+        walk_stmt(&mut finder, stmt);
+        finder.found
     }
 
     /// Whether an assignment-like target expression binds a PEP 562 hook name
@@ -4172,18 +4260,39 @@ impl ModuleResolver {
             return false;
         }
 
-        // Parse every extras-independent Requires-Dist edge up front; only
-        // distributions with outgoing edges can propagate externality.
+        // Extras explicitly requested for a distribution (module-map entries
+        // like `native = "native[speed]"`) activate that declarer's
+        // extra-gated Requires-Dist edges: the installer WILL install those
+        // targets alongside the external declarer
+        let mut requested_extras: FxIndexMap<String, Vec<pep508_rs::ExtraName>> =
+            FxIndexMap::default();
+        for requirement in self.config.requirements.module_map.values() {
+            if let Ok(parsed) =
+                pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(requirement)
+            {
+                requested_extras
+                    .entry(Self::normalize_distribution_name(parsed.name.as_ref()))
+                    .or_default()
+                    .extend(parsed.extras.iter().cloned());
+            }
+        }
+
+        // Parse every active Requires-Dist edge up front; only distributions
+        // with outgoing edges can propagate externality.
         let mut edges: Vec<(usize, String)> = Vec::new();
         for (declarer_index, (_, declarer)) in distributions.iter().enumerate() {
             let declarer_name = Self::normalize_distribution_name(&declarer.name);
+            let declarer_extras = requested_extras
+                .get(&declarer_name)
+                .map_or(&[][..], Vec::as_slice);
             for entry in &declarer.requires_dist {
                 let Ok(parsed) = pep508_rs::Requirement::<pep508_rs::VerbatimUrl>::from_str(entry)
                 else {
                     continue;
                 };
-                // Edges gated purely on extras are inactive for a plain install.
-                if !parsed.marker.evaluate_extras(&[]) {
+                // Extra-gated edges are active only when the declarer is
+                // installed with that extra requested.
+                if !parsed.marker.evaluate_extras(declarer_extras) {
                     continue;
                 }
                 let target = Self::normalize_distribution_name(parsed.name.as_ref());

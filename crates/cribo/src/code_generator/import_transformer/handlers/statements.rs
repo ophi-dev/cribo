@@ -74,6 +74,11 @@ impl StatementsHandler {
         t: &mut RecursiveImportTransformer<'_>,
         s: &mut StmtTry,
     ) {
+        // Alias additions survive the try only when BOTH the body path and
+        // every handler path establish them (an exception may jump to a
+        // handler before the body's import ran); uncaught exceptions make
+        // later statements unreachable, so body+handlers cover all paths
+        let pre_aliases = t.state.import_aliases.clone();
         t.transform_statements(&mut s.body);
 
         // Ensure try body is not empty
@@ -81,6 +86,13 @@ impl StatementsHandler {
             log::debug!("Adding pass statement to empty try body in import transformer");
             s.body.push(crate::ast_builder::statements::pass());
         }
+
+        // The else suite runs only after the body succeeded: same branch
+        t.transform_statements(&mut s.orelse);
+        let mut branch_aliases = vec![std::mem::replace(
+            &mut t.state.import_aliases,
+            pre_aliases.clone(),
+        )];
 
         for handler in &mut s.handlers {
             let ExceptHandler::ExceptHandler(eh) = handler;
@@ -99,8 +111,13 @@ impl StatementsHandler {
                 log::debug!("Adding pass statement to empty except handler in import transformer");
                 eh.body.push(crate::ast_builder::statements::pass());
             }
+            branch_aliases.push(std::mem::replace(
+                &mut t.state.import_aliases,
+                pre_aliases.clone(),
+            ));
         }
-        t.transform_statements(&mut s.orelse);
+        Self::merge_conditional_aliases(t, &pre_aliases, &branch_aliases, true);
+        // The finally suite always runs: its additions promote normally
         t.transform_statements(&mut s.finalbody);
     }
 
@@ -154,8 +171,13 @@ impl StatementsHandler {
         }
 
         t.transform_expr(&mut s.target);
+        // A loop body may execute zero times: alias additions inside it must
+        // not promote past the loop (removals still veto)
+        let pre_aliases = t.state.import_aliases.clone();
         t.transform_statements(&mut s.body);
         t.transform_statements(&mut s.orelse);
+        let branch = std::mem::replace(&mut t.state.import_aliases, pre_aliases.clone());
+        Self::merge_conditional_aliases(t, &pre_aliases, &[branch], false);
     }
 
     pub(in crate::code_generator::import_transformer) fn handle_while(
@@ -163,8 +185,13 @@ impl StatementsHandler {
         s: &mut StmtWhile,
     ) {
         t.transform_expr(&mut s.test);
+        // A loop body may execute zero times: alias additions inside it must
+        // not promote past the loop (removals still veto)
+        let pre_aliases = t.state.import_aliases.clone();
         t.transform_statements(&mut s.body);
         t.transform_statements(&mut s.orelse);
+        let branch = std::mem::replace(&mut t.state.import_aliases, pre_aliases.clone());
+        Self::merge_conditional_aliases(t, &pre_aliases, &[branch], false);
     }
 
     pub(in crate::code_generator::import_transformer) fn handle_if(
@@ -172,23 +199,38 @@ impl StatementsHandler {
         s: &mut StmtIf,
     ) {
         t.transform_expr(&mut s.test);
+
+        // TYPE_CHECKING suites never execute at runtime, but their imports feed
+        // static annotation resolution: keep the legacy promotion for them
+        let is_type_checking =
+            crate::code_generator::import_transformer::statement::StatementProcessor::is_type_checking_condition(
+                &s.test,
+            );
+
+        // Imports inside conditional branches must not promote their alias
+        // bookkeeping past the branch as though they definitely executed: a
+        // later use is rewritten only when EVERY path (including the implicit
+        // fall-through) establishes the same alias — otherwise the original
+        // program's NameError semantics must survive
+        let pre_aliases = t.state.import_aliases.clone();
         t.transform_statements(&mut s.body);
 
         // Check if this is a TYPE_CHECKING block and ensure it has a body
-        if s.body.is_empty()
-            && crate::code_generator::import_transformer::statement::StatementProcessor::is_type_checking_condition(
-                &s.test,
-            )
-        {
-            log::debug!(
-                "Adding pass statement to empty TYPE_CHECKING block in import transformer"
-            );
+        if s.body.is_empty() && is_type_checking {
+            log::debug!("Adding pass statement to empty TYPE_CHECKING block in import transformer");
             s.body.push(crate::ast_builder::statements::pass());
         }
 
+        let mut branch_aliases = vec![std::mem::replace(
+            &mut t.state.import_aliases,
+            pre_aliases.clone(),
+        )];
+        let mut all_paths_covered = false;
         for clause in &mut s.elif_else_clauses {
             if let Some(test_expr) = &mut clause.test {
                 t.transform_expr(test_expr);
+            } else {
+                all_paths_covered = true;
             }
             t.transform_statements(&mut clause.body);
 
@@ -199,7 +241,50 @@ impl StatementsHandler {
                 );
                 clause.body.push(crate::ast_builder::statements::pass());
             }
+            branch_aliases.push(std::mem::replace(
+                &mut t.state.import_aliases,
+                pre_aliases.clone(),
+            ));
         }
+        if is_type_checking {
+            // Legacy promotion: adopt the TYPE_CHECKING branch's aliases
+            if let Some(first) = branch_aliases.into_iter().next() {
+                t.state.import_aliases = first;
+            }
+        } else {
+            Self::merge_conditional_aliases(t, &pre_aliases, &branch_aliases, all_paths_covered);
+        }
+    }
+
+    /// Merge importlib-alias bookkeeping after conditional branches: a PRE
+    /// entry survives only when every branch kept it unchanged (any branch
+    /// removing or rebinding it vetoes later rewrites), and a branch ADDITION
+    /// survives only when all paths are covered and every branch establishes
+    /// the identical alias.
+    fn merge_conditional_aliases(
+        t: &mut RecursiveImportTransformer<'_>,
+        pre_aliases: &crate::types::FxIndexMap<String, String>,
+        branch_aliases: &[crate::types::FxIndexMap<String, String>],
+        all_paths_covered: bool,
+    ) {
+        let mut merged = pre_aliases.clone();
+        merged.retain(|name, path| {
+            branch_aliases
+                .iter()
+                .all(|branch| branch.get(name).is_some_and(|entry| entry == path))
+        });
+        if all_paths_covered && let Some(first) = branch_aliases.first() {
+            for (name, path) in first {
+                if pre_aliases.get(name) != Some(path)
+                    && branch_aliases
+                        .iter()
+                        .all(|branch| branch.get(name).is_some_and(|entry| entry == path))
+                {
+                    merged.insert(name.clone(), path.clone());
+                }
+            }
+        }
+        t.state.import_aliases = merged;
     }
 
     pub(in crate::code_generator::import_transformer) fn handle_match(
@@ -215,6 +300,11 @@ impl StatementsHandler {
         }
 
         t.transform_expr(&mut s.subject);
+        // Cases are mutually exclusive branches; alias additions promote past
+        // the match only if every case establishes them, and no wildcard
+        // analysis is attempted (additions are conservatively dropped)
+        let pre_aliases = t.state.import_aliases.clone();
+        let mut branch_aliases = Vec::new();
         for case in &mut s.cases {
             crate::visitors::patterns::transform_runtime_exprs(&mut case.pattern, &mut |expr| {
                 t.transform_expr(expr);
@@ -226,7 +316,12 @@ impl StatementsHandler {
             if case.body.is_empty() {
                 case.body.push(crate::ast_builder::statements::pass());
             }
+            branch_aliases.push(std::mem::replace(
+                &mut t.state.import_aliases,
+                pre_aliases.clone(),
+            ));
         }
+        Self::merge_conditional_aliases(t, &pre_aliases, &branch_aliases, false);
     }
 
     pub(in crate::code_generator::import_transformer) fn handle_class_def(
