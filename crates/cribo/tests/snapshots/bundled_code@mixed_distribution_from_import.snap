@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -122,18 +122,22 @@ def _cribo_init___cribo_eb0568_mixed_package(_cribo_self, *, _cribo_getattr=geta
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'mixed_package'
-    _cribo_self.__doc__ = None
-    print("mixed loaded")
+    try:
+        _cribo_self.__package__ = 'mixed_package'
+        _cribo_self.__doc__ = None
+        print("mixed loaded")
 
-    def greet():
-        return "bundled greet"
-    greet.__module__ = 'mixed_package'
-    greet.__qualname__ = 'greet'
-    _cribo_self.greet = greet
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def greet():
+            return "bundled greet"
+        greet.__module__ = 'mixed_package'
+        greet.__qualname__ = 'greet'
+        _cribo_self.greet = greet
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 mixed_package.__init__ = _cribo_init___cribo_eb0568_mixed_package
 """A from-imported external child must keep the installed root reachable.\n\n`from mixed_package import _native` resolves the dotted submodule\nmixed_package._native through the INSTALLED package's __path__ (simulated by\na decoy prepended to sys.path), which the bundled namespace cannot provide:\nthe bundled root must therefore stay behind PathFinder, not in front of it.\nThe decoy modules are evicted afterwards so the later bundled import behaves\nidentically in both runs.\n"""
 os = _cribo.os

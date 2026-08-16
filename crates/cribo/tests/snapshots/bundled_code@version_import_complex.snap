@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -132,21 +132,25 @@ def _cribo_init___cribo_623f97_mypackage(_cribo_self, *, _cribo_getattr=getattr,
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'mypackage'
-    _cribo_self.__doc__ = 'Main package that exposes version and imports submodules.'
-    global mypackage_utils
-    """Main package that exposes version and imports submodules."""
-    __version__ = mypackage___version__.__version__
-    mypackage.__version__ = __version__
-    __author__ = mypackage___version__.__author__
-    mypackage.__author__ = __author__
-    mypackage_utils = _cribo_init___cribo_254d99_mypackage_utils(mypackage_utils)
-    utils = mypackage.utils
-    _cribo_self.utils = utils
-    _cribo_self.__version__ = __version__
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+    try:
+        _cribo_self.__package__ = 'mypackage'
+        _cribo_self.__doc__ = 'Main package that exposes version and imports submodules.'
+        global mypackage_utils
+        """Main package that exposes version and imports submodules."""
+        __version__ = mypackage___version__.__version__
+        mypackage.__version__ = __version__
+        __author__ = mypackage___version__.__author__
+        mypackage.__author__ = __author__
+        mypackage_utils = _cribo_init___cribo_254d99_mypackage_utils(mypackage_utils)
+        utils = mypackage.utils
+        _cribo_self.utils = utils
+        _cribo_self.__version__ = __version__
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 mypackage.__init__ = _cribo_init___cribo_623f97_mypackage
 def _cribo_init___cribo_254d99_mypackage_utils(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
@@ -154,21 +158,25 @@ def _cribo_init___cribo_254d99_mypackage_utils(_cribo_self, *, _cribo_getattr=ge
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'mypackage'
-    _cribo_self.__doc__ = 'Utility module that imports __version__ from a sibling module.'
-    """Utility module that imports __version__ from a sibling module."""
-    __version__ = mypackage___version__.__version__
-    mypackage_utils.__version__ = __version__
+    try:
+        _cribo_self.__package__ = 'mypackage'
+        _cribo_self.__doc__ = 'Utility module that imports __version__ from a sibling module.'
+        """Utility module that imports __version__ from a sibling module."""
+        __version__ = mypackage___version__.__version__
+        mypackage_utils.__version__ = __version__
 
-    def get_user_agent():
-        """Return a user agent string with version."""
-        return f"mypackage/{__version__}"
-    get_user_agent.__module__ = 'mypackage.utils'
-    get_user_agent.__qualname__ = 'get_user_agent'
-    _cribo_self.get_user_agent = get_user_agent
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def get_user_agent():
+            """Return a user agent string with version."""
+            return f"mypackage/{__version__}"
+        get_user_agent.__module__ = 'mypackage.utils'
+        get_user_agent.__qualname__ = 'get_user_agent'
+        _cribo_self.get_user_agent = get_user_agent
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 mypackage_utils.__init__ = _cribo_init___cribo_254d99_mypackage_utils
 """Test fixture for importing __version__ in a complex module structure."""
 __cribo_init_result = _cribo_init___cribo_623f97_mypackage(mypackage)

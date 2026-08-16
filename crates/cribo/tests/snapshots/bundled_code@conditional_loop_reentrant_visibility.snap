@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -125,26 +125,30 @@ def _cribo_init___cribo_fb64cc_loop_observer(_cribo_self, *, _cribo_getattr=geta
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = None
-    global loop_source
-    loop_source = _cribo_init___cribo_f42fc2_loop_source(loop_source)
-    _cribo_self.loop_source = loop_source
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = None
+        global loop_source
+        loop_source = _cribo_init___cribo_f42fc2_loop_source(loop_source)
+        _cribo_self.loop_source = loop_source
 
-    def observe_loop_value():
-        return loop_source.LOOP_VALUE
-    observe_loop_value.__module__ = 'loop_observer'
-    observe_loop_value.__qualname__ = 'observe_loop_value'
-    _cribo_self.observe_loop_value = observe_loop_value
+        def observe_loop_value():
+            return loop_source.LOOP_VALUE
+        observe_loop_value.__module__ = 'loop_observer'
+        observe_loop_value.__qualname__ = 'observe_loop_value'
+        _cribo_self.observe_loop_value = observe_loop_value
 
-    def loop_value_was_cleaned():
-        return not hasattr(loop_source, "LOOP_VALUE")
-    loop_value_was_cleaned.__module__ = 'loop_observer'
-    loop_value_was_cleaned.__qualname__ = 'loop_value_was_cleaned'
-    _cribo_self.loop_value_was_cleaned = loop_value_was_cleaned
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def loop_value_was_cleaned():
+            return not hasattr(loop_source, "LOOP_VALUE")
+        loop_value_was_cleaned.__module__ = 'loop_observer'
+        loop_value_was_cleaned.__qualname__ = 'loop_value_was_cleaned'
+        _cribo_self.loop_value_was_cleaned = loop_value_was_cleaned
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 loop_observer.__init__ = _cribo_init___cribo_fb64cc_loop_observer
 def _cribo_init___cribo_f42fc2_loop_source(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
@@ -152,43 +156,47 @@ def _cribo_init___cribo_f42fc2_loop_source(_cribo_self, *, _cribo_getattr=getatt
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = None
-    global loop_observer
-    for LOOP_VALUE in ("loop",):
-        loop_source.LOOP_VALUE = LOOP_VALUE
-        loop_observer = _cribo_init___cribo_fb64cc_loop_observer(loop_observer)
-        loop_source.loop_observer = loop_observer
-        OBSERVED_LOOP_VALUE = loop_observer.observe_loop_value()
-        loop_source.OBSERVED_LOOP_VALUE = OBSERVED_LOOP_VALUE
-        assert OBSERVED_LOOP_VALUE == LOOP_VALUE
-        del LOOP_VALUE
-        if _cribo.builtins.hasattr(loop_source, 'LOOP_VALUE'):
-            _cribo.builtins.delattr(loop_source, 'LOOP_VALUE')
-        CLEANED_LOOP_VALUE = loop_observer.loop_value_was_cleaned()
-        loop_source.CLEANED_LOOP_VALUE = CLEANED_LOOP_VALUE
-        assert CLEANED_LOOP_VALUE
-
-    class FailingTarget:
-
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'loop_source'), _cribo_f)[1])
-        def __setattr__(self, _name, _value):
-            raise RuntimeError
-    FailingTarget.__module__ = 'loop_source'
-    FailingTarget.__qualname__ = 'FailingTarget'
-    _cribo_self.FailingTarget = FailingTarget
     try:
-        for _cribo_for_target_377 in (("partial", "failure"),):
-            _cribo_assignment_target_377_0, _cribo_assignment_target_377_1 = _cribo_for_target_377
-            LOOP_PARTIAL_VALUE = _cribo_assignment_target_377_0
-            loop_source.LOOP_PARTIAL_VALUE = LOOP_PARTIAL_VALUE
-            FailingTarget().value = _cribo_assignment_target_377_1
-            pass
-    except RuntimeError:
-        assert LOOP_PARTIAL_VALUE == "partial"
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = None
+        global loop_observer
+        for LOOP_VALUE in ("loop",):
+            loop_source.LOOP_VALUE = LOOP_VALUE
+            loop_observer = _cribo_init___cribo_fb64cc_loop_observer(loop_observer)
+            loop_source.loop_observer = loop_observer
+            OBSERVED_LOOP_VALUE = loop_observer.observe_loop_value()
+            loop_source.OBSERVED_LOOP_VALUE = OBSERVED_LOOP_VALUE
+            assert OBSERVED_LOOP_VALUE == LOOP_VALUE
+            del LOOP_VALUE
+            if _cribo.builtins.hasattr(loop_source, 'LOOP_VALUE'):
+                _cribo.builtins.delattr(loop_source, 'LOOP_VALUE')
+            CLEANED_LOOP_VALUE = loop_observer.loop_value_was_cleaned()
+            loop_source.CLEANED_LOOP_VALUE = CLEANED_LOOP_VALUE
+            assert CLEANED_LOOP_VALUE
+
+        class FailingTarget:
+
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'loop_source'), _cribo_f)[1])
+            def __setattr__(self, _name, _value):
+                raise RuntimeError
+        FailingTarget.__module__ = 'loop_source'
+        FailingTarget.__qualname__ = 'FailingTarget'
+        _cribo_self.FailingTarget = FailingTarget
+        try:
+            for _cribo_for_target_377 in (("partial", "failure"),):
+                _cribo_assignment_target_377_0, _cribo_assignment_target_377_1 = _cribo_for_target_377
+                LOOP_PARTIAL_VALUE = _cribo_assignment_target_377_0
+                loop_source.LOOP_PARTIAL_VALUE = LOOP_PARTIAL_VALUE
+                FailingTarget().value = _cribo_assignment_target_377_1
+                pass
+        except RuntimeError:
+            assert LOOP_PARTIAL_VALUE == "partial"
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 loop_source.__init__ = _cribo_init___cribo_f42fc2_loop_source
 loop_source = _cribo_init___cribo_f42fc2_loop_source(loop_source)
 print(loop_source.OBSERVED_LOOP_VALUE)

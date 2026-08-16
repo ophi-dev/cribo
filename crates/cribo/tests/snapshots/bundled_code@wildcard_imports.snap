@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -142,68 +142,72 @@ def _cribo_init___cribo_9a9871_with_side_effects(_cribo_self, *, _cribo_getattr=
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = 'Module with side-effects and no explicit __all__.'
-    """Module with side-effects and no explicit __all__."""
-    print("Loading with_side_effects module")
-    _module_state = []
-    _cribo_self._module_state = _module_state
-    _module_state.append("initialized")
-
-    def effect_function():
-        """Function from module with side-effects."""
-        return "effect_function_result"
-    effect_function.__module__ = 'with_side_effects'
-    effect_function.__qualname__ = 'effect_function'
-    _cribo_self.effect_function = effect_function
-
-    class EffectClass:
-        """Class from module with side-effects."""
-        instances = []
-
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'with_side_effects'), _cribo_f)[1])
-        def __init__(self):
-            self.instances.append(self)
-
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'with_side_effects'), _cribo_f)[1])
-        def method(self):
-            return "EffectClass.method_result"
-    EffectClass.__module__ = 'with_side_effects'
-    EffectClass.__qualname__ = 'EffectClass'
-    _cribo_self.EffectClass = EffectClass
-    EFFECT_CONSTANT = "EFFECT_VALUE"
-    _cribo_self.EFFECT_CONSTANT = EFFECT_CONSTANT
-    _registry = {}
-    _cribo_self._registry = _registry
-
-    def register(name):
-        """Decorator with side-effects."""
-
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'with_side_effects'), _cribo_f)[1])
-        def decorator(func):
-            _registry[name] = func
-            return func
-        return decorator
-    register.__module__ = 'with_side_effects'
-    register.__qualname__ = 'register'
-    _cribo_self.register = register
-
-    @register("sample")
-    def registered_function():
-        """Function registered as a side-effect."""
-        return "registered_result"
     try:
-        if getattr(registered_function, '__name__', None) == 'registered_function' and getattr(registered_function, '__module__', None) == (lambda: None).__module__:
-            registered_function.__module__ = 'with_side_effects'
-            registered_function.__qualname__ = 'registered_function'
-    except (AttributeError, TypeError):
-        pass
-    _cribo_self.registered_function = registered_function
-    if len(_module_state) > 0:
-        print(f"Module state initialized with {len(_module_state)} items")
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = 'Module with side-effects and no explicit __all__.'
+        """Module with side-effects and no explicit __all__."""
+        print("Loading with_side_effects module")
+        _module_state = []
+        _cribo_self._module_state = _module_state
+        _module_state.append("initialized")
+
+        def effect_function():
+            """Function from module with side-effects."""
+            return "effect_function_result"
+        effect_function.__module__ = 'with_side_effects'
+        effect_function.__qualname__ = 'effect_function'
+        _cribo_self.effect_function = effect_function
+
+        class EffectClass:
+            """Class from module with side-effects."""
+            instances = []
+
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'with_side_effects'), _cribo_f)[1])
+            def __init__(self):
+                self.instances.append(self)
+
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'with_side_effects'), _cribo_f)[1])
+            def method(self):
+                return "EffectClass.method_result"
+        EffectClass.__module__ = 'with_side_effects'
+        EffectClass.__qualname__ = 'EffectClass'
+        _cribo_self.EffectClass = EffectClass
+        EFFECT_CONSTANT = "EFFECT_VALUE"
+        _cribo_self.EFFECT_CONSTANT = EFFECT_CONSTANT
+        _registry = {}
+        _cribo_self._registry = _registry
+
+        def register(name):
+            """Decorator with side-effects."""
+
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'with_side_effects'), _cribo_f)[1])
+            def decorator(func):
+                _registry[name] = func
+                return func
+            return decorator
+        register.__module__ = 'with_side_effects'
+        register.__qualname__ = 'register'
+        _cribo_self.register = register
+
+        @register("sample")
+        def registered_function():
+            """Function registered as a side-effect."""
+            return "registered_result"
+        try:
+            if getattr(registered_function, '__name__', None) == 'registered_function' and getattr(registered_function, '__module__', None) == (lambda: None).__module__:
+                registered_function.__module__ = 'with_side_effects'
+                registered_function.__qualname__ = 'registered_function'
+        except (AttributeError, TypeError):
+            pass
+        _cribo_self.registered_function = registered_function
+        if len(_module_state) > 0:
+            print(f"Module state initialized with {len(_module_state)} items")
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 with_side_effects.__init__ = _cribo_init___cribo_9a9871_with_side_effects
 clash_module_a = _cribo.types.SimpleNamespace(__name__='clash_module_a', __doc__='First module with potentially clashing names (no side-effects).')
 """First module with potentially clashing names (no side-effects)."""

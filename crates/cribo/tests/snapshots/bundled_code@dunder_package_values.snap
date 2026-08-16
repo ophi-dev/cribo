@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -124,12 +124,16 @@ def _cribo_init___cribo_dd9e25_toplevel_helper(_cribo_self, *, _cribo_getattr=ge
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = None
-    print("toplevel_helper __package__:", repr(_cribo_self.__package__))
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = None
+        print("toplevel_helper __package__:", repr(_cribo_self.__package__))
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 toplevel_helper.__init__ = _cribo_init___cribo_dd9e25_toplevel_helper
 provider = _cribo.types.SimpleNamespace(__name__='provider', __initializing__=False, __initialized__=False, __path__=[])
 _cribo_finder.bind('provider', provider)
@@ -139,14 +143,18 @@ def _cribo_init___cribo_d98eaa_provider(_cribo_self, *, _cribo_getattr=getattr, 
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'provider'
-    _cribo_self.__doc__ = None
-    print("provider package __package__:", _cribo_self.__package__)
-    PACKAGE_OF_INIT = _cribo_self.__package__
-    _cribo_self.PACKAGE_OF_INIT = PACKAGE_OF_INIT
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+    try:
+        _cribo_self.__package__ = 'provider'
+        _cribo_self.__doc__ = None
+        print("provider package __package__:", _cribo_self.__package__)
+        PACKAGE_OF_INIT = _cribo_self.__package__
+        _cribo_self.PACKAGE_OF_INIT = PACKAGE_OF_INIT
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 provider.__init__ = _cribo_init___cribo_d98eaa_provider
 provider_worker = _cribo.types.SimpleNamespace(__name__='provider.worker', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('provider.worker', provider_worker)
@@ -156,18 +164,22 @@ def _cribo_init___cribo_6b5e0d_provider_worker(_cribo_self, *, _cribo_getattr=ge
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'provider'
-    _cribo_self.__doc__ = None
-    print("worker __package__:", _cribo_self.__package__)
+    try:
+        _cribo_self.__package__ = 'provider'
+        _cribo_self.__doc__ = None
+        print("worker __package__:", _cribo_self.__package__)
 
-    def package_at_call_time():
-        return _cribo_self.__package__
-    package_at_call_time.__module__ = 'provider.worker'
-    package_at_call_time.__qualname__ = 'package_at_call_time'
-    _cribo_self.package_at_call_time = package_at_call_time
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def package_at_call_time():
+            return _cribo_self.__package__
+        package_at_call_time.__module__ = 'provider.worker'
+        package_at_call_time.__qualname__ = 'package_at_call_time'
+        _cribo_self.package_at_call_time = package_at_call_time
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 provider_worker.__init__ = _cribo_init___cribo_6b5e0d_provider_worker
 provider.worker = provider_worker
 """__package__ observes its real import-system value in bundled modules.\n\nA package initializer sees its own name, a submodule sees its parent, and a\ntop-level module sees the empty string — not the bundle entry's value.\n"""

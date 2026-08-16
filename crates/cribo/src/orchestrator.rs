@@ -1202,7 +1202,7 @@ impl BundleOrchestrator {
                 crate::visitors::ImportType::ImportlibStatic
                     | crate::visitors::ImportType::ImportlibPreserved
             ) {
-                self.handle_importlib_static(import, is_in_error_handler)
+                self.handle_importlib_static(import, file_path, resolver, is_in_error_handler)
             } else if import.level > 0 {
                 self.handle_relative_import(import, file_path, &mut resolver, is_in_error_handler)
             } else if let Some(ref module_name) = import.module_name {
@@ -1220,9 +1220,17 @@ impl BundleOrchestrator {
     }
 
     /// Handle `ImportlibStatic` imports and preserve package context metadata.
+    ///
+    /// A PRESERVED relative call (`import_module(".backend", __package__, **{})`)
+    /// resolves its absolute candidate here: through the literal package
+    /// context when present, otherwise against the containing file's location —
+    /// the verbatim runtime call then finds the bundled target registered with
+    /// the finder.
     fn handle_importlib_static(
         &self,
         import: &DiscoveredImport,
+        file_path: &Path,
+        resolver: Option<&ModuleResolver>,
         is_in_error_handler: bool,
     ) -> ImportExtractionResult {
         let mut imports_set = IndexSet::new();
@@ -1230,13 +1238,31 @@ impl BundleOrchestrator {
 
         imports_set
             .into_iter()
-            .map(|module_name| {
-                (
-                    module_name,
+            .filter_map(|module_name| {
+                let resolved_name = if import.import_type
+                    == crate::visitors::ImportType::ImportlibPreserved
+                    && module_name.starts_with('.')
+                {
+                    if let Some(package) = &import.package_context {
+                        crate::python::importlib_call::resolve_relative_name(&module_name, package)?
+                    } else {
+                        let name_part = module_name.trim_start_matches('.');
+                        let level = (module_name.len() - name_part.len()) as u32;
+                        resolver?.resolve_relative_to_absolute_module_name(
+                            level,
+                            (!name_part.is_empty()).then_some(name_part),
+                            file_path,
+                        )?
+                    }
+                } else {
+                    module_name
+                };
+                Some((
+                    resolved_name,
                     is_in_error_handler,
                     Some(import.import_type),
                     import.package_context.clone(),
-                )
+                ))
             })
             .collect()
     }

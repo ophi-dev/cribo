@@ -708,6 +708,95 @@ impl Bundler<'_> {
         );
     }
 
+    /// Inline a destructuring assignment (`LEFT, RIGHT = values`, including
+    /// list and starred forms) whose targets are all plain names: the
+    /// statement binds every name at once, so it is included when ANY bound
+    /// name passes the inlining policy, with renames registered and applied
+    /// for each. Mixed targets (attributes, subscripts) are skipped like
+    /// before — mutation targets do not define module-scope symbols.
+    fn inline_destructured_assignment(
+        &self,
+        assign: &StmtAssign,
+        module_name: &str,
+        module_renames: &mut FxIndexMap<String, String>,
+        ctx: &mut InlineContext<'_>,
+    ) {
+        fn collect_plain_names(target: &Expr, names: &mut Vec<String>) -> bool {
+            match target {
+                Expr::Name(name) => {
+                    names.push(name.id.to_string());
+                    true
+                }
+                Expr::Tuple(tuple) => tuple
+                    .elts
+                    .iter()
+                    .all(|element| collect_plain_names(element, names)),
+                Expr::List(list) => list
+                    .elts
+                    .iter()
+                    .all(|element| collect_plain_names(element, names)),
+                Expr::Starred(starred) => collect_plain_names(&starred.value, names),
+                _ => false,
+            }
+        }
+        let mut bound_names = Vec::new();
+        if assign.targets.is_empty()
+            || !assign
+                .targets
+                .iter()
+                .all(|target| collect_plain_names(target, &mut bound_names))
+            || bound_names.is_empty()
+        {
+            log::debug!(
+                "Skipping non-simple assignment in '{module_name}' - targets are not plain names",
+            );
+            return;
+        }
+
+        let module_id = self
+            .resolver
+            .get_module_id_by_name(module_name)
+            .expect("Module should exist");
+        if !bound_names
+            .iter()
+            .any(|name| self.should_inline_symbol(name, module_id, ctx.module_exports_map))
+        {
+            log::debug!(
+                "Not inlining destructuring assignment in '{module_name}' - no bound name passes \
+                 should_inline_symbol"
+            );
+            return;
+        }
+
+        let mut assign_clone = assign.clone();
+        // Apply aliases and existing renames to the RHS before renaming targets
+        expression_handlers::resolve_import_aliases_in_expr(
+            &mut assign_clone.value,
+            &ctx.import_aliases,
+        );
+        expression_handlers::rewrite_aliases_in_expr(&mut assign_clone.value, module_renames);
+        if let Some(semantic_renames) = ctx.module_renames.get(&module_id) {
+            expression_handlers::rewrite_aliases_in_expr(&mut assign_clone.value, semantic_renames);
+        }
+
+        // Register and apply the rename for every bound name
+        let mut renames_for_targets: FxIndexMap<String, String> = FxIndexMap::default();
+        for name in &bound_names {
+            let renamed = self.resolve_renamed_name(name, module_name, ctx);
+            module_renames.insert(name.clone(), renamed.clone());
+            ctx.global_symbols.insert(renamed.clone());
+            if renamed != *name {
+                renames_for_targets.insert(name.clone(), renamed);
+            }
+        }
+        if !renames_for_targets.is_empty() {
+            for target in &mut assign_clone.targets {
+                expression_handlers::rewrite_aliases_in_expr(target, &renames_for_targets);
+            }
+        }
+        ctx.inlined_stmts.push(Stmt::Assign(assign_clone));
+    }
+
     /// Inline an assignment statement
     pub(crate) fn inline_assignment(
         &self,
@@ -764,9 +853,9 @@ impl Bundler<'_> {
         }
 
         let Some(name) = expression_handlers::extract_simple_assign_target(assign) else {
-            log::debug!(
-                "Skipping non-simple assignment in '{module_name}' - target is not a simple name",
-            );
+            // Tuple/list destructuring binds multiple module-scope names
+            // (`LEFT, RIGHT = values`): inline it like plain assignments
+            self.inline_destructured_assignment(assign, module_name, module_renames, ctx);
             return;
         };
 

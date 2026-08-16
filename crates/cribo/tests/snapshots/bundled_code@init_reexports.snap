@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -146,28 +146,32 @@ def _cribo_init___cribo_de6c46_mypackage_config(_cribo_self, *, _cribo_getattr=g
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'mypackage'
-    _cribo_self.__doc__ = 'Configuration module.'
-    """Configuration module."""
-    os = _cribo.os
-    _cribo_self.os = os
-    _cribo_self.os = os
+    try:
+        _cribo_self.__package__ = 'mypackage'
+        _cribo_self.__doc__ = 'Configuration module.'
+        """Configuration module."""
+        os = _cribo.os
+        _cribo_self.os = os
+        _cribo_self.os = os
 
-    class Config:
-        """Configuration class."""
+        class Config:
+            """Configuration class."""
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'mypackage.config'), _cribo_f)[1])
-        def __init__(self):
-            self.DEBUG = _cribo.os.environ.get("DEBUG", "false").lower() == "true"
-            self.LOG_LEVEL = _cribo.os.environ.get("LOG_LEVEL", "INFO")
-    Config.__module__ = 'mypackage.config'
-    Config.__qualname__ = 'Config'
-    _cribo_self.Config = Config
-    config = Config()
-    _cribo_self.config = config
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'mypackage.config'), _cribo_f)[1])
+            def __init__(self):
+                self.DEBUG = _cribo.os.environ.get("DEBUG", "false").lower() == "true"
+                self.LOG_LEVEL = _cribo.os.environ.get("LOG_LEVEL", "INFO")
+        Config.__module__ = 'mypackage.config'
+        Config.__qualname__ = 'Config'
+        _cribo_self.Config = Config
+        config = Config()
+        _cribo_self.config = config
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 mypackage_config.__init__ = _cribo_init___cribo_de6c46_mypackage_config
 mypackage.config = mypackage_config
 mypackage_utils_helper = _cribo.types.SimpleNamespace(__name__='mypackage.utils.helper', __doc__='Helper utilities.')
@@ -193,34 +197,38 @@ def _cribo_init___cribo_a81151_mypackage(_cribo_self, *, _cribo_getattr=getattr,
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'mypackage'
-    _cribo_self.__doc__ = "\nPackage initialization with re-exports.\n\nThis __init__.py demonstrates the pattern where imports are made but not directly used\nwithin this file - they are re-exports for the package interface.\nThese imports should NOT be stripped as unused, even though they don't appear\nto be used within this file itself.\n"
-    global mypackage_config
-    """\nPackage initialization with re-exports.\n\nThis __init__.py demonstrates the pattern where imports are made but not directly used\nwithin this file - they are re-exports for the package interface.\nThese imports should NOT be stripped as unused, even though they don't appear\nto be used within this file itself.\n"""
-    process_data = mypackage_data_processor.process_data
-    mypackage.process_data = process_data
-    format_data = mypackage_formatter.format_data
-    mypackage.format_data = format_data
-    mypackage_config = _cribo_init___cribo_de6c46_mypackage_config(mypackage_config)
-    config = mypackage_config.config
-    _cribo_self.config = config
-    _cribo_self.config = config
-    __cribo_init_result = _cribo_init___cribo_99e487_mypackage_utils(mypackage_utils)
-    for attr in dir(__cribo_init_result):
-        if not attr.startswith('_'):
-            setattr(mypackage.utils, attr, getattr(__cribo_init_result, attr))
-    _cribo_self.helper_function = helper_function
-    __version__ = "1.0.0"
-    _cribo_self.__version__ = __version__
-    DEBUG_MODE = config.DEBUG
-    _cribo_self.DEBUG_MODE = DEBUG_MODE
-    _cribo_self.formatter = mypackage_formatter
-    _cribo_self.data_processor = mypackage_data_processor
-    _cribo_self.process_data = process_data
-    _cribo_self.format_data = format_data
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+    try:
+        _cribo_self.__package__ = 'mypackage'
+        _cribo_self.__doc__ = "\nPackage initialization with re-exports.\n\nThis __init__.py demonstrates the pattern where imports are made but not directly used\nwithin this file - they are re-exports for the package interface.\nThese imports should NOT be stripped as unused, even though they don't appear\nto be used within this file itself.\n"
+        global mypackage_config
+        """\nPackage initialization with re-exports.\n\nThis __init__.py demonstrates the pattern where imports are made but not directly used\nwithin this file - they are re-exports for the package interface.\nThese imports should NOT be stripped as unused, even though they don't appear\nto be used within this file itself.\n"""
+        process_data = mypackage_data_processor.process_data
+        mypackage.process_data = process_data
+        format_data = mypackage_formatter.format_data
+        mypackage.format_data = format_data
+        mypackage_config = _cribo_init___cribo_de6c46_mypackage_config(mypackage_config)
+        config = mypackage_config.config
+        _cribo_self.config = config
+        _cribo_self.config = config
+        __cribo_init_result = _cribo_init___cribo_99e487_mypackage_utils(mypackage_utils)
+        for attr in dir(__cribo_init_result):
+            if not attr.startswith('_'):
+                setattr(mypackage.utils, attr, getattr(__cribo_init_result, attr))
+        _cribo_self.helper_function = helper_function
+        __version__ = "1.0.0"
+        _cribo_self.__version__ = __version__
+        DEBUG_MODE = config.DEBUG
+        _cribo_self.DEBUG_MODE = DEBUG_MODE
+        _cribo_self.formatter = mypackage_formatter
+        _cribo_self.data_processor = mypackage_data_processor
+        _cribo_self.process_data = process_data
+        _cribo_self.format_data = format_data
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 mypackage.__init__ = _cribo_init___cribo_a81151_mypackage
 def _cribo_init___cribo_99e487_mypackage_utils(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
@@ -228,21 +236,25 @@ def _cribo_init___cribo_99e487_mypackage_utils(_cribo_self, *, _cribo_getattr=ge
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'mypackage.utils'
-    _cribo_self.__doc__ = 'Utils subpackage with re-exports.'
-    """Utils subpackage with re-exports."""
-    helper_function = mypackage_utils_helper.helper_function
-    mypackage_utils.helper_function = helper_function
-    MAX_ITEMS = mypackage_utils_constants.MAX_ITEMS
-    mypackage_utils.MAX_ITEMS = MAX_ITEMS
-    DEFAULT_VALUE = mypackage_utils_constants.DEFAULT_VALUE
-    mypackage_utils.DEFAULT_VALUE = DEFAULT_VALUE
-    _cribo_self.constants = mypackage_utils_constants
-    _cribo_self.helper = mypackage_utils_helper
-    _cribo_self.helper_function = helper_function
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+    try:
+        _cribo_self.__package__ = 'mypackage.utils'
+        _cribo_self.__doc__ = 'Utils subpackage with re-exports.'
+        """Utils subpackage with re-exports."""
+        helper_function = mypackage_utils_helper.helper_function
+        mypackage_utils.helper_function = helper_function
+        MAX_ITEMS = mypackage_utils_constants.MAX_ITEMS
+        mypackage_utils.MAX_ITEMS = MAX_ITEMS
+        DEFAULT_VALUE = mypackage_utils_constants.DEFAULT_VALUE
+        mypackage_utils.DEFAULT_VALUE = DEFAULT_VALUE
+        _cribo_self.constants = mypackage_utils_constants
+        _cribo_self.helper = mypackage_utils_helper
+        _cribo_self.helper_function = helper_function
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 mypackage_utils.__init__ = _cribo_init___cribo_99e487_mypackage_utils
 _cribo_captured['process_data'] = process_data
 _cribo_captured['format_data'] = format_data

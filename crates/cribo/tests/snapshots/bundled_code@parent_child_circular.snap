@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -124,29 +124,33 @@ def _cribo_init___cribo_83878b_foo_zoo(_cribo_self, *, _cribo_getattr=getattr, _
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'foo'
-    _cribo_self.__doc__ = 'Module zoo - the end of the chain.'
-    """Module zoo - the end of the chain."""
-    print("Initializing foo.zoo module")
+    try:
+        _cribo_self.__package__ = 'foo'
+        _cribo_self.__doc__ = 'Module zoo - the end of the chain.'
+        """Module zoo - the end of the chain."""
+        print("Initializing foo.zoo module")
 
-    class Zoo:
-        """A simple class with no dependencies."""
+        class Zoo:
+            """A simple class with no dependencies."""
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'foo.zoo'), _cribo_f)[1])
-        def format(self, value):
-            """Format a value."""
-            return f"[{value}]"
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'foo.zoo'), _cribo_f)[1])
+            def format(self, value):
+                """Format a value."""
+                return f"[{value}]"
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'foo.zoo'), _cribo_f)[1])
-        def transform(self, data):
-            """Transform data."""
-            return f"Transformed: {data}"
-    Zoo.__module__ = 'foo.zoo'
-    Zoo.__qualname__ = 'Zoo'
-    _cribo_self.Zoo = Zoo
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'foo.zoo'), _cribo_f)[1])
+            def transform(self, data):
+                """Transform data."""
+                return f"Transformed: {data}"
+        Zoo.__module__ = 'foo.zoo'
+        Zoo.__qualname__ = 'Zoo'
+        _cribo_self.Zoo = Zoo
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 foo_zoo.__init__ = _cribo_init___cribo_83878b_foo_zoo
 foo = _cribo.types.SimpleNamespace(__name__='foo', __initializing__=False, __initialized__=False, __path__=[])
 foo.zoo = foo_zoo
@@ -159,25 +163,29 @@ def _cribo_init___cribo_97cb47_foo(_cribo_self, *, _cribo_getattr=getattr, _crib
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'foo'
-    _cribo_self.__doc__ = 'Parent package that imports from its child module.'
-    global foo_boo
-    """Parent package that imports from its child module."""
-    print("Initializing foo package")
-    foo_boo = _cribo_init___cribo_f2ecbb_foo_boo(foo_boo)
-    helper_function = foo_boo.helper_function
-    _cribo_self.helper_function = helper_function
-    _cribo_self.helper_function = helper_function
+    try:
+        _cribo_self.__package__ = 'foo'
+        _cribo_self.__doc__ = 'Parent package that imports from its child module.'
+        global foo_boo
+        """Parent package that imports from its child module."""
+        print("Initializing foo package")
+        foo_boo = _cribo_init___cribo_f2ecbb_foo_boo(foo_boo)
+        helper_function = foo_boo.helper_function
+        _cribo_self.helper_function = helper_function
+        _cribo_self.helper_function = helper_function
 
-    def package_level_function(x):
-        """A function at the package level that uses the imported helper."""
-        return helper_function(x) + " (from package)"
-    package_level_function.__module__ = 'foo'
-    package_level_function.__qualname__ = 'package_level_function'
-    _cribo_self.package_level_function = package_level_function
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def package_level_function(x):
+            """A function at the package level that uses the imported helper."""
+            return helper_function(x) + " (from package)"
+        package_level_function.__module__ = 'foo'
+        package_level_function.__qualname__ = 'package_level_function'
+        _cribo_self.package_level_function = package_level_function
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 foo.__init__ = _cribo_init___cribo_97cb47_foo
 def _cribo_init___cribo_f2ecbb_foo_boo(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
@@ -185,34 +193,38 @@ def _cribo_init___cribo_f2ecbb_foo_boo(_cribo_self, *, _cribo_getattr=getattr, _
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'foo'
-    _cribo_self.__doc__ = 'Child module boo that imports another sibling.'
-    global foo_zoo
-    """Child module boo that imports another sibling."""
-    print("Initializing foo.boo module")
-    foo_zoo = _cribo_init___cribo_83878b_foo_zoo(foo_zoo)
-    Zoo = foo.zoo.Zoo
-    _cribo_self.Zoo = Zoo
-    _cribo_self.Zoo = Zoo
+    try:
+        _cribo_self.__package__ = 'foo'
+        _cribo_self.__doc__ = 'Child module boo that imports another sibling.'
+        global foo_zoo
+        """Child module boo that imports another sibling."""
+        print("Initializing foo.boo module")
+        foo_zoo = _cribo_init___cribo_83878b_foo_zoo(foo_zoo)
+        Zoo = foo.zoo.Zoo
+        _cribo_self.Zoo = Zoo
+        _cribo_self.Zoo = Zoo
 
-    def helper_function(x):
-        """A helper function used by the parent package."""
-        zoo = Zoo()
-        return zoo.format(x)
-    helper_function.__module__ = 'foo.boo'
-    helper_function.__qualname__ = 'helper_function'
-    _cribo_self.helper_function = helper_function
+        def helper_function(x):
+            """A helper function used by the parent package."""
+            zoo = Zoo()
+            return zoo.format(x)
+        helper_function.__module__ = 'foo.boo'
+        helper_function.__qualname__ = 'helper_function'
+        _cribo_self.helper_function = helper_function
 
-    def process_data(data):
-        """Process data using zoo functionality."""
-        zoo = Zoo()
-        return zoo.transform(data)
-    process_data.__module__ = 'foo.boo'
-    process_data.__qualname__ = 'process_data'
-    _cribo_self.process_data = process_data
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def process_data(data):
+            """Process data using zoo functionality."""
+            zoo = Zoo()
+            return zoo.transform(data)
+        process_data.__module__ = 'foo.boo'
+        process_data.__qualname__ = 'process_data'
+        _cribo_self.process_data = process_data
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 foo_boo.__init__ = _cribo_init___cribo_f2ecbb_foo_boo
 """Test parent-child circular dependencies.\n\nThis tests the case where:\n1. foo/__init__.py imports from foo.boo\n2. foo.boo imports foo.zoo\n3. This creates a circular dependency because foo.zoo requires foo to be initialized first\n"""
 print("Initializing main module")

@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -123,66 +123,70 @@ def _cribo_init___cribo_244765_compat_module(_cribo_self, *, _cribo_getattr=geta
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = '\nModule that mimics requests.compat structure.\nNo __all__ defined, so all non-underscore symbols should be exported.\n'
-    """\nModule that mimics requests.compat structure.\nNo __all__ defined, so all non-underscore symbols should be exported.\n"""
-    sys = _cribo.sys
-    _cribo_self.sys = sys
-    _cribo_self.sys = sys
-    _ver = _cribo.sys.version_info
-    _cribo_self._ver = _ver
-    is_py2 = _ver[0] == 2
-    _cribo_self.is_py2 = is_py2
-    is_py3 = _ver[0] == 3
-    _cribo_self.is_py3 = is_py3
-    has_simplejson = False
-    _cribo_self.has_simplejson = has_simplejson
     try:
-        import simplejson as json
-        compat_module.json = json
-        has_simplejson = True
-        compat_module.has_simplejson = has_simplejson
-    except ImportError:
-        json = _cribo.json
-        _cribo_self.json = json
-    if has_simplejson:
-        from simplejson import JSONDecodeError
-        compat_module.JSONDecodeError = JSONDecodeError
-    else:
-        JSONDecodeError = _cribo.json.JSONDecodeError
-        compat_module.JSONDecodeError = JSONDecodeError
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = '\nModule that mimics requests.compat structure.\nNo __all__ defined, so all non-underscore symbols should be exported.\n'
+        """\nModule that mimics requests.compat structure.\nNo __all__ defined, so all non-underscore symbols should be exported.\n"""
+        sys = _cribo.sys
+        _cribo_self.sys = sys
+        _cribo_self.sys = sys
+        _ver = _cribo.sys.version_info
+        _cribo_self._ver = _ver
+        is_py2 = _ver[0] == 2
+        _cribo_self.is_py2 = is_py2
+        is_py3 = _ver[0] == 3
+        _cribo_self.is_py3 = is_py3
+        has_simplejson = False
+        _cribo_self.has_simplejson = has_simplejson
+        try:
+            import simplejson as json
+            compat_module.json = json
+            has_simplejson = True
+            compat_module.has_simplejson = has_simplejson
+        except ImportError:
+            json = _cribo.json
+            _cribo_self.json = json
+        if has_simplejson:
+            from simplejson import JSONDecodeError
+            compat_module.JSONDecodeError = JSONDecodeError
+        else:
+            JSONDecodeError = _cribo.json.JSONDecodeError
+            compat_module.JSONDecodeError = JSONDecodeError
 
-    def _resolve_char_detection():
-        """Find supported character detection libraries."""
-        chardet = None
-        for lib in ("chardet", "charset_normalizer"):
-            if chardet is None:
-                try:
-                    chardet = __import__(lib)
-                except ImportError:
-                    pass
-        return chardet
-    _resolve_char_detection.__module__ = 'compat_module'
-    _resolve_char_detection.__qualname__ = '_resolve_char_detection'
-    _cribo_self._resolve_char_detection = _resolve_char_detection
-    chardet = _resolve_char_detection()
-    _cribo_self.chardet = chardet
-    builtin_str = str
-    _cribo_self.builtin_str = builtin_str
-    basestring = str, bytes
-    _cribo_self.basestring = basestring
-    _internal_cache = {}
-    _cribo_self._internal_cache = _internal_cache
+        def _resolve_char_detection():
+            """Find supported character detection libraries."""
+            chardet = None
+            for lib in ("chardet", "charset_normalizer"):
+                if chardet is None:
+                    try:
+                        chardet = __import__(lib)
+                    except ImportError:
+                        pass
+            return chardet
+        _resolve_char_detection.__module__ = 'compat_module'
+        _resolve_char_detection.__qualname__ = '_resolve_char_detection'
+        _cribo_self._resolve_char_detection = _resolve_char_detection
+        chardet = _resolve_char_detection()
+        _cribo_self.chardet = chardet
+        builtin_str = str
+        _cribo_self.builtin_str = builtin_str
+        basestring = str, bytes
+        _cribo_self.basestring = basestring
+        _internal_cache = {}
+        _cribo_self._internal_cache = _internal_cache
 
-    def get_encoding_from_headers(headers):
-        """Dummy function to test function exports."""
-        return "utf-8"
-    get_encoding_from_headers.__module__ = 'compat_module'
-    get_encoding_from_headers.__qualname__ = 'get_encoding_from_headers'
-    _cribo_self.get_encoding_from_headers = get_encoding_from_headers
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def get_encoding_from_headers(headers):
+            """Dummy function to test function exports."""
+            return "utf-8"
+        get_encoding_from_headers.__module__ = 'compat_module'
+        get_encoding_from_headers.__qualname__ = 'get_encoding_from_headers'
+        _cribo_self.get_encoding_from_headers = get_encoding_from_headers
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 compat_module.__init__ = _cribo_init___cribo_244765_compat_module
 exceptions_module = _cribo.types.SimpleNamespace(__name__='exceptions_module', __doc__='Module that uses imports from compat_module (like requests.exceptions).')
 """Module that uses imports from compat_module (like requests.exceptions)."""

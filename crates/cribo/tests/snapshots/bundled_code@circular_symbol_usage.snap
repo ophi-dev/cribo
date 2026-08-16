@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -125,37 +125,41 @@ def _cribo_init___cribo_851b00_module_a(_cribo_self, *, _cribo_getattr=getattr, 
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = 'Module A with circular dependency on B.'
-    global module_b
-    """Module A with circular dependency on B."""
-    Optional = _cribo.typing.Optional
-    _cribo_self.Optional = Optional
-    module_b = _cribo_init___cribo_924318_module_b(module_b)
-    HelperB = module_b.HelperB
-    _cribo_self.HelperB = HelperB
-    _cribo_self.HelperB = HelperB
-    UnusedFromB = module_b.UnusedFromB
-    _cribo_self.UnusedFromB = UnusedFromB
-    _cribo_self.UnusedFromB = UnusedFromB
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = 'Module A with circular dependency on B.'
+        global module_b
+        """Module A with circular dependency on B."""
+        Optional = _cribo.typing.Optional
+        _cribo_self.Optional = Optional
+        module_b = _cribo_init___cribo_924318_module_b(module_b)
+        HelperB = module_b.HelperB
+        _cribo_self.HelperB = HelperB
+        _cribo_self.HelperB = HelperB
+        UnusedFromB = module_b.UnusedFromB
+        _cribo_self.UnusedFromB = UnusedFromB
+        _cribo_self.UnusedFromB = UnusedFromB
 
-    class FunctionA:
+        class FunctionA:
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'module_a'), _cribo_f)[1])
-        def compute(self) -> str:
-            helper = HelperB()
-            return f"A: {helper.get_value()}"
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'module_a'), _cribo_f)[1])
+            def compute(self) -> str:
+                helper = HelperB()
+                return f"A: {helper.get_value()}"
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'module_a'), _cribo_f)[1])
-        def unused_method(self, param: _cribo.typing.Optional["UnusedFromB"]) -> None:
-            pass
-    FunctionA.__module__ = 'module_a'
-    FunctionA.__qualname__ = 'FunctionA'
-    _cribo_self.FunctionA = FunctionA
-    _cribo_self.Optional = _cribo.typing.Optional
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'module_a'), _cribo_f)[1])
+            def unused_method(self, param: _cribo.typing.Optional["UnusedFromB"]) -> None:
+                pass
+        FunctionA.__module__ = 'module_a'
+        FunctionA.__qualname__ = 'FunctionA'
+        _cribo_self.FunctionA = FunctionA
+        _cribo_self.Optional = _cribo.typing.Optional
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 module_a.__init__ = _cribo_init___cribo_851b00_module_a
 def _cribo_init___cribo_924318_module_b(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
@@ -163,42 +167,46 @@ def _cribo_init___cribo_924318_module_b(_cribo_self, *, _cribo_getattr=getattr, 
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = 'Module B with circular dependency on A.'
-    global module_a
-    """Module B with circular dependency on A."""
-    TYPE_CHECKING = _cribo.typing.TYPE_CHECKING
-    _cribo_self.TYPE_CHECKING = TYPE_CHECKING
-    if _cribo.typing.TYPE_CHECKING:
-        module_a = _cribo_init___cribo_851b00_module_a(module_a)
-        FunctionA = module_a.FunctionA
-        _cribo_self.FunctionA = FunctionA
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = 'Module B with circular dependency on A.'
+        global module_a
+        """Module B with circular dependency on A."""
+        TYPE_CHECKING = _cribo.typing.TYPE_CHECKING
+        _cribo_self.TYPE_CHECKING = TYPE_CHECKING
+        if _cribo.typing.TYPE_CHECKING:
+            module_a = _cribo_init___cribo_851b00_module_a(module_a)
+            FunctionA = module_a.FunctionA
+            _cribo_self.FunctionA = FunctionA
 
-    class HelperB:
+        class HelperB:
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'module_b'), _cribo_f)[1])
-        def get_value(self) -> str:
-            return "Value from B"
-    HelperB.__module__ = 'module_b'
-    HelperB.__qualname__ = 'HelperB'
-    _cribo_self.HelperB = HelperB
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'module_b'), _cribo_f)[1])
+            def get_value(self) -> str:
+                return "Value from B"
+        HelperB.__module__ = 'module_b'
+        HelperB.__qualname__ = 'HelperB'
+        _cribo_self.HelperB = HelperB
 
-    class UnusedFromB:
+        class UnusedFromB:
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'module_b'), _cribo_f)[1])
-        def __init__(self):
-            print("UnusedFromB initialized - this should be dead code!")
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'module_b'), _cribo_f)[1])
+            def __init__(self):
+                print("UnusedFromB initialized - this should be dead code!")
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'module_b'), _cribo_f)[1])
-        def process(self, func_a: "FunctionA") -> str:
-            return func_a.compute()
-    UnusedFromB.__module__ = 'module_b'
-    UnusedFromB.__qualname__ = 'UnusedFromB'
-    _cribo_self.UnusedFromB = UnusedFromB
-    _cribo_self.TYPE_CHECKING = _cribo.typing.TYPE_CHECKING
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'module_b'), _cribo_f)[1])
+            def process(self, func_a: "FunctionA") -> str:
+                return func_a.compute()
+        UnusedFromB.__module__ = 'module_b'
+        UnusedFromB.__qualname__ = 'UnusedFromB'
+        _cribo_self.UnusedFromB = UnusedFromB
+        _cribo_self.TYPE_CHECKING = _cribo.typing.TYPE_CHECKING
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 module_b.__init__ = _cribo_init___cribo_924318_module_b
 """Test symbol usage optimization with circular dependencies."""
 module_a = _cribo_init___cribo_851b00_module_a(module_a)

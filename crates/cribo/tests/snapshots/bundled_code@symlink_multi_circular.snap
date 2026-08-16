@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -125,53 +125,57 @@ def _cribo_init___cribo_5676b5_real_a(_cribo_self, *, _cribo_getattr=getattr, _c
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = None
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = None
 
-    def start_chain():
-        from_b = _cribo_init___cribo_85e139_real_b(globals()['real_b']).from_b
-        return f"A -> {from_b()}"
-    start_chain.__module__ = 'real_a'
-    start_chain.__qualname__ = 'start_chain'
-    _cribo_self.start_chain = start_chain
+        def start_chain():
+            from_b = _cribo_init___cribo_85e139_real_b(globals()['real_b']).from_b
+            return f"A -> {from_b()}"
+        start_chain.__module__ = 'real_a'
+        start_chain.__qualname__ = 'start_chain'
+        _cribo_self.start_chain = start_chain
 
-    def from_a():
-        return "A"
-    from_a.__module__ = 'real_a'
-    from_a.__qualname__ = 'from_a'
-    _cribo_self.from_a = from_a
+        def from_a():
+            return "A"
+        from_a.__module__ = 'real_a'
+        from_a.__qualname__ = 'from_a'
+        _cribo_self.from_a = from_a
 
-    def from_c():
-        return "C(->A)"
-    from_c.__module__ = 'real_a'
-    from_c.__qualname__ = 'from_c'
-    _cribo_self.from_c = from_c
+        def from_c():
+            return "C(->A)"
+        from_c.__module__ = 'real_a'
+        from_c.__qualname__ = 'from_c'
+        _cribo_self.from_c = from_c
 
-    def from_e():
-        return "E(->A)"
-    from_e.__module__ = 'real_a'
-    from_e.__qualname__ = 'from_e'
-    _cribo_self.from_e = from_e
+        def from_e():
+            return "E(->A)"
+        from_e.__module__ = 'real_a'
+        from_e.__qualname__ = 'from_e'
+        _cribo_self.from_e = from_e
 
-    def unused_function_a():
-        unused_function_b = _cribo_init___cribo_85e139_real_b(globals()['real_b']).unused_function_b
-        return f"Unused A -> {unused_function_b()}"
-    unused_function_a.__module__ = 'real_a'
-    unused_function_a.__qualname__ = 'unused_function_a'
-    _cribo_self.unused_function_a = unused_function_a
+        def unused_function_a():
+            unused_function_b = _cribo_init___cribo_85e139_real_b(globals()['real_b']).unused_function_b
+            return f"Unused A -> {unused_function_b()}"
+        unused_function_a.__module__ = 'real_a'
+        unused_function_a.__qualname__ = 'unused_function_a'
+        _cribo_self.unused_function_a = unused_function_a
 
-    def unused_with_stdlib():
-        json = _cribo.json
-        _cribo_self.json = json
-        os = _cribo.os
-        _cribo_self.os = os
-        return _cribo.json.dumps({"path": _cribo.os.getcwd()})
-    unused_with_stdlib.__module__ = 'real_a'
-    unused_with_stdlib.__qualname__ = 'unused_with_stdlib'
-    _cribo_self.unused_with_stdlib = unused_with_stdlib
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def unused_with_stdlib():
+            json = _cribo.json
+            _cribo_self.json = json
+            os = _cribo.os
+            _cribo_self.os = os
+            return _cribo.json.dumps({"path": _cribo.os.getcwd()})
+        unused_with_stdlib.__module__ = 'real_a'
+        unused_with_stdlib.__qualname__ = 'unused_with_stdlib'
+        _cribo_self.unused_with_stdlib = unused_with_stdlib
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 real_a.__init__ = _cribo_init___cribo_5676b5_real_a
 def _cribo_init___cribo_85e139_real_b(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
@@ -179,61 +183,65 @@ def _cribo_init___cribo_85e139_real_b(_cribo_self, *, _cribo_getattr=getattr, _c
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = None
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = None
 
-    def from_b():
-        from_c = _cribo_init___cribo_5676b5_real_a(globals()['real_a']).from_c
-        return f"B -> {from_c()} -> {continue_chain()}"
-    from_b.__module__ = 'real_b'
-    from_b.__qualname__ = 'from_b'
-    _cribo_self.from_b = from_b
-
-    def continue_chain():
-        from_d = _cribo_init___cribo_85e139_real_b(globals()['real_b']).from_d
-        _cribo_self.from_d = from_d
-        return from_d()
-    continue_chain.__module__ = 'real_b'
-    continue_chain.__qualname__ = 'continue_chain'
-    _cribo_self.continue_chain = continue_chain
-
-    def from_d():
-        from_e = _cribo_init___cribo_5676b5_real_a(globals()['real_a']).from_e
-        return f"D(->B) -> {from_e()}"
-    from_d.__module__ = 'real_b'
-    from_d.__qualname__ = 'from_d'
-    _cribo_self.from_d = from_d
-
-    def unused_function_b():
-        return "Unused B"
-    unused_function_b.__module__ = 'real_b'
-    unused_function_b.__qualname__ = 'unused_function_b'
-    _cribo_self.unused_function_b = unused_function_b
-
-    def unused_with_symlink():
-        unused_function_a = _cribo_init___cribo_5676b5_real_a(globals()['real_a']).unused_function_a
-        from_a = _cribo_init___cribo_5676b5_real_a(globals()['real_a']).from_a
-        return f"Unused symlink -> {from_a()}"
-    unused_with_symlink.__module__ = 'real_b'
-    unused_with_symlink.__qualname__ = 'unused_with_symlink'
-    _cribo_self.unused_with_symlink = unused_with_symlink
-
-    class UnusedClass:
-
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'real_b'), _cribo_f)[1])
-        def __init__(self):
+        def from_b():
             from_c = _cribo_init___cribo_5676b5_real_a(globals()['real_a']).from_c
-            self.value = from_c()
+            return f"B -> {from_c()} -> {continue_chain()}"
+        from_b.__module__ = 'real_b'
+        from_b.__qualname__ = 'from_b'
+        _cribo_self.from_b = from_b
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'real_b'), _cribo_f)[1])
-        def get_value(self):
-            return self.value
-    UnusedClass.__module__ = 'real_b'
-    UnusedClass.__qualname__ = 'UnusedClass'
-    _cribo_self.UnusedClass = UnusedClass
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def continue_chain():
+            from_d = _cribo_init___cribo_85e139_real_b(globals()['real_b']).from_d
+            _cribo_self.from_d = from_d
+            return from_d()
+        continue_chain.__module__ = 'real_b'
+        continue_chain.__qualname__ = 'continue_chain'
+        _cribo_self.continue_chain = continue_chain
+
+        def from_d():
+            from_e = _cribo_init___cribo_5676b5_real_a(globals()['real_a']).from_e
+            return f"D(->B) -> {from_e()}"
+        from_d.__module__ = 'real_b'
+        from_d.__qualname__ = 'from_d'
+        _cribo_self.from_d = from_d
+
+        def unused_function_b():
+            return "Unused B"
+        unused_function_b.__module__ = 'real_b'
+        unused_function_b.__qualname__ = 'unused_function_b'
+        _cribo_self.unused_function_b = unused_function_b
+
+        def unused_with_symlink():
+            unused_function_a = _cribo_init___cribo_5676b5_real_a(globals()['real_a']).unused_function_a
+            from_a = _cribo_init___cribo_5676b5_real_a(globals()['real_a']).from_a
+            return f"Unused symlink -> {from_a()}"
+        unused_with_symlink.__module__ = 'real_b'
+        unused_with_symlink.__qualname__ = 'unused_with_symlink'
+        _cribo_self.unused_with_symlink = unused_with_symlink
+
+        class UnusedClass:
+
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'real_b'), _cribo_f)[1])
+            def __init__(self):
+                from_c = _cribo_init___cribo_5676b5_real_a(globals()['real_a']).from_c
+                self.value = from_c()
+
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'real_b'), _cribo_f)[1])
+            def get_value(self):
+                return self.value
+        UnusedClass.__module__ = 'real_b'
+        UnusedClass.__qualname__ = 'UnusedClass'
+        _cribo_self.UnusedClass = UnusedClass
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 real_b.__init__ = _cribo_init___cribo_85e139_real_b
 real_a = _cribo_init___cribo_5676b5_real_a(real_a)
 start_chain = real_a.start_chain

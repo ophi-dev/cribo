@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -123,42 +123,46 @@ def _cribo_init___cribo_7c69fc_mypackage_utils(_cribo_self, *, _cribo_getattr=ge
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'mypackage'
-    _cribo_self.__doc__ = "Utils module with contextlib decorator.\n\nThis module must have side effects to become a wrapper module,\nand uses contextlib as a decorator which should be preserved in\nthe init function but currently isn't.\n"
-    """Utils module with contextlib decorator.\n\nThis module must have side effects to become a wrapper module,\nand uses contextlib as a decorator which should be preserved in\nthe init function but currently isn't.\n"""
-    contextlib = _cribo.contextlib
-    _cribo_self.contextlib = contextlib
-    _cribo_self.contextlib = contextlib
-    os = _cribo.os
-    _cribo_self.os = os
-    _cribo_self.os = os
-    tempfile = _cribo.tempfile
-    _cribo_self.tempfile = tempfile
-    _cribo_self.tempfile = tempfile
-    print("Loading utils module")
-
-    @_cribo.contextlib.contextmanager
-    def atomic_open(filename):
-        """Write a file atomically using contextlib decorator."""
-        print(f"Opening {filename}")
-        tmp_descriptor, tmp_name = _cribo.tempfile.mkstemp(dir=_cribo.os.path.dirname(filename))
-        try:
-            with _cribo.os.fdopen(tmp_descriptor, "wb") as tmp_handler:
-                yield tmp_handler
-            _cribo.os.replace(tmp_name, filename)
-        except BaseException:
-            _cribo.os.remove(tmp_name)
-            raise
     try:
-        if getattr(atomic_open, '__name__', None) == 'atomic_open' and getattr(atomic_open, '__module__', None) == (lambda: None).__module__:
-            atomic_open.__module__ = 'mypackage.utils'
-            atomic_open.__qualname__ = 'atomic_open'
-    except (AttributeError, TypeError):
-        pass
-    _cribo_self.atomic_open = atomic_open
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        _cribo_self.__package__ = 'mypackage'
+        _cribo_self.__doc__ = "Utils module with contextlib decorator.\n\nThis module must have side effects to become a wrapper module,\nand uses contextlib as a decorator which should be preserved in\nthe init function but currently isn't.\n"
+        """Utils module with contextlib decorator.\n\nThis module must have side effects to become a wrapper module,\nand uses contextlib as a decorator which should be preserved in\nthe init function but currently isn't.\n"""
+        contextlib = _cribo.contextlib
+        _cribo_self.contextlib = contextlib
+        _cribo_self.contextlib = contextlib
+        os = _cribo.os
+        _cribo_self.os = os
+        _cribo_self.os = os
+        tempfile = _cribo.tempfile
+        _cribo_self.tempfile = tempfile
+        _cribo_self.tempfile = tempfile
+        print("Loading utils module")
+
+        @_cribo.contextlib.contextmanager
+        def atomic_open(filename):
+            """Write a file atomically using contextlib decorator."""
+            print(f"Opening {filename}")
+            tmp_descriptor, tmp_name = _cribo.tempfile.mkstemp(dir=_cribo.os.path.dirname(filename))
+            try:
+                with _cribo.os.fdopen(tmp_descriptor, "wb") as tmp_handler:
+                    yield tmp_handler
+                _cribo.os.replace(tmp_name, filename)
+            except BaseException:
+                _cribo.os.remove(tmp_name)
+                raise
+        try:
+            if getattr(atomic_open, '__name__', None) == 'atomic_open' and getattr(atomic_open, '__module__', None) == (lambda: None).__module__:
+                atomic_open.__module__ = 'mypackage.utils'
+                atomic_open.__qualname__ = 'atomic_open'
+        except (AttributeError, TypeError):
+            pass
+        _cribo_self.atomic_open = atomic_open
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 mypackage_utils.__init__ = _cribo_init___cribo_7c69fc_mypackage_utils
 mypackage = _cribo.types.SimpleNamespace(__name__='mypackage', __initializing__=False, __initialized__=False, __path__=[])
 mypackage.utils = mypackage_utils
@@ -168,17 +172,21 @@ def _cribo_init___cribo_41b947_mypackage(_cribo_self, *, _cribo_getattr=getattr,
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'mypackage'
-    _cribo_self.__doc__ = 'Package init file.'
-    global mypackage_utils
-    """Package init file."""
-    mypackage_utils = _cribo_init___cribo_7c69fc_mypackage_utils(mypackage_utils)
-    utils = mypackage.utils
-    _cribo_self.utils = utils
-    print("Loading mypackage")
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+    try:
+        _cribo_self.__package__ = 'mypackage'
+        _cribo_self.__doc__ = 'Package init file.'
+        global mypackage_utils
+        """Package init file."""
+        mypackage_utils = _cribo_init___cribo_7c69fc_mypackage_utils(mypackage_utils)
+        utils = mypackage.utils
+        _cribo_self.utils = utils
+        print("Loading mypackage")
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 mypackage.__init__ = _cribo_init___cribo_41b947_mypackage
 """Test contextlib import missing in wrapper module init functions.\n\nThis test reproduces the bug found when bundling requests where contextlib\nis used as @contextlib.contextmanager decorator but not imported in the\ngenerated init function for wrapper modules with side effects.\n"""
 __cribo_init_result = _cribo_init___cribo_41b947_mypackage(mypackage)

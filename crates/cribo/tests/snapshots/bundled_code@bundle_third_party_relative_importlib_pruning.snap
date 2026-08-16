@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -125,24 +125,28 @@ def _cribo_init___cribo_8d8e6c_rel_pkg(_cribo_self, *, _cribo_getattr=getattr, _
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'rel_pkg'
-    _cribo_self.__doc__ = 'Package loading its backend through a relative import_module call.'
-    """Package loading its backend through a relative import_module call."""
-    importlib = _cribo.importlib
-    _cribo_self.importlib = importlib
-    _cribo_self.importlib = importlib
-    backend = _cribo.importlib.import_module('rel_pkg.backend') if 'rel_pkg' in _cribo.sys.modules or 'rel_pkg.backend' in _cribo.sys.modules else _cribo.types.SimpleNamespace(KIND=KIND)
-    _cribo_self.backend = backend
+    try:
+        _cribo_self.__package__ = 'rel_pkg'
+        _cribo_self.__doc__ = 'Package loading its backend through a relative import_module call.'
+        """Package loading its backend through a relative import_module call."""
+        importlib = _cribo.importlib
+        _cribo_self.importlib = importlib
+        _cribo_self.importlib = importlib
+        backend = _cribo.importlib.import_module('rel_pkg.backend') if 'rel_pkg' in _cribo.sys.modules or 'rel_pkg.backend' in _cribo.sys.modules else _cribo.types.SimpleNamespace(KIND=KIND)
+        _cribo_self.backend = backend
 
-    def backend_kind():
-        return KIND
-    backend_kind.__module__ = 'rel_pkg'
-    backend_kind.__qualname__ = 'backend_kind'
-    _cribo_self.backend_kind = backend_kind
-    _cribo_self.backend = rel_pkg_backend
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def backend_kind():
+            return KIND
+        backend_kind.__module__ = 'rel_pkg'
+        backend_kind.__qualname__ = 'backend_kind'
+        _cribo_self.backend_kind = backend_kind
+        _cribo_self.backend = rel_pkg_backend
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 rel_pkg.__init__ = _cribo_init___cribo_8d8e6c_rel_pkg
 late_checker = _cribo.types.SimpleNamespace(__name__='late_checker', __doc__='Metadata query recorded AFTER dropped_pkg was discovered flips it external.')
 """Metadata query recorded AFTER dropped_pkg was discovered flips it external."""

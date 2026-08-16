@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -126,48 +126,52 @@ def _cribo_init___cribo_651687_child_with_init(_cribo_self, *, _cribo_getattr=ge
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = 'Child module with initialization code that imports from parent (circular dependency).'
-    global _cribo_child_with_init__initialized
-    global main
-    """Child module with initialization code that imports from parent (circular dependency)."""
-    TYPE_CHECKING = _cribo.typing.TYPE_CHECKING
-    _cribo_self.TYPE_CHECKING = TYPE_CHECKING
-    if _cribo.typing.TYPE_CHECKING:
-        Any = _cribo.typing.Any
-        child_with_init.Any = Any
-    main = _cribo_init___cribo_24f0c8_main(main)
-    _cribo_self.main = main
-
-    class ConsoleUser:
-        """Class that needs to use parent module's function."""
-
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'child_with_init'), _cribo_f)[1])
-        def use_console(self):
-            """Use the console function from parent module."""
-            console = main.get_console()
-            return f"Using console: {console}"
-    ConsoleUser.__module__ = 'child_with_init'
-    ConsoleUser.__qualname__ = 'ConsoleUser'
-    _cribo_self.ConsoleUser = ConsoleUser
-    _initialized = False
-    _cribo_child_with_init__initialized = _initialized
-    _cribo_self._initialized = _cribo_child_with_init__initialized
-
-    def _init():
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = 'Child module with initialization code that imports from parent (circular dependency).'
         global _cribo_child_with_init__initialized
-        if not _cribo_child_with_init__initialized:
-            _cribo_child_with_init__initialized = True
-            if _cribo.typing.TYPE_CHECKING:
-                pass
-    _init.__module__ = 'child_with_init'
-    _init.__qualname__ = '_init'
-    _cribo_self._init = _init
-    _init()
-    _cribo_self.TYPE_CHECKING = _cribo.typing.TYPE_CHECKING
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        global main
+        """Child module with initialization code that imports from parent (circular dependency)."""
+        TYPE_CHECKING = _cribo.typing.TYPE_CHECKING
+        _cribo_self.TYPE_CHECKING = TYPE_CHECKING
+        if _cribo.typing.TYPE_CHECKING:
+            Any = _cribo.typing.Any
+            child_with_init.Any = Any
+        main = _cribo_init___cribo_24f0c8_main(main)
+        _cribo_self.main = main
+
+        class ConsoleUser:
+            """Class that needs to use parent module's function."""
+
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'child_with_init'), _cribo_f)[1])
+            def use_console(self):
+                """Use the console function from parent module."""
+                console = main.get_console()
+                return f"Using console: {console}"
+        ConsoleUser.__module__ = 'child_with_init'
+        ConsoleUser.__qualname__ = 'ConsoleUser'
+        _cribo_self.ConsoleUser = ConsoleUser
+        _initialized = False
+        _cribo_child_with_init__initialized = _initialized
+        _cribo_self._initialized = _cribo_child_with_init__initialized
+
+        def _init():
+            global _cribo_child_with_init__initialized
+            if not _cribo_child_with_init__initialized:
+                _cribo_child_with_init__initialized = True
+                if _cribo.typing.TYPE_CHECKING:
+                    pass
+        _init.__module__ = 'child_with_init'
+        _init.__qualname__ = '_init'
+        _cribo_self._init = _init
+        _init()
+        _cribo_self.TYPE_CHECKING = _cribo.typing.TYPE_CHECKING
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 child_with_init.__init__ = _cribo_init___cribo_651687_child_with_init
 def _cribo_init___cribo_24f0c8_main(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
@@ -175,32 +179,36 @@ def _cribo_init___cribo_24f0c8_main(_cribo_self, *, _cribo_getattr=getattr, _cri
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = 'Entry module with a child that imports back from it (circular dependency).'
-    global child_with_init
-    """Entry module with a child that imports back from it (circular dependency)."""
-    child_with_init = _cribo_init___cribo_651687_child_with_init(child_with_init)
-    _cribo_self.child_with_init = child_with_init
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = 'Entry module with a child that imports back from it (circular dependency).'
+        global child_with_init
+        """Entry module with a child that imports back from it (circular dependency)."""
+        child_with_init = _cribo_init___cribo_651687_child_with_init(child_with_init)
+        _cribo_self.child_with_init = child_with_init
 
-    def get_console():
-        """Function that should be accessible from child module."""
-        return "console object"
-    get_console.__module__ = 'main'
-    get_console.__qualname__ = 'get_console'
-    _cribo_self.get_console = get_console
+        def get_console():
+            """Function that should be accessible from child module."""
+            return "console object"
+        get_console.__module__ = 'main'
+        get_console.__qualname__ = 'get_console'
+        _cribo_self.get_console = get_console
 
-    def main():
-        """Main function."""
-        obj = child_with_init.ConsoleUser()
-        return obj.use_console()
-    main.__module__ = 'main'
-    main.__qualname__ = 'main'
-    _cribo_self.main = main
-    if _cribo_self.__name__ == "__main__":
-        print(f"Result: {main()}")
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def main():
+            """Main function."""
+            obj = child_with_init.ConsoleUser()
+            return obj.use_console()
+        main.__module__ = 'main'
+        main.__qualname__ = 'main'
+        _cribo_self.main = main
+        if _cribo_self.__name__ == "__main__":
+            print(f"Result: {main()}")
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 main.__init__ = _cribo_init___cribo_24f0c8_main
 """Entry module with a child that imports back from it (circular dependency)."""
 child_with_init = _cribo_init___cribo_651687_child_with_init(child_with_init)

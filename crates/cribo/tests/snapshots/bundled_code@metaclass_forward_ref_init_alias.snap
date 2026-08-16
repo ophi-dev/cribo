@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -138,19 +138,23 @@ def _cribo_init___cribo_d9a389_yaml_pkg(_cribo_self, *, _cribo_getattr=getattr, 
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'yaml_pkg'
-    _cribo_self.__doc__ = None
-    global yaml_pkg_base
-    yaml_pkg_base = _cribo_init___cribo_6d74f2_yaml_pkg_base(yaml_pkg_base)
-    YO = yaml_pkg_base.YAMLObject
-    _cribo_self.YO = YO
-    _cribo_self.YO = YO
-    YAMLObjectMetaclass = yaml_pkg_meta.YAMLObjectMetaclass
-    yaml_pkg.YAMLObjectMetaclass = YAMLObjectMetaclass
-    _cribo_self.meta = yaml_pkg_meta
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+    try:
+        _cribo_self.__package__ = 'yaml_pkg'
+        _cribo_self.__doc__ = None
+        global yaml_pkg_base
+        yaml_pkg_base = _cribo_init___cribo_6d74f2_yaml_pkg_base(yaml_pkg_base)
+        YO = yaml_pkg_base.YAMLObject
+        _cribo_self.YO = YO
+        _cribo_self.YO = YO
+        YAMLObjectMetaclass = yaml_pkg_meta.YAMLObjectMetaclass
+        yaml_pkg.YAMLObjectMetaclass = YAMLObjectMetaclass
+        _cribo_self.meta = yaml_pkg_meta
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 yaml_pkg.__init__ = _cribo_init___cribo_d9a389_yaml_pkg
 def _cribo_init___cribo_6d74f2_yaml_pkg_base(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
@@ -158,24 +162,28 @@ def _cribo_init___cribo_6d74f2_yaml_pkg_base(_cribo_self, *, _cribo_getattr=geta
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'yaml_pkg'
-    _cribo_self.__doc__ = None
-    YAMLObjectMetaclass = yaml_pkg_meta.YAMLObjectMetaclass
-    yaml_pkg_base.YAMLObjectMetaclass = YAMLObjectMetaclass
+    try:
+        _cribo_self.__package__ = 'yaml_pkg'
+        _cribo_self.__doc__ = None
+        YAMLObjectMetaclass = yaml_pkg_meta.YAMLObjectMetaclass
+        yaml_pkg_base.YAMLObjectMetaclass = YAMLObjectMetaclass
 
-    class YAMLObject(metaclass=YAMLObjectMetaclass):
-        """An object with a metaclass"""
-        yaml_tag = None
+        class YAMLObject(metaclass=YAMLObjectMetaclass):
+            """An object with a metaclass"""
+            yaml_tag = None
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'yaml_pkg.base'), _cribo_f)[1])
-        def __str__(self):
-            return f"YAMLObject(tag={self.yaml_tag})"
-    YAMLObject.__module__ = 'yaml_pkg.base'
-    YAMLObject.__qualname__ = 'YAMLObject'
-    _cribo_self.YAMLObject = YAMLObject
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'yaml_pkg.base'), _cribo_f)[1])
+            def __str__(self):
+                return f"YAMLObject(tag={self.yaml_tag})"
+        YAMLObject.__module__ = 'yaml_pkg.base'
+        YAMLObject.__qualname__ = 'YAMLObject'
+        _cribo_self.YAMLObject = YAMLObject
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 yaml_pkg_base.__init__ = _cribo_init___cribo_6d74f2_yaml_pkg_base
 _cribo_captured['YAMLObjectMetaclass'] = YAMLObjectMetaclass
 __cribo_init_result = _cribo_init___cribo_d9a389_yaml_pkg(yaml_pkg)

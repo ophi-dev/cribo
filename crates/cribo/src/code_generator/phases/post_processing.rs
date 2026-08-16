@@ -275,19 +275,35 @@ impl PostProcessingPhase {
         // Bundle globals actually defined in the emitted body (tree-shaken
         // symbols never appear)
         let mut defined_globals: FxIndexSet<&str> = FxIndexSet::default();
+        fn collect_target_names<'stmt>(target: &'stmt Expr, into: &mut FxIndexSet<&'stmt str>) {
+            match target {
+                Expr::Name(name) => {
+                    into.insert(name.id.as_str());
+                }
+                Expr::Tuple(tuple) => {
+                    for element in &tuple.elts {
+                        collect_target_names(element, into);
+                    }
+                }
+                Expr::List(list) => {
+                    for element in &list.elts {
+                        collect_target_names(element, into);
+                    }
+                }
+                Expr::Starred(starred) => collect_target_names(&starred.value, into),
+                _ => {}
+            }
+        }
         for stmt in final_body {
             match stmt {
                 Stmt::Assign(assign) => {
+                    // Destructuring binds exports too: `LEFT, RIGHT = values`
                     for target in &assign.targets {
-                        if let Expr::Name(name) = target {
-                            defined_globals.insert(name.id.as_str());
-                        }
+                        collect_target_names(target, &mut defined_globals);
                     }
                 }
                 Stmt::AnnAssign(ann_assign) => {
-                    if let Expr::Name(name) = &*ann_assign.target {
-                        defined_globals.insert(name.id.as_str());
-                    }
+                    collect_target_names(&ann_assign.target, &mut defined_globals);
                 }
                 Stmt::FunctionDef(function_def) => {
                     defined_globals.insert(function_def.name.as_str());

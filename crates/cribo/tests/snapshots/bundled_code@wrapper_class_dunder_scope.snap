@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -122,35 +122,39 @@ def _cribo_init___cribo_f82e44_provider(_cribo_self, *, _cribo_getattr=getattr, 
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = None
-    print("provider loaded")
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = None
+        print("provider loaded")
 
-    class Reporter:
-        __name__ = "local"
-        seen_in_body = __name__
-
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'provider'), _cribo_f)[1])
-        def module_name(self):
-            return _cribo_self.__name__
-
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'provider'), _cribo_f)[1])
-        class Inner:
+        class Reporter:
+            __name__ = "local"
+            seen_in_body = __name__
 
             @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'provider'), _cribo_f)[1])
             def module_name(self):
                 return _cribo_self.__name__
-        if True:
 
             @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'provider'), _cribo_f)[1])
-            def conditional(self):
-                return _cribo_self.__name__
-    Reporter.__module__ = 'provider'
-    Reporter.__qualname__ = 'Reporter'
-    _cribo_self.Reporter = Reporter
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+            class Inner:
+
+                @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'provider'), _cribo_f)[1])
+                def module_name(self):
+                    return _cribo_self.__name__
+            if True:
+
+                @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'provider'), _cribo_f)[1])
+                def conditional(self):
+                    return _cribo_self.__name__
+        Reporter.__module__ = 'provider'
+        Reporter.__qualname__ = 'Reporter'
+        _cribo_self.Reporter = Reporter
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 provider.__init__ = _cribo_init___cribo_f82e44_provider
 """Class-body vs method scoping of import globals in a wrapper module.\n\nA class attribute named __name__ shadows the module global only for\ndirect class-body expressions; methods and nested-class methods resolve\n__name__ from the MODULE scope.\n"""
 provider = _cribo_init___cribo_f82e44_provider(provider)

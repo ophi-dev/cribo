@@ -106,6 +106,14 @@ impl ExpressionRewriter {
                 parameter_names.push(kwarg.name.as_str().to_owned());
             }
         }
+        // A walrus target anywhere in the lambda body is LOCAL for the whole
+        // body (a read before the assignment raises UnboundLocalError, so it
+        // must not be rewritten as an enclosing import alias): pre-collect
+        // those bindings like the parameters
+        crate::visitors::utils::collect_lambda_scope_walrus_targets(
+            &lambda_expr.body,
+            &mut parameter_names,
+        );
         let added = Self::add_scope_shadows(transformer, parameter_names);
         Self::transform_expr(transformer, &mut lambda_expr.body);
         Self::remove_scope_shadows(transformer, added);

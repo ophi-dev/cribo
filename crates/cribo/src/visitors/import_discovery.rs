@@ -1108,31 +1108,40 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
                         && let Some(module_name) = self
                             .extract_literal_module_name(call)
                             .or_else(|| self.resolve_imported_dunder_name_argument(call))
-                        && !module_name.starts_with('.')
                     {
                         // Opaque argument shapes (e.g. `import_module("pkg", **kw)`)
                         // keep the call verbatim, but the target is still a runtime
                         // dependency: it must stay installed and reach requirements
                         // generation. The target is known for absolute literals AND
                         // for `import_module(provider.__name__)` where `provider`
-                        // is import-bound. Calls statically known to raise
-                        // TypeError never import their target and record nothing.
+                        // is import-bound; RELATIVE literals record their level and
+                        // package context so extraction can resolve the absolute
+                        // candidate (a bundled backend must register with the
+                        // finder or an isolated deployment fails). Calls statically
+                        // known to raise TypeError never import their target and
+                        // record nothing.
                         log::debug!(
                             "Found preserved importlib call for module: {module_name} (arguments \
                              not safely discardable)"
                         );
+                        let level = module_name.chars().take_while(|&c| c == '.').count() as u32;
+                        let package_context = if level > 0 {
+                            self.extract_package_context(call)
+                        } else {
+                            None
+                        };
                         let import = DiscoveredImport {
                             module_name: Some(module_name),
                             names: vec![],
                             location: self.current_location(),
                             range: call.range,
-                            level: 0,
+                            level,
                             import_type: ImportType::ImportlibPreserved,
                             execution_contexts: FxIndexSet::default(),
                             is_used_in_init: false,
                             is_movable: false,
                             is_type_checking_only: self.in_type_checking(),
-                            package_context: None,
+                            package_context,
                         };
                         self.imports.push(import);
                     }
@@ -1240,6 +1249,18 @@ impl<'a> SourceOrderVisitor<'a> for ImportDiscoveryVisitor<'a> {
                     if let Some(kwarg) = &parameters.kwarg {
                         parameter_names.insert(kwarg.name.as_str().to_owned());
                     }
+                }
+                // A walrus target anywhere in the body is LOCAL for the whole
+                // lambda scope (a read before the assignment raises
+                // UnboundLocalError, never resolving an enclosing import):
+                // pre-collect those bindings like the parameters
+                {
+                    let mut walrus_targets: Vec<String> = Vec::new();
+                    crate::visitors::utils::collect_lambda_scope_walrus_targets(
+                        &lambda.body,
+                        &mut walrus_targets,
+                    );
+                    parameter_names.extend(walrus_targets);
                 }
                 self.imported_names_stack.push(FxIndexMap::default());
                 self.shadowed_names_stack.push(parameter_names);

@@ -38,7 +38,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -47,12 +47,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -126,37 +126,41 @@ def _cribo_init___cribo_41d36f_mypackage_core(_cribo_self, *, _cribo_getattr=get
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'mypackage'
-    _cribo_self.__doc__ = None
-    Dict = _cribo.typing.Dict
-    _cribo_self.Dict = Dict
-    List = _cribo.typing.List
-    _cribo_self.List = List
-    Any = _cribo.typing.Any
-    _cribo_self.Any = Any
+    try:
+        _cribo_self.__package__ = 'mypackage'
+        _cribo_self.__doc__ = None
+        Dict = _cribo.typing.Dict
+        _cribo_self.Dict = Dict
+        List = _cribo.typing.List
+        _cribo_self.List = List
+        Any = _cribo.typing.Any
+        _cribo_self.Any = Any
 
-    def process_data(data: _cribo.typing.Dict[str, _cribo.typing.Any]) -> _cribo.typing.Dict[str, _cribo.typing.Any]:
-        """Process input data and return results.\n\n    This function uses forward references in type hints.\n    """
-        result: ProcessingResult = {"input": data, "processed": True, "output": _transform_data(data)}
-        return result
-    process_data.__module__ = 'mypackage.core'
-    process_data.__qualname__ = 'process_data'
-    _cribo_self.process_data = process_data
+        def process_data(data: _cribo.typing.Dict[str, _cribo.typing.Any]) -> _cribo.typing.Dict[str, _cribo.typing.Any]:
+            """Process input data and return results.\n\n    This function uses forward references in type hints.\n    """
+            result: ProcessingResult = {"input": data, "processed": True, "output": _transform_data(data)}
+            return result
+        process_data.__module__ = 'mypackage.core'
+        process_data.__qualname__ = 'process_data'
+        _cribo_self.process_data = process_data
 
-    def _transform_data(data: _cribo.typing.Dict[str, _cribo.typing.Any]) -> _cribo.typing.List[str]:
-        """Transform data into list format."""
-        return [f"{k}={v}" for k, v in data.items()]
-    _transform_data.__module__ = 'mypackage.core'
-    _transform_data.__qualname__ = '_transform_data'
-    _cribo_self._transform_data = _transform_data
-    ProcessingResult = _cribo.typing.Dict[str, _cribo.typing.Any]
-    _cribo_self.ProcessingResult = ProcessingResult
-    _cribo_self.Dict = _cribo.typing.Dict
-    _cribo_self.List = _cribo.typing.List
-    _cribo_self.Any = _cribo.typing.Any
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def _transform_data(data: _cribo.typing.Dict[str, _cribo.typing.Any]) -> _cribo.typing.List[str]:
+            """Transform data into list format."""
+            return [f"{k}={v}" for k, v in data.items()]
+        _transform_data.__module__ = 'mypackage.core'
+        _transform_data.__qualname__ = '_transform_data'
+        _cribo_self._transform_data = _transform_data
+        ProcessingResult = _cribo.typing.Dict[str, _cribo.typing.Any]
+        _cribo_self.ProcessingResult = ProcessingResult
+        _cribo_self.Dict = _cribo.typing.Dict
+        _cribo_self.List = _cribo.typing.List
+        _cribo_self.Any = _cribo.typing.Any
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 mypackage_core.__init__ = _cribo_init___cribo_41d36f_mypackage_core
 mypackage = _cribo.types.SimpleNamespace(__name__='mypackage', __initializing__=False, __initialized__=False, __path__=[])
 mypackage.core = mypackage_core
@@ -169,40 +173,44 @@ def _cribo_init___cribo_c3d681_mypackage_submodule_utils(_cribo_self, *, _cribo_
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'mypackage.submodule'
-    _cribo_self.__doc__ = None
-    Dict = _cribo.typing.Dict
-    _cribo_self.Dict = Dict
-    Any = _cribo.typing.Any
-    _cribo_self.Any = Any
-    Union = _cribo.typing.Union
-    _cribo_self.Union = Union
+    try:
+        _cribo_self.__package__ = 'mypackage.submodule'
+        _cribo_self.__doc__ = None
+        Dict = _cribo.typing.Dict
+        _cribo_self.Dict = Dict
+        Any = _cribo.typing.Any
+        _cribo_self.Any = Any
+        Union = _cribo.typing.Union
+        _cribo_self.Union = Union
 
-    def validate_input(data: InputData) -> bool:
-        """Validate input data structure.\n\n    Uses forward reference that requires future import.\n    """
-        if not isinstance(data, dict):
-            return False
-        return "key" in data and isinstance(data.get("numbers"), list)
-    validate_input.__module__ = 'mypackage.submodule.utils'
-    validate_input.__qualname__ = 'validate_input'
-    _cribo_self.validate_input = validate_input
+        def validate_input(data: InputData) -> bool:
+            """Validate input data structure.\n\n    Uses forward reference that requires future import.\n    """
+            if not isinstance(data, dict):
+                return False
+            return "key" in data and isinstance(data.get("numbers"), list)
+        validate_input.__module__ = 'mypackage.submodule.utils'
+        validate_input.__qualname__ = 'validate_input'
+        _cribo_self.validate_input = validate_input
 
-    def format_output(data: _cribo.typing.Any) -> FormattedOutput:
-        """Format data for output."""
-        return f"Formatted: {data}"
-    format_output.__module__ = 'mypackage.submodule.utils'
-    format_output.__qualname__ = 'format_output'
-    _cribo_self.format_output = format_output
-    InputData = _cribo.typing.Dict[str, _cribo.typing.Any]
-    _cribo_self.InputData = InputData
-    FormattedOutput = _cribo.typing.Union[str, _cribo.typing.Dict[str, _cribo.typing.Any]]
-    _cribo_self.FormattedOutput = FormattedOutput
-    _cribo_self.Dict = _cribo.typing.Dict
-    _cribo_self.Any = _cribo.typing.Any
-    _cribo_self.Union = _cribo.typing.Union
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def format_output(data: _cribo.typing.Any) -> FormattedOutput:
+            """Format data for output."""
+            return f"Formatted: {data}"
+        format_output.__module__ = 'mypackage.submodule.utils'
+        format_output.__qualname__ = 'format_output'
+        _cribo_self.format_output = format_output
+        InputData = _cribo.typing.Dict[str, _cribo.typing.Any]
+        _cribo_self.InputData = InputData
+        FormattedOutput = _cribo.typing.Union[str, _cribo.typing.Dict[str, _cribo.typing.Any]]
+        _cribo_self.FormattedOutput = FormattedOutput
+        _cribo_self.Dict = _cribo.typing.Dict
+        _cribo_self.Any = _cribo.typing.Any
+        _cribo_self.Union = _cribo.typing.Union
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 mypackage_submodule_utils.__init__ = _cribo_init___cribo_c3d681_mypackage_submodule_utils
 mypackage_submodule = _cribo.types.SimpleNamespace(__name__='mypackage.submodule', __initializing__=False, __initialized__=False, __path__=[])
 mypackage.submodule = mypackage_submodule

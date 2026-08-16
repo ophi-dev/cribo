@@ -1014,6 +1014,42 @@ pub(crate) fn imported_module_dunder_read_targets(
     collector.observed
 }
 
+/// Collect walrus targets in a lambda body into `names`, without entering
+/// NESTED lambda bodies (their walrus targets bind the nested scope). A walrus
+/// target is local to the lambda for its entire body: reads before the
+/// assignment raise `UnboundLocalError` rather than resolving enclosing
+/// bindings.
+pub(crate) fn collect_lambda_scope_walrus_targets(expr: &Expr, names: &mut Vec<String>) {
+    use ruff_python_ast::{
+        AnyNodeRef,
+        visitor::source_order::{SourceOrderVisitor, TraversalSignal, walk_expr},
+    };
+
+    struct WalrusCollector<'names> {
+        names: &'names mut Vec<String>,
+    }
+    impl<'a> SourceOrderVisitor<'a> for WalrusCollector<'_> {
+        fn enter_node(&mut self, node: AnyNodeRef<'a>) -> TraversalSignal {
+            if matches!(node, AnyNodeRef::ExprLambda(_)) {
+                TraversalSignal::Skip
+            } else {
+                TraversalSignal::Traverse
+            }
+        }
+
+        fn visit_expr(&mut self, expr: &'a Expr) {
+            if let Expr::Named(named) = expr
+                && let Expr::Name(target) = &*named.target
+            {
+                self.names.push(target.id.to_string());
+            }
+            walk_expr(self, expr);
+        }
+    }
+    let mut collector = WalrusCollector { names };
+    collector.visit_expr(expr);
+}
+
 #[cfg(test)]
 mod tests {
     use ruff_python_parser::parse_module;

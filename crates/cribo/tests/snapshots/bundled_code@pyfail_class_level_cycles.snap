@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -125,33 +125,37 @@ def _cribo_init___cribo_7f7c68_admin_class(_cribo_self, *, _cribo_getattr=getatt
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = 'Admin class module with circular dependency.'
-    global user_class
-    """Admin class module with circular dependency."""
-    user_class = _cribo_init___cribo_f4b9e6_user_class(user_class)
-    User = user_class.User
-    _cribo_self.User = User
-    _cribo_self.User = User
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = 'Admin class module with circular dependency.'
+        global user_class
+        """Admin class module with circular dependency."""
+        user_class = _cribo_init___cribo_f4b9e6_user_class(user_class)
+        User = user_class.User
+        _cribo_self.User = User
+        _cribo_self.User = User
 
-    class Admin(User):
-        """Admin class that inherits from User."""
+        class Admin(User):
+            """Admin class that inherits from User."""
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'admin_class'), _cribo_f)[1])
-        def __init__(self, name):
-            super().__init__(name)
-            self.is_admin = True
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'admin_class'), _cribo_f)[1])
+            def __init__(self, name):
+                super().__init__(name)
+                self.is_admin = True
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'admin_class'), _cribo_f)[1])
-        def demote_to_user(self):
-            """Demote admin to regular user."""
-            return User(self.name)
-    Admin.__module__ = 'admin_class'
-    Admin.__qualname__ = 'Admin'
-    _cribo_self.Admin = Admin
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'admin_class'), _cribo_f)[1])
+            def demote_to_user(self):
+                """Demote admin to regular user."""
+                return User(self.name)
+        Admin.__module__ = 'admin_class'
+        Admin.__qualname__ = 'Admin'
+        _cribo_self.Admin = Admin
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 admin_class.__init__ = _cribo_init___cribo_7f7c68_admin_class
 def _cribo_init___cribo_f4b9e6_user_class(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
@@ -159,33 +163,37 @@ def _cribo_init___cribo_f4b9e6_user_class(_cribo_self, *, _cribo_getattr=getattr
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = 'User class module with circular dependency.'
-    global admin_class
-    """User class module with circular dependency."""
-    admin_class = _cribo_init___cribo_7f7c68_admin_class(admin_class)
-    Admin = admin_class.Admin
-    _cribo_self.Admin = Admin
-    _cribo_self.Admin = Admin
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = 'User class module with circular dependency.'
+        global admin_class
+        """User class module with circular dependency."""
+        admin_class = _cribo_init___cribo_7f7c68_admin_class(admin_class)
+        Admin = admin_class.Admin
+        _cribo_self.Admin = Admin
+        _cribo_self.Admin = Admin
 
-    class User:
-        """User class that references Admin class."""
+        class User:
+            """User class that references Admin class."""
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'user_class'), _cribo_f)[1])
-        def __init__(self, name):
-            self.name = name
-            self.admin_reference = Admin
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'user_class'), _cribo_f)[1])
+            def __init__(self, name):
+                self.name = name
+                self.admin_reference = Admin
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'user_class'), _cribo_f)[1])
-        def promote_to_admin(self):
-            """Promote user to admin."""
-            return self.admin_reference(self.name)
-    User.__module__ = 'user_class'
-    User.__qualname__ = 'User'
-    _cribo_self.User = User
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'user_class'), _cribo_f)[1])
+            def promote_to_admin(self):
+                """Promote user to admin."""
+                return self.admin_reference(self.name)
+        User.__module__ = 'user_class'
+        User.__qualname__ = 'User'
+        _cribo_self.User = User
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 user_class.__init__ = _cribo_init___cribo_f4b9e6_user_class
 """Test case with class-level circular dependencies."""
 user_class = _cribo_init___cribo_f4b9e6_user_class(user_class)

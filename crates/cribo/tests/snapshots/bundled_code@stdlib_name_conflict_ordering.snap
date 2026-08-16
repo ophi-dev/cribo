@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -142,26 +142,30 @@ def _cribo_init___cribo_937418_complex_pkg(_cribo_self, *, _cribo_getattr=getatt
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'complex_pkg'
-    _cribo_self.__doc__ = None
-    global complex_pkg_console
-    Base = complex_pkg_abc.Base
-    complex_pkg.Base = Base
-    complex_pkg_console = _cribo_init___cribo_beaba5_complex_pkg_console(complex_pkg_console)
-    Console = complex_pkg_console.Console
-    _cribo_self.Console = Console
-    _cribo_self.Console = Console
+    try:
+        _cribo_self.__package__ = 'complex_pkg'
+        _cribo_self.__doc__ = None
+        global complex_pkg_console
+        Base = complex_pkg_abc.Base
+        complex_pkg.Base = Base
+        complex_pkg_console = _cribo_init___cribo_beaba5_complex_pkg_console(complex_pkg_console)
+        Console = complex_pkg_console.Console
+        _cribo_self.Console = Console
+        _cribo_self.Console = Console
 
-    def main():
-        console = Console()
-        console.print("Testing")
-    main.__module__ = 'complex_pkg'
-    main.__qualname__ = 'main'
-    _cribo_self.main = main
-    _cribo_self.abc = complex_pkg_abc
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def main():
+            console = Console()
+            console.print("Testing")
+        main.__module__ = 'complex_pkg'
+        main.__qualname__ = 'main'
+        _cribo_self.main = main
+        _cribo_self.abc = complex_pkg_abc
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 complex_pkg.__init__ = _cribo_init___cribo_937418_complex_pkg
 def _cribo_init___cribo_beaba5_complex_pkg_console(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
@@ -169,51 +173,55 @@ def _cribo_init___cribo_beaba5_complex_pkg_console(_cribo_self, *, _cribo_getatt
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'complex_pkg'
-    _cribo_self.__doc__ = None
-    Any = _cribo.typing.Any
-    _cribo_self.Any = Any
-    Optional = _cribo.typing.Optional
-    _cribo_self.Optional = Optional
-    List = _cribo.typing.List
-    _cribo_self.List = List
-    Enum = _cribo.enum.Enum
-    _cribo_self.Enum = Enum
-    Base = complex_pkg_abc.Base
-    complex_pkg_console.Base = Base
+    try:
+        _cribo_self.__package__ = 'complex_pkg'
+        _cribo_self.__doc__ = None
+        Any = _cribo.typing.Any
+        _cribo_self.Any = Any
+        Optional = _cribo.typing.Optional
+        _cribo_self.Optional = Optional
+        List = _cribo.typing.List
+        _cribo_self.List = List
+        Enum = _cribo.enum.Enum
+        _cribo_self.Enum = Enum
+        Base = complex_pkg_abc.Base
+        complex_pkg_console.Base = Base
 
-    class RenderMode(_cribo.enum.Enum):
-        DEFAULT = "default"
-        HTML = "html"
-    RenderMode.__module__ = 'complex_pkg.console'
-    RenderMode.__qualname__ = 'RenderMode'
-    _cribo_self.RenderMode = RenderMode
+        class RenderMode(_cribo.enum.Enum):
+            DEFAULT = "default"
+            HTML = "html"
+        RenderMode.__module__ = 'complex_pkg.console'
+        RenderMode.__qualname__ = 'RenderMode'
+        _cribo_self.RenderMode = RenderMode
 
-    class Console(Base):
-        """Console class similar to rich.console.Console"""
+        class Console(Base):
+            """Console class similar to rich.console.Console"""
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'complex_pkg.console'), _cribo_f)[1])
-        def __init__(self):
-            self.buffer: _cribo.typing.List[str] = []
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'complex_pkg.console'), _cribo_f)[1])
+            def __init__(self):
+                self.buffer: _cribo.typing.List[str] = []
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'complex_pkg.console'), _cribo_f)[1])
-        def render(self):
-            return "\n".join(self.buffer)
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'complex_pkg.console'), _cribo_f)[1])
+            def render(self):
+                return "\n".join(self.buffer)
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'complex_pkg.console'), _cribo_f)[1])
-        def print(self, *args: _cribo.typing.Any):
-            self.buffer.append(" ".join(str(arg) for arg in args))
-            print(*args)
-    Console.__module__ = 'complex_pkg.console'
-    Console.__qualname__ = 'Console'
-    _cribo_self.Console = Console
-    _cribo_self.Any = _cribo.typing.Any
-    _cribo_self.Optional = _cribo.typing.Optional
-    _cribo_self.List = _cribo.typing.List
-    _cribo_self.Enum = _cribo.enum.Enum
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'complex_pkg.console'), _cribo_f)[1])
+            def print(self, *args: _cribo.typing.Any):
+                self.buffer.append(" ".join(str(arg) for arg in args))
+                print(*args)
+        Console.__module__ = 'complex_pkg.console'
+        Console.__qualname__ = 'Console'
+        _cribo_self.Console = Console
+        _cribo_self.Any = _cribo.typing.Any
+        _cribo_self.Optional = _cribo.typing.Optional
+        _cribo_self.List = _cribo.typing.List
+        _cribo_self.Enum = _cribo.enum.Enum
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 complex_pkg_console.__init__ = _cribo_init___cribo_beaba5_complex_pkg_console
 _cribo_captured['Base'] = Base
 __cribo_init_result = _cribo_init___cribo_937418_complex_pkg(complex_pkg)

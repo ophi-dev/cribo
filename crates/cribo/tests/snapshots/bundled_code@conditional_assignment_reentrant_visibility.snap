@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -125,20 +125,24 @@ def _cribo_init___cribo_d338f1_conditional_observer(_cribo_self, *, _cribo_getat
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = None
-    global conditional_source
-    conditional_source = _cribo_init___cribo_c4de75_conditional_source(conditional_source)
-    _cribo_self.conditional_source = conditional_source
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = None
+        global conditional_source
+        conditional_source = _cribo_init___cribo_c4de75_conditional_source(conditional_source)
+        _cribo_self.conditional_source = conditional_source
 
-    def observe_value():
-        return conditional_source.VALUE
-    observe_value.__module__ = 'conditional_observer'
-    observe_value.__qualname__ = 'observe_value'
-    _cribo_self.observe_value = observe_value
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def observe_value():
+            return conditional_source.VALUE
+        observe_value.__module__ = 'conditional_observer'
+        observe_value.__qualname__ = 'observe_value'
+        _cribo_self.observe_value = observe_value
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 conditional_observer.__init__ = _cribo_init___cribo_d338f1_conditional_observer
 def _cribo_init___cribo_c4de75_conditional_source(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
@@ -146,23 +150,27 @@ def _cribo_init___cribo_c4de75_conditional_source(_cribo_self, *, _cribo_getattr
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = None
-    global conditional_observer
-    if _cribo_self.__name__ != "__main__":
-        VALUE = "early"
-        conditional_source.VALUE = VALUE
-        conditional_observer = _cribo_init___cribo_d338f1_conditional_observer(conditional_observer)
-        conditional_source.conditional_observer = conditional_observer
-        OBSERVED_VALUE = conditional_observer.observe_value()
-        conditional_source.OBSERVED_VALUE = OBSERVED_VALUE
-        assert VALUE == OBSERVED_VALUE
-        VALUE = _cribo.math.pi
-        conditional_source.VALUE = VALUE
-        assert OBSERVED_VALUE == "early"
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = None
+        global conditional_observer
+        if _cribo_self.__name__ != "__main__":
+            VALUE = "early"
+            conditional_source.VALUE = VALUE
+            conditional_observer = _cribo_init___cribo_d338f1_conditional_observer(conditional_observer)
+            conditional_source.conditional_observer = conditional_observer
+            OBSERVED_VALUE = conditional_observer.observe_value()
+            conditional_source.OBSERVED_VALUE = OBSERVED_VALUE
+            assert VALUE == OBSERVED_VALUE
+            VALUE = _cribo.math.pi
+            conditional_source.VALUE = VALUE
+            assert OBSERVED_VALUE == "early"
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 conditional_source.__init__ = _cribo_init___cribo_c4de75_conditional_source
 conditional_source = _cribo_init___cribo_c4de75_conditional_source(conditional_source)
 print(conditional_source.OBSERVED_VALUE, conditional_source.VALUE)

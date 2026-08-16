@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -137,19 +137,23 @@ def _cribo_init___cribo_c04dc3_my_package(_cribo_self, *, _cribo_getattr=getattr
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'my_package'
-    _cribo_self.__doc__ = None
-    global my_package_mod_a
-    my_package_mod_a = _cribo_init___cribo_e90488_my_package_mod_a(my_package_mod_a)
-    mod_a = my_package.mod_a
-    _cribo_self.mod_a = mod_a
-    TOP_LEVEL_VAL = mod_a.A_VALUE
-    _cribo_self.TOP_LEVEL_VAL = TOP_LEVEL_VAL
-    print(TOP_LEVEL_VAL)
-    _cribo_self.mod_l = my_package_mod_l
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+    try:
+        _cribo_self.__package__ = 'my_package'
+        _cribo_self.__doc__ = None
+        global my_package_mod_a
+        my_package_mod_a = _cribo_init___cribo_e90488_my_package_mod_a(my_package_mod_a)
+        mod_a = my_package.mod_a
+        _cribo_self.mod_a = mod_a
+        TOP_LEVEL_VAL = mod_a.A_VALUE
+        _cribo_self.TOP_LEVEL_VAL = TOP_LEVEL_VAL
+        print(TOP_LEVEL_VAL)
+        _cribo_self.mod_l = my_package_mod_l
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 my_package.__init__ = _cribo_init___cribo_c04dc3_my_package
 def _cribo_init___cribo_e90488_my_package_mod_a(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
@@ -157,17 +161,21 @@ def _cribo_init___cribo_e90488_my_package_mod_a(_cribo_self, *, _cribo_getattr=g
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'my_package'
-    _cribo_self.__doc__ = None
-    global my_package_mod_b
-    my_package_mod_b = _cribo_init___cribo_d862bd_my_package_mod_b(my_package_mod_b)
-    mod_b = my_package.mod_b
-    _cribo_self.mod_b = mod_b
-    A_VALUE = f"A -> {mod_b.B_DERIVED_VALUE}"
-    _cribo_self.A_VALUE = A_VALUE
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+    try:
+        _cribo_self.__package__ = 'my_package'
+        _cribo_self.__doc__ = None
+        global my_package_mod_b
+        my_package_mod_b = _cribo_init___cribo_d862bd_my_package_mod_b(my_package_mod_b)
+        mod_b = my_package.mod_b
+        _cribo_self.mod_b = mod_b
+        A_VALUE = f"A -> {mod_b.B_DERIVED_VALUE}"
+        _cribo_self.A_VALUE = A_VALUE
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 my_package_mod_a.__init__ = _cribo_init___cribo_e90488_my_package_mod_a
 def _cribo_init___cribo_d862bd_my_package_mod_b(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
@@ -175,25 +183,29 @@ def _cribo_init___cribo_d862bd_my_package_mod_b(_cribo_self, *, _cribo_getattr=g
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'my_package'
-    _cribo_self.__doc__ = None
-    global my_package_mod_c
-    my_package_mod_c = _cribo_init___cribo_748052_my_package_mod_c(my_package_mod_c)
-    mod_c = my_package.mod_c
-    _cribo_self.mod_c = mod_c
-    LEAF_VALUE = my_package_mod_l.LEAF_VALUE
-    my_package_mod_b.LEAF_VALUE = LEAF_VALUE
-    B_DERIVED_VALUE = mod_c.C_CONSTANT * 2
-    _cribo_self.B_DERIVED_VALUE = B_DERIVED_VALUE
+    try:
+        _cribo_self.__package__ = 'my_package'
+        _cribo_self.__doc__ = None
+        global my_package_mod_c
+        my_package_mod_c = _cribo_init___cribo_748052_my_package_mod_c(my_package_mod_c)
+        mod_c = my_package.mod_c
+        _cribo_self.mod_c = mod_c
+        LEAF_VALUE = my_package_mod_l.LEAF_VALUE
+        my_package_mod_b.LEAF_VALUE = LEAF_VALUE
+        B_DERIVED_VALUE = mod_c.C_CONSTANT * 2
+        _cribo_self.B_DERIVED_VALUE = B_DERIVED_VALUE
 
-    def get_b_value():
-        return f"B using '{LEAF_VALUE}' and derived value '{B_DERIVED_VALUE}'"
-    get_b_value.__module__ = 'my_package.mod_b'
-    get_b_value.__qualname__ = 'get_b_value'
-    _cribo_self.get_b_value = get_b_value
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def get_b_value():
+            return f"B using '{LEAF_VALUE}' and derived value '{B_DERIVED_VALUE}'"
+        get_b_value.__module__ = 'my_package.mod_b'
+        get_b_value.__qualname__ = 'get_b_value'
+        _cribo_self.get_b_value = get_b_value
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 my_package_mod_b.__init__ = _cribo_init___cribo_d862bd_my_package_mod_b
 def _cribo_init___cribo_748052_my_package_mod_c(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
@@ -201,23 +213,27 @@ def _cribo_init___cribo_748052_my_package_mod_c(_cribo_self, *, _cribo_getattr=g
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'my_package'
-    _cribo_self.__doc__ = None
-    global my_package_mod_a
-    my_package_mod_a = _cribo_init___cribo_e90488_my_package_mod_a(my_package_mod_a)
-    mod_a = my_package.mod_a
-    _cribo_self.mod_a = mod_a
-    C_CONSTANT = 21
-    _cribo_self.C_CONSTANT = C_CONSTANT
+    try:
+        _cribo_self.__package__ = 'my_package'
+        _cribo_self.__doc__ = None
+        global my_package_mod_a
+        my_package_mod_a = _cribo_init___cribo_e90488_my_package_mod_a(my_package_mod_a)
+        mod_a = my_package.mod_a
+        _cribo_self.mod_a = mod_a
+        C_CONSTANT = 21
+        _cribo_self.C_CONSTANT = C_CONSTANT
 
-    def get_c_value():
-        return f"C with A dependency: {mod_a.A_VALUE}"
-    get_c_value.__module__ = 'my_package.mod_c'
-    get_c_value.__qualname__ = 'get_c_value'
-    _cribo_self.get_c_value = get_c_value
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def get_c_value():
+            return f"C with A dependency: {mod_a.A_VALUE}"
+        get_c_value.__module__ = 'my_package.mod_c'
+        get_c_value.__qualname__ = 'get_c_value'
+        _cribo_self.get_c_value = get_c_value
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 my_package_mod_c.__init__ = _cribo_init___cribo_748052_my_package_mod_c
 __cribo_init_result = _cribo_init___cribo_c04dc3_my_package(my_package)
 for attr in dir(__cribo_init_result):

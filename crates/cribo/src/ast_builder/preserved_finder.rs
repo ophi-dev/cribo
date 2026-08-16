@@ -62,9 +62,9 @@ class _CriboPreservedLoader:
     def create_module(
         self, spec, *,
         _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type,
-        _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured,
+        _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured,
     ):
-        # Builtins, globals() and the namespace CONSTRUCTOR are captured as
+        # Builtins, globals() and the module CONSTRUCTOR are captured as
         # parameter DEFAULTS at definition time (in the bundle prelude): these
         # methods run lazily, after user code may have legally rebound any of
         # those names — including `_cribo` itself — in the bundle's global
@@ -84,14 +84,17 @@ class _CriboPreservedLoader:
                 # the long-lived registered object needs one, and per-life
                 # entries would accumulate (and their ids could be reused)
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(
                     saved if saved is not None else {'__name__': spec.name}
                 )
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        # A REAL module object: inspect.ismodule, isinstance checks against
+        # types.ModuleType, hashing, and weak references must behave exactly
+        # like the original import
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             # Prefer the value captured before entry code could delete or
             # rebind the bundle global; fall back to the live global for

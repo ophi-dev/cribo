@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -139,29 +139,33 @@ def _cribo_init___cribo_2f952c_side_effect_module(_cribo_self, *, _cribo_getattr
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = 'Module with side effects and diverse multiline literals.'
-    """Module with side effects and diverse multiline literals."""
-    START_BANNER = """Loading side effect module:\n    - timestamps\n    - values\n"""
-    _cribo_self.START_BANNER = START_BANNER
-    DETAILS = '''        Captured context:\n        module={__name__}\n    ''' "        status=ready"
-    _cribo_self.DETAILS = DETAILS
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = 'Module with side effects and diverse multiline literals.'
+        """Module with side effects and diverse multiline literals."""
+        START_BANNER = """Loading side effect module:\n    - timestamps\n    - values\n"""
+        _cribo_self.START_BANNER = START_BANNER
+        DETAILS = '''        Captured context:\n        module={__name__}\n    ''' "        status=ready"
+        _cribo_self.DETAILS = DETAILS
 
-    def _render_start() -> str:
-        """Produce a multiline message with runtime data."""
-        message = f"""Start Time:\n    2024-01-02 03:04:05\n    Module: multiline_strings.side_effect_module\n    Status: {"ready"}\n    """
-        more = """Computed Values:\n        length=62\n    """
-        note = """Generated output\n        includes a blank line\n        """ "appended"
-        return message + more + note
-    _render_start.__module__ = 'side_effect_module'
-    _render_start.__qualname__ = '_render_start'
-    _cribo_self._render_start = _render_start
-    SUMMARY_TEXT = START_BANNER + DETAILS
-    _cribo_self.SUMMARY_TEXT = SUMMARY_TEXT
-    print(_render_start())
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def _render_start() -> str:
+            """Produce a multiline message with runtime data."""
+            message = f"""Start Time:\n    2024-01-02 03:04:05\n    Module: multiline_strings.side_effect_module\n    Status: {"ready"}\n    """
+            more = """Computed Values:\n        length=62\n    """
+            note = """Generated output\n        includes a blank line\n        """ "appended"
+            return message + more + note
+        _render_start.__module__ = 'side_effect_module'
+        _render_start.__qualname__ = '_render_start'
+        _cribo_self._render_start = _render_start
+        SUMMARY_TEXT = START_BANNER + DETAILS
+        _cribo_self.SUMMARY_TEXT = SUMMARY_TEXT
+        print(_render_start())
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 side_effect_module.__init__ = _cribo_init___cribo_2f952c_side_effect_module
 docstring_module = _cribo.types.SimpleNamespace(__name__='docstring_module', __doc__='Module demonstrating multiline docstrings preservation.\n\nThis docstring spans multiple lines and contains:\n    - Indented sections\n    - Special characters: "quotes", \'apostrophes\', and symbols !@#$%\n    - Empty lines above\n')
 """Module demonstrating multiline docstrings preservation.\n\nThis docstring spans multiple lines and contains:\n    - Indented sections\n    - Special characters: \"quotes\", 'apostrophes', and symbols !@#$%\n    - Empty lines above\n"""

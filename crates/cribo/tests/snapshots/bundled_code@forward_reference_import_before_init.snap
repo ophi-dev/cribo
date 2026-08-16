@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -124,19 +124,23 @@ def _cribo_init___cribo_4089db_mypkg_compat(_cribo_self, *, _cribo_getattr=getat
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'mypkg'
-    _cribo_self.__doc__ = None
     try:
-        from fakejson import JSONDecodeError
-        mypkg_compat.JSONDecodeError = JSONDecodeError
-    except ImportError:
-        JSONDecodeError = _cribo.json.JSONDecodeError
-        mypkg_compat.JSONDecodeError = JSONDecodeError
-    MutableMapping = _cribo.collections.abc.MutableMapping
-    _cribo_self.MutableMapping = MutableMapping
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        _cribo_self.__package__ = 'mypkg'
+        _cribo_self.__doc__ = None
+        try:
+            from fakejson import JSONDecodeError
+            mypkg_compat.JSONDecodeError = JSONDecodeError
+        except ImportError:
+            JSONDecodeError = _cribo.json.JSONDecodeError
+            mypkg_compat.JSONDecodeError = JSONDecodeError
+        MutableMapping = _cribo.collections.abc.MutableMapping
+        _cribo_self.MutableMapping = MutableMapping
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 mypkg_compat.__init__ = _cribo_init___cribo_4089db_mypkg_compat
 mypkg = _cribo.types.SimpleNamespace(__name__='mypkg', __initializing__=False, __initialized__=False, __path__=[])
 mypkg.compat = mypkg_compat
@@ -149,16 +153,20 @@ def _cribo_init___cribo_30661c_mypkg(_cribo_self, *, _cribo_getattr=getattr, _cr
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'mypkg'
-    _cribo_self.__doc__ = None
-    global mypkg_exceptions
-    mypkg_exceptions = _cribo_init___cribo_72b028_mypkg_exceptions(mypkg_exceptions)
-    CustomJSONError = mypkg_exceptions.CustomJSONError
-    _cribo_self.CustomJSONError = CustomJSONError
-    _cribo_self.CustomJSONError = CustomJSONError
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+    try:
+        _cribo_self.__package__ = 'mypkg'
+        _cribo_self.__doc__ = None
+        global mypkg_exceptions
+        mypkg_exceptions = _cribo_init___cribo_72b028_mypkg_exceptions(mypkg_exceptions)
+        CustomJSONError = mypkg_exceptions.CustomJSONError
+        _cribo_self.CustomJSONError = CustomJSONError
+        _cribo_self.CustomJSONError = CustomJSONError
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 mypkg.__init__ = _cribo_init___cribo_30661c_mypkg
 def _cribo_init___cribo_72b028_mypkg_exceptions(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
@@ -166,38 +174,42 @@ def _cribo_init___cribo_72b028_mypkg_exceptions(_cribo_self, *, _cribo_getattr=g
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'mypkg'
-    _cribo_self.__doc__ = None
-    global mypkg_compat
-    mypkg_compat = _cribo_init___cribo_4089db_mypkg_compat(mypkg_compat)
-    CompatJSONDecodeError = mypkg.compat.JSONDecodeError
-    _cribo_self.CompatJSONDecodeError = CompatJSONDecodeError
-    _cribo_self.CompatJSONDecodeError = CompatJSONDecodeError
+    try:
+        _cribo_self.__package__ = 'mypkg'
+        _cribo_self.__doc__ = None
+        global mypkg_compat
+        mypkg_compat = _cribo_init___cribo_4089db_mypkg_compat(mypkg_compat)
+        CompatJSONDecodeError = mypkg.compat.JSONDecodeError
+        _cribo_self.CompatJSONDecodeError = CompatJSONDecodeError
+        _cribo_self.CompatJSONDecodeError = CompatJSONDecodeError
 
-    class BaseException(Exception):
-        """Base exception class"""
-        pass
-    BaseException.__module__ = 'mypkg.exceptions'
-    BaseException.__qualname__ = 'BaseException'
-    _cribo_self.BaseException = BaseException
+        class BaseException(Exception):
+            """Base exception class"""
+            pass
+        BaseException.__module__ = 'mypkg.exceptions'
+        BaseException.__qualname__ = 'BaseException'
+        _cribo_self.BaseException = BaseException
 
-    class CustomJSONError(BaseException, CompatJSONDecodeError):
-        """Custom JSON error that inherits from compat's JSONDecodeError"""
+        class CustomJSONError(BaseException, CompatJSONDecodeError):
+            """Custom JSON error that inherits from compat's JSONDecodeError"""
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'mypkg.exceptions'), _cribo_f)[1])
-        def __init__(self, *args):
-            CompatJSONDecodeError.__init__(self, *args)
-            BaseException.__init__(self, str(args[0]) if args else "")
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'mypkg.exceptions'), _cribo_f)[1])
+            def __init__(self, *args):
+                CompatJSONDecodeError.__init__(self, *args)
+                BaseException.__init__(self, str(args[0]) if args else "")
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'mypkg.exceptions'), _cribo_f)[1])
-        def __reduce__(self):
-            return CompatJSONDecodeError.__reduce__(self)
-    CustomJSONError.__module__ = 'mypkg.exceptions'
-    CustomJSONError.__qualname__ = 'CustomJSONError'
-    _cribo_self.CustomJSONError = CustomJSONError
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'mypkg.exceptions'), _cribo_f)[1])
+            def __reduce__(self):
+                return CompatJSONDecodeError.__reduce__(self)
+        CustomJSONError.__module__ = 'mypkg.exceptions'
+        CustomJSONError.__qualname__ = 'CustomJSONError'
+        _cribo_self.CustomJSONError = CustomJSONError
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 mypkg_exceptions.__init__ = _cribo_init___cribo_72b028_mypkg_exceptions
 __cribo_init_result = _cribo_init___cribo_30661c_mypkg(mypkg)
 for attr in dir(__cribo_init_result):

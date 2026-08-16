@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -122,21 +122,25 @@ def _cribo_init___cribo_306a0f_models(_cribo_self, *, _cribo_getattr=getattr, _c
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = None
-    print("models loaded")
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = None
+        print("models loaded")
 
-    class Item:
+        class Item:
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'models'), _cribo_f)[1])
-        def __init__(self, name):
-            self.name = name
-    Item.__module__ = 'models'
-    Item.__qualname__ = 'Item'
-    _cribo_self.Item = Item
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'models'), _cribo_f)[1])
+            def __init__(self, name):
+                self.name = name
+        Item.__module__ = 'models'
+        Item.__qualname__ = 'Item'
+        _cribo_self.Item = Item
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 models.__init__ = _cribo_init___cribo_306a0f_models
 """Classes exported by bundled modules keep a picklable module identity.\n\npickle resolves a class through __import__(cls.__module__) and getattr by\nqualname: the bundle's meta-path finder serves the bundled module under its\noriginal name, and the wrapper init stamps __module__, so the lookup yields\nthe very same class object.\n"""
 pickle = _cribo.pickle

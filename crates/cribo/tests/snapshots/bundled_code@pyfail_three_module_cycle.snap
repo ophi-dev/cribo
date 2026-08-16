@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -128,26 +128,30 @@ def _cribo_init___cribo_ae45fc_module_a(_cribo_self, *, _cribo_getattr=getattr, 
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = None
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = None
 
-    def process_a():
-        """Process A that depends on B"""
-        process_b = _cribo_init___cribo_afa23a_module_b(globals()['module_b']).process_b
-        return process_b() + "->A"
-    process_a.__module__ = 'module_a'
-    process_a.__qualname__ = 'process_a'
-    _cribo_self.process_a = process_a
+        def process_a():
+            """Process A that depends on B"""
+            process_b = _cribo_init___cribo_afa23a_module_b(globals()['module_b']).process_b
+            return process_b() + "->A"
+        process_a.__module__ = 'module_a'
+        process_a.__qualname__ = 'process_a'
+        _cribo_self.process_a = process_a
 
-    def get_value_a():
-        process_b = _cribo_init___cribo_afa23a_module_b(globals()['module_b']).process_b
-        return "value_from_A"
-    get_value_a.__module__ = 'module_a'
-    get_value_a.__qualname__ = 'get_value_a'
-    _cribo_self.get_value_a = get_value_a
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def get_value_a():
+            process_b = _cribo_init___cribo_afa23a_module_b(globals()['module_b']).process_b
+            return "value_from_A"
+        get_value_a.__module__ = 'module_a'
+        get_value_a.__qualname__ = 'get_value_a'
+        _cribo_self.get_value_a = get_value_a
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 module_a.__init__ = _cribo_init___cribo_ae45fc_module_a
 def _cribo_init___cribo_afa23a_module_b(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
@@ -155,26 +159,30 @@ def _cribo_init___cribo_afa23a_module_b(_cribo_self, *, _cribo_getattr=getattr, 
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = None
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = None
 
-    def process_b():
-        """Process B that depends on C"""
-        process_c = _cribo_init___cribo_b6d812_module_c(globals()['module_c']).process_c
-        return process_c() + "->B"
-    process_b.__module__ = 'module_b'
-    process_b.__qualname__ = 'process_b'
-    _cribo_self.process_b = process_b
+        def process_b():
+            """Process B that depends on C"""
+            process_c = _cribo_init___cribo_b6d812_module_c(globals()['module_c']).process_c
+            return process_c() + "->B"
+        process_b.__module__ = 'module_b'
+        process_b.__qualname__ = 'process_b'
+        _cribo_self.process_b = process_b
 
-    def get_value_b():
-        process_c = _cribo_init___cribo_b6d812_module_c(globals()['module_c']).process_c
-        return "value_from_B"
-    get_value_b.__module__ = 'module_b'
-    get_value_b.__qualname__ = 'get_value_b'
-    _cribo_self.get_value_b = get_value_b
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def get_value_b():
+            process_c = _cribo_init___cribo_b6d812_module_c(globals()['module_c']).process_c
+            return "value_from_B"
+        get_value_b.__module__ = 'module_b'
+        get_value_b.__qualname__ = 'get_value_b'
+        _cribo_self.get_value_b = get_value_b
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 module_b.__init__ = _cribo_init___cribo_afa23a_module_b
 def _cribo_init___cribo_b6d812_module_c(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
@@ -182,27 +190,31 @@ def _cribo_init___cribo_b6d812_module_c(_cribo_self, *, _cribo_getattr=getattr, 
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = None
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = None
 
-    def process_c():
-        """Process C that depends back on A - creates the cycle"""
-        get_value_a = _cribo_init___cribo_ae45fc_module_a(globals()['module_a']).get_value_a
-        value = get_value_a()
-        return f"C(using_{value})"
-    process_c.__module__ = 'module_c'
-    process_c.__qualname__ = 'process_c'
-    _cribo_self.process_c = process_c
+        def process_c():
+            """Process C that depends back on A - creates the cycle"""
+            get_value_a = _cribo_init___cribo_ae45fc_module_a(globals()['module_a']).get_value_a
+            value = get_value_a()
+            return f"C(using_{value})"
+        process_c.__module__ = 'module_c'
+        process_c.__qualname__ = 'process_c'
+        _cribo_self.process_c = process_c
 
-    def get_value_c():
-        get_value_a = _cribo_init___cribo_ae45fc_module_a(globals()['module_a']).get_value_a
-        return "value_from_C"
-    get_value_c.__module__ = 'module_c'
-    get_value_c.__qualname__ = 'get_value_c'
-    _cribo_self.get_value_c = get_value_c
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def get_value_c():
+            get_value_a = _cribo_init___cribo_ae45fc_module_a(globals()['module_a']).get_value_a
+            return "value_from_C"
+        get_value_c.__module__ = 'module_c'
+        get_value_c.__qualname__ = 'get_value_c'
+        _cribo_self.get_value_c = get_value_c
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 module_c.__init__ = _cribo_init___cribo_b6d812_module_c
 module_a = _cribo_init___cribo_ae45fc_module_a(module_a)
 def main():

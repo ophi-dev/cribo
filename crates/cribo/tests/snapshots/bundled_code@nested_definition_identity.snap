@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -122,41 +122,45 @@ def _cribo_init___cribo_1bb85b_provider(_cribo_self, *, _cribo_getattr=getattr, 
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = None
-    OWNERS = []
-    _cribo_self.OWNERS = OWNERS
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = None
+        OWNERS = []
+        _cribo_self.OWNERS = OWNERS
 
-    def register(func):
-        OWNERS.append(func.__module__)
-        return func
-    register.__module__ = 'provider'
-    register.__qualname__ = 'register'
-    _cribo_self.register = register
+        def register(func):
+            OWNERS.append(func.__module__)
+            return func
+        register.__module__ = 'provider'
+        register.__qualname__ = 'register'
+        _cribo_self.register = register
 
-    class Entry:
-        if True:
+        class Entry:
+            if True:
 
-            @register
+                @register
+                @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'provider'), _cribo_f)[1])
+                def tagged(self):
+                    return "tagged"
+        Entry.__module__ = 'provider'
+        Entry.__qualname__ = 'Entry'
+        _cribo_self.Entry = Entry
+
+        def make_worker():
+
             @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'provider'), _cribo_f)[1])
-            def tagged(self):
-                return "tagged"
-    Entry.__module__ = 'provider'
-    Entry.__qualname__ = 'Entry'
-    _cribo_self.Entry = Entry
-
-    def make_worker():
-
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'provider'), _cribo_f)[1])
-        def worker():
-            return "worker"
-        return worker
-    make_worker.__module__ = 'provider'
-    make_worker.__qualname__ = 'make_worker'
-    _cribo_self.make_worker = make_worker
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+            def worker():
+                return "worker"
+            return worker
+        make_worker.__module__ = 'provider'
+        make_worker.__qualname__ = 'make_worker'
+        _cribo_self.make_worker = make_worker
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 provider.__init__ = _cribo_init___cribo_1bb85b_provider
 """Definitions nested in compound suites and function bodies keep identity.\n\nA method defined under `if True:` inside a class body, and an inner function\ncreated when a bundled factory runs, must both carry the provider module's\n__module__ — including at decorator time, before any outer stamp could help.\n"""
 provider = _cribo_init___cribo_1bb85b_provider(provider)

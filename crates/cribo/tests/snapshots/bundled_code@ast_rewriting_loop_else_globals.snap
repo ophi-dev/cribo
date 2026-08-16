@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -124,47 +124,51 @@ def _cribo_init___cribo_bca834_loops(_cribo_self, *, _cribo_getattr=getattr, _cr
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = None
-    global _cribo_loops_last_result, _cribo_loops_loop_count
-    print("loading loops")
-    last_result = "none"
-    _cribo_loops_last_result = last_result
-    _cribo_self.last_result = _cribo_loops_last_result
-    loop_count = 0
-    _cribo_loops_loop_count = loop_count
-    _cribo_self.loop_count = _cribo_loops_loop_count
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = None
+        global _cribo_loops_last_result, _cribo_loops_loop_count
+        print("loading loops")
+        last_result = "none"
+        _cribo_loops_last_result = last_result
+        _cribo_self.last_result = _cribo_loops_last_result
+        loop_count = 0
+        _cribo_loops_loop_count = loop_count
+        _cribo_self.loop_count = _cribo_loops_loop_count
 
-    def find_item(items, target):
-        global _cribo_loops_last_result
-        for item in items:
-            if item == target:
-                _cribo_loops_last_result = f"found:{target}"
-                break
-        else:
-            _cribo_loops_last_result = f"missing:{target}"
-        return _cribo_loops_last_result
-    find_item.__module__ = 'loops'
-    find_item.__qualname__ = 'find_item'
-    _cribo_self.find_item = find_item
+        def find_item(items, target):
+            global _cribo_loops_last_result
+            for item in items:
+                if item == target:
+                    _cribo_loops_last_result = f"found:{target}"
+                    break
+            else:
+                _cribo_loops_last_result = f"missing:{target}"
+            return _cribo_loops_last_result
+        find_item.__module__ = 'loops'
+        find_item.__qualname__ = 'find_item'
+        _cribo_self.find_item = find_item
 
-    def count_up(limit):
-        global _cribo_loops_loop_count
-        _cribo_loops_loop_count = 0
-        loops.loop_count = _cribo_loops_loop_count
-        while _cribo_loops_loop_count < 5:
-            _cribo_loops_loop_count += 1
-            if _cribo_loops_loop_count >= limit:
-                break
-        else:
-            _cribo_loops_loop_count = -1
-        return _cribo_loops_loop_count
-    count_up.__module__ = 'loops'
-    count_up.__qualname__ = 'count_up'
-    _cribo_self.count_up = count_up
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def count_up(limit):
+            global _cribo_loops_loop_count
+            _cribo_loops_loop_count = 0
+            loops.loop_count = _cribo_loops_loop_count
+            while _cribo_loops_loop_count < 5:
+                _cribo_loops_loop_count += 1
+                if _cribo_loops_loop_count >= limit:
+                    break
+            else:
+                _cribo_loops_loop_count = -1
+            return _cribo_loops_loop_count
+        count_up.__module__ = 'loops'
+        count_up.__qualname__ = 'count_up'
+        _cribo_self.count_up = count_up
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 loops.__init__ = _cribo_init___cribo_bca834_loops
 loops = _cribo_init___cribo_bca834_loops(loops)
 find_item = loops.find_item

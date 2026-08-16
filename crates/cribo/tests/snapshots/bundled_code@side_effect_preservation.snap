@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -138,22 +138,26 @@ def _cribo_init___cribo_f23a44_external_plugin(_cribo_self, *, _cribo_getattr=ge
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = 'External plugin that registers itself when imported.'
-    """External plugin that registers itself when imported."""
-    add_plugin = state.add_plugin
-    external_plugin.add_plugin = add_plugin
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = 'External plugin that registers itself when imported.'
+        """External plugin that registers itself when imported."""
+        add_plugin = state.add_plugin
+        external_plugin.add_plugin = add_plugin
 
-    def register_plugin():
-        """Register this plugin."""
-        return add_plugin("external_plugin")
-    register_plugin.__module__ = 'external_plugin'
-    register_plugin.__qualname__ = 'register_plugin'
-    _cribo_self.register_plugin = register_plugin
-    add_plugin("external_plugin_loaded")
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def register_plugin():
+            """Register this plugin."""
+            return add_plugin("external_plugin")
+        register_plugin.__module__ = 'external_plugin'
+        register_plugin.__qualname__ = 'register_plugin'
+        _cribo_self.register_plugin = register_plugin
+        add_plugin("external_plugin_loaded")
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 external_plugin.__init__ = _cribo_init___cribo_f23a44_external_plugin
 utils = _cribo.types.SimpleNamespace(__name__='utils', __doc__='Utility module with unused functions.')
 """Utility module with unused functions."""

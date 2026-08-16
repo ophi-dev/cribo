@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -124,36 +124,40 @@ def _cribo_init___cribo_73cafd_pkg__internal(_cribo_self, *, _cribo_getattr=geta
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'pkg'
-    _cribo_self.__doc__ = 'Internal module with private variables.'
-    """Internal module with private variables."""
-    re = _cribo.re
-    _cribo_self.re = re
-    _cribo_self.re = re
-    _VALID_HEADER_NAME_RE_BYTE = _cribo.re.compile(rb"^[^:\s][^:\r\n]*$")
-    _cribo_self._VALID_HEADER_NAME_RE_BYTE = _VALID_HEADER_NAME_RE_BYTE
-    _VALID_HEADER_NAME_RE_STR = _cribo.re.compile(r"^[^:\s][^:\r\n]*$")
-    _cribo_self._VALID_HEADER_NAME_RE_STR = _VALID_HEADER_NAME_RE_STR
-    _VALID_HEADER_VALUE_RE_BYTE = _cribo.re.compile(rb"^\S[^\r\n]*$|^$")
-    _cribo_self._VALID_HEADER_VALUE_RE_BYTE = _VALID_HEADER_VALUE_RE_BYTE
-    _VALID_HEADER_VALUE_RE_STR = _cribo.re.compile(r"^\S[^\r\n]*$|^$")
-    _cribo_self._VALID_HEADER_VALUE_RE_STR = _VALID_HEADER_VALUE_RE_STR
-    _HEADER_VALIDATORS_STR = _VALID_HEADER_NAME_RE_STR, _VALID_HEADER_VALUE_RE_STR
-    _cribo_self._HEADER_VALIDATORS_STR = _HEADER_VALIDATORS_STR
-    _HEADER_VALIDATORS_BYTE = _VALID_HEADER_NAME_RE_BYTE, _VALID_HEADER_VALUE_RE_BYTE
-    _cribo_self._HEADER_VALIDATORS_BYTE = _HEADER_VALIDATORS_BYTE
-    HEADER_VALIDATORS = {bytes: _HEADER_VALIDATORS_BYTE, str: _HEADER_VALIDATORS_STR}
-    _cribo_self.HEADER_VALIDATORS = HEADER_VALIDATORS
+    try:
+        _cribo_self.__package__ = 'pkg'
+        _cribo_self.__doc__ = 'Internal module with private variables.'
+        """Internal module with private variables."""
+        re = _cribo.re
+        _cribo_self.re = re
+        _cribo_self.re = re
+        _VALID_HEADER_NAME_RE_BYTE = _cribo.re.compile(rb"^[^:\s][^:\r\n]*$")
+        _cribo_self._VALID_HEADER_NAME_RE_BYTE = _VALID_HEADER_NAME_RE_BYTE
+        _VALID_HEADER_NAME_RE_STR = _cribo.re.compile(r"^[^:\s][^:\r\n]*$")
+        _cribo_self._VALID_HEADER_NAME_RE_STR = _VALID_HEADER_NAME_RE_STR
+        _VALID_HEADER_VALUE_RE_BYTE = _cribo.re.compile(rb"^\S[^\r\n]*$|^$")
+        _cribo_self._VALID_HEADER_VALUE_RE_BYTE = _VALID_HEADER_VALUE_RE_BYTE
+        _VALID_HEADER_VALUE_RE_STR = _cribo.re.compile(r"^\S[^\r\n]*$|^$")
+        _cribo_self._VALID_HEADER_VALUE_RE_STR = _VALID_HEADER_VALUE_RE_STR
+        _HEADER_VALIDATORS_STR = _VALID_HEADER_NAME_RE_STR, _VALID_HEADER_VALUE_RE_STR
+        _cribo_self._HEADER_VALIDATORS_STR = _HEADER_VALIDATORS_STR
+        _HEADER_VALIDATORS_BYTE = _VALID_HEADER_NAME_RE_BYTE, _VALID_HEADER_VALUE_RE_BYTE
+        _cribo_self._HEADER_VALIDATORS_BYTE = _HEADER_VALIDATORS_BYTE
+        HEADER_VALIDATORS = {bytes: _HEADER_VALIDATORS_BYTE, str: _HEADER_VALIDATORS_STR}
+        _cribo_self.HEADER_VALIDATORS = HEADER_VALIDATORS
 
-    def process_headers(headers):
-        """Example function that uses the validators."""
-        return f"Processing {len(headers)} headers with validators"
-    process_headers.__module__ = 'pkg._internal'
-    process_headers.__qualname__ = 'process_headers'
-    _cribo_self.process_headers = process_headers
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def process_headers(headers):
+            """Example function that uses the validators."""
+            return f"Processing {len(headers)} headers with validators"
+        process_headers.__module__ = 'pkg._internal'
+        process_headers.__qualname__ = 'process_headers'
+        _cribo_self.process_headers = process_headers
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 pkg__internal.__init__ = _cribo_init___cribo_73cafd_pkg__internal
 pkg = _cribo.types.SimpleNamespace(__name__='pkg', __initializing__=False, __initialized__=False, __path__=[])
 pkg._internal = pkg__internal

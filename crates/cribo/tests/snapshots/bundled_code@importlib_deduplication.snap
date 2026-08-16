@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -124,16 +124,20 @@ def _cribo_init___cribo_26ef78_mymodule(_cribo_self, *, _cribo_getattr=getattr, 
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = None
-    print("mymodule.py is being executed!")
-    counter = 1
-    _cribo_self.counter = counter
-    test_value = "Original"
-    _cribo_self.test_value = test_value
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = None
+        print("mymodule.py is being executed!")
+        counter = 1
+        _cribo_self.counter = counter
+        test_value = "Original"
+        _cribo_self.test_value = test_value
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 mymodule.__init__ = _cribo_init___cribo_26ef78_mymodule
 package = _cribo.types.SimpleNamespace(__name__='package', __initializing__=False, __initialized__=False, __path__=[])
 _cribo_finder.bind('package', package)
@@ -143,12 +147,16 @@ def _cribo_init___cribo_20ca72_package(_cribo_self, *, _cribo_getattr=getattr, _
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'package'
-    _cribo_self.__doc__ = None
-    print("package/__init__.py is being executed!")
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+    try:
+        _cribo_self.__package__ = 'package'
+        _cribo_self.__doc__ = None
+        print("package/__init__.py is being executed!")
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 package.__init__ = _cribo_init___cribo_20ca72_package
 package_submodule = _cribo.types.SimpleNamespace(__name__='package.submodule', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('package.submodule', package_submodule)
@@ -158,14 +166,18 @@ def _cribo_init___cribo_75ebb7_package_submodule(_cribo_self, *, _cribo_getattr=
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'package'
-    _cribo_self.__doc__ = None
-    print("package/submodule.py is being executed!")
-    sub_counter = 10
-    _cribo_self.sub_counter = sub_counter
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+    try:
+        _cribo_self.__package__ = 'package'
+        _cribo_self.__doc__ = None
+        print("package/submodule.py is being executed!")
+        sub_counter = 10
+        _cribo_self.sub_counter = sub_counter
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 package_submodule.__init__ = _cribo_init___cribo_75ebb7_package_submodule
 package.submodule = package_submodule
 """Test how importlib.import_module handles sys.modules and deduplication"""

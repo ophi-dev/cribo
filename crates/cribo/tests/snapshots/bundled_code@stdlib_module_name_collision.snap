@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -143,16 +143,20 @@ def _cribo_init___cribo_9a2a8c_mypkg(_cribo_self, *, _cribo_getattr=getattr, _cr
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'mypkg'
-    _cribo_self.__doc__ = "Package with modules including one named 'abc' (same as stdlib)."
-    global mypkg_console
-    """Package with modules including one named 'abc' (same as stdlib)."""
-    mypkg_console = _cribo_init___cribo_6558da_mypkg_console(mypkg_console)
-    console = mypkg.console
-    _cribo_self.console = console
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+    try:
+        _cribo_self.__package__ = 'mypkg'
+        _cribo_self.__doc__ = "Package with modules including one named 'abc' (same as stdlib)."
+        global mypkg_console
+        """Package with modules including one named 'abc' (same as stdlib)."""
+        mypkg_console = _cribo_init___cribo_6558da_mypkg_console(mypkg_console)
+        console = mypkg.console
+        _cribo_self.console = console
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 mypkg.__init__ = _cribo_init___cribo_9a2a8c_mypkg
 def _cribo_init___cribo_6558da_mypkg_console(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
@@ -160,42 +164,46 @@ def _cribo_init___cribo_6558da_mypkg_console(_cribo_self, *, _cribo_getattr=geta
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'mypkg'
-    _cribo_self.__doc__ = 'Console module that imports various stdlib modules.'
-    """Console module that imports various stdlib modules."""
-    abc = _cribo.abc
-    _cribo_self.abc = abc
-    _cribo_self.abc = abc
-    typing = _cribo.typing
-    _cribo_self.typing = typing
-    _cribo_self.typing = typing
-    enum = _cribo.enum
-    _cribo_self.enum = enum
-    _cribo_self.enum = enum
-    threading = _cribo.threading
-    _cribo_self.threading = threading
-    _cribo_self.threading = threading
-    ctypes = _cribo.ctypes
-    _cribo_self.ctypes = ctypes
-    _cribo_self.ctypes = ctypes
-    local_abc = mypkg_abc
-    _cribo_self.local_abc = local_abc
+    try:
+        _cribo_self.__package__ = 'mypkg'
+        _cribo_self.__doc__ = 'Console module that imports various stdlib modules.'
+        """Console module that imports various stdlib modules."""
+        abc = _cribo.abc
+        _cribo_self.abc = abc
+        _cribo_self.abc = abc
+        typing = _cribo.typing
+        _cribo_self.typing = typing
+        _cribo_self.typing = typing
+        enum = _cribo.enum
+        _cribo_self.enum = enum
+        _cribo_self.enum = enum
+        threading = _cribo.threading
+        _cribo_self.threading = threading
+        _cribo_self.threading = threading
+        ctypes = _cribo.ctypes
+        _cribo_self.ctypes = ctypes
+        _cribo_self.ctypes = ctypes
+        local_abc = mypkg_abc
+        _cribo_self.local_abc = local_abc
 
-    def test_function():
-        """Test function using imports."""
-        if _cribo.abc.ABC:
-            my_list: _cribo.typing.List[str] = ["test"]
-            TestEnum = _cribo.enum.Enum("TestEnum", ["A", "B"])
-            obj = local_abc.create_object()
-            loader = _cribo.importlib.machinery.SourceFileLoader
-            return f"Success with {my_list} and {TestEnum.A} and {loader.__name__}"
-        return "Failed"
-    test_function.__module__ = 'mypkg.console'
-    test_function.__qualname__ = 'test_function'
-    _cribo_self.test_function = test_function
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def test_function():
+            """Test function using imports."""
+            if _cribo.abc.ABC:
+                my_list: _cribo.typing.List[str] = ["test"]
+                TestEnum = _cribo.enum.Enum("TestEnum", ["A", "B"])
+                obj = local_abc.create_object()
+                loader = _cribo.importlib.machinery.SourceFileLoader
+                return f"Success with {my_list} and {TestEnum.A} and {loader.__name__}"
+            return "Failed"
+        test_function.__module__ = 'mypkg.console'
+        test_function.__qualname__ = 'test_function'
+        _cribo_self.test_function = test_function
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 mypkg_console.__init__ = _cribo_init___cribo_6558da_mypkg_console
 _cribo_captured['MyBaseClass'] = MyBaseClass
 _cribo_captured['create_object'] = create_object

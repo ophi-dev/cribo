@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -145,27 +145,31 @@ def _cribo_init___cribo_cca96f_package(_cribo_self, *, _cribo_getattr=getattr, _
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'package'
-    _cribo_self.__doc__ = 'Package using wildcard imports and setattr pattern like httpx.'
-    """Package using wildcard imports and setattr pattern like httpx."""
-    __cribo_init_result = _cribo_init___cribo_66c36f_package__subpackage(package__subpackage)
-    for attr in dir(__cribo_init_result):
-        if not attr.startswith('_'):
-            setattr(package._subpackage, attr, getattr(__cribo_init_result, attr))
-    MyClass = package._subpackage.MyClass
-    package.MyClass = MyClass
-    my_function = package._subpackage.my_function
-    package.my_function = my_function
-    __all__ = ["MyClass", "my_function"]
-    __locals = vars(_cribo_self)
-    _cribo_self.__locals = __locals
-    for __name in __all__:
-        package.__name = __name
-        if not __name.startswith("__"):
-            setattr(__locals[__name], "__module__", "package")
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+    try:
+        _cribo_self.__package__ = 'package'
+        _cribo_self.__doc__ = 'Package using wildcard imports and setattr pattern like httpx.'
+        """Package using wildcard imports and setattr pattern like httpx."""
+        __cribo_init_result = _cribo_init___cribo_66c36f_package__subpackage(package__subpackage)
+        for attr in dir(__cribo_init_result):
+            if not attr.startswith('_'):
+                setattr(package._subpackage, attr, getattr(__cribo_init_result, attr))
+        MyClass = package._subpackage.MyClass
+        package.MyClass = MyClass
+        my_function = package._subpackage.my_function
+        package.my_function = my_function
+        __all__ = ["MyClass", "my_function"]
+        __locals = vars(_cribo_self)
+        _cribo_self.__locals = __locals
+        for __name in __all__:
+            package.__name = __name
+            if not __name.startswith("__"):
+                setattr(__locals[__name], "__module__", "package")
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 package.__init__ = _cribo_init___cribo_cca96f_package
 def _cribo_init___cribo_66c36f_package__subpackage(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
@@ -173,16 +177,20 @@ def _cribo_init___cribo_66c36f_package__subpackage(_cribo_self, *, _cribo_getatt
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'package._subpackage'
-    _cribo_self.__doc__ = 'Subpackage that re-exports from modules using wildcards.'
-    _cribo_self.MyClass = package__subpackage_module_a.MyClass
-    _cribo_self.my_function = package__subpackage_module_b.my_function
-    """Subpackage that re-exports from modules using wildcards."""
-    _cribo_self.module_b = package__subpackage_module_b
-    _cribo_self.module_a = package__subpackage_module_a
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+    try:
+        _cribo_self.__package__ = 'package._subpackage'
+        _cribo_self.__doc__ = 'Subpackage that re-exports from modules using wildcards.'
+        _cribo_self.MyClass = package__subpackage_module_a.MyClass
+        _cribo_self.my_function = package__subpackage_module_b.my_function
+        """Subpackage that re-exports from modules using wildcards."""
+        _cribo_self.module_b = package__subpackage_module_b
+        _cribo_self.module_a = package__subpackage_module_a
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 package__subpackage.__init__ = _cribo_init___cribo_66c36f_package__subpackage
 _cribo_captured['MyClass'] = MyClass
 _cribo_captured['my_function'] = my_function

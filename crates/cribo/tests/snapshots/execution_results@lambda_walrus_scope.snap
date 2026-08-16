@@ -1,0 +1,9 @@
+---
+source: crates/cribo/tests/test_bundling_snapshots.rs
+input_file: crates/cribo/tests/fixtures/lambda_walrus_scope/main.py
+---
+ExecutionResults {
+    status: Success,
+    stdout: "unbound",
+    stderr: "",
+}

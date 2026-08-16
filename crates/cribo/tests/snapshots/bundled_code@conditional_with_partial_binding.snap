@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -122,75 +122,79 @@ def _cribo_init___cribo_e1cf19_with_source(_cribo_self, *, _cribo_getattr=getatt
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = None
-
-    class SuccessfulContext:
-
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'with_source'), _cribo_f)[1])
-        def __enter__(self):
-            return "with"
-
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'with_source'), _cribo_f)[1])
-        def __exit__(self, _exc_type, _exc_value, _traceback):
-            return False
-    SuccessfulContext.__module__ = 'with_source'
-    SuccessfulContext.__qualname__ = 'SuccessfulContext'
-    _cribo_self.SuccessfulContext = SuccessfulContext
-
-    class FailingContext:
-
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'with_source'), _cribo_f)[1])
-        def __enter__(self):
-            raise RuntimeError
-
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'with_source'), _cribo_f)[1])
-        def __exit__(self, _exc_type, _exc_value, _traceback):
-            return False
-    FailingContext.__module__ = 'with_source'
-    FailingContext.__qualname__ = 'FailingContext'
-    _cribo_self.FailingContext = FailingContext
-
-    class CompoundContext:
-
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'with_source'), _cribo_f)[1])
-        def __enter__(self):
-            return "partial", "failure"
-
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'with_source'), _cribo_f)[1])
-        def __exit__(self, _exc_type, _exc_value, _traceback):
-            return False
-    CompoundContext.__module__ = 'with_source'
-    CompoundContext.__qualname__ = 'CompoundContext'
-    _cribo_self.CompoundContext = CompoundContext
-
-    class FailingTarget:
-
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'with_source'), _cribo_f)[1])
-        def __setattr__(self, _name, _value):
-            raise RuntimeError
-    FailingTarget.__module__ = 'with_source'
-    FailingTarget.__qualname__ = 'FailingTarget'
-    _cribo_self.FailingTarget = FailingTarget
     try:
-        with SuccessfulContext() as EARLY_WITH_VALUE:
-            with_source.EARLY_WITH_VALUE = EARLY_WITH_VALUE
-            with FailingContext():
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = None
+
+        class SuccessfulContext:
+
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'with_source'), _cribo_f)[1])
+            def __enter__(self):
+                return "with"
+
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'with_source'), _cribo_f)[1])
+            def __exit__(self, _exc_type, _exc_value, _traceback):
+                return False
+        SuccessfulContext.__module__ = 'with_source'
+        SuccessfulContext.__qualname__ = 'SuccessfulContext'
+        _cribo_self.SuccessfulContext = SuccessfulContext
+
+        class FailingContext:
+
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'with_source'), _cribo_f)[1])
+            def __enter__(self):
+                raise RuntimeError
+
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'with_source'), _cribo_f)[1])
+            def __exit__(self, _exc_type, _exc_value, _traceback):
+                return False
+        FailingContext.__module__ = 'with_source'
+        FailingContext.__qualname__ = 'FailingContext'
+        _cribo_self.FailingContext = FailingContext
+
+        class CompoundContext:
+
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'with_source'), _cribo_f)[1])
+            def __enter__(self):
+                return "partial", "failure"
+
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'with_source'), _cribo_f)[1])
+            def __exit__(self, _exc_type, _exc_value, _traceback):
+                return False
+        CompoundContext.__module__ = 'with_source'
+        CompoundContext.__qualname__ = 'CompoundContext'
+        _cribo_self.CompoundContext = CompoundContext
+
+        class FailingTarget:
+
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'with_source'), _cribo_f)[1])
+            def __setattr__(self, _name, _value):
+                raise RuntimeError
+        FailingTarget.__module__ = 'with_source'
+        FailingTarget.__qualname__ = 'FailingTarget'
+        _cribo_self.FailingTarget = FailingTarget
+        try:
+            with SuccessfulContext() as EARLY_WITH_VALUE:
+                with_source.EARLY_WITH_VALUE = EARLY_WITH_VALUE
+                with FailingContext():
+                    pass
+        except RuntimeError:
+            assert EARLY_WITH_VALUE == "with"
+        try:
+            with CompoundContext() as _cribo_with_target_727_0:
+                _cribo_assignment_target_727_0, _cribo_assignment_target_727_1 = _cribo_with_target_727_0
+                WITH_PARTIAL_VALUE = _cribo_assignment_target_727_0
+                with_source.WITH_PARTIAL_VALUE = WITH_PARTIAL_VALUE
+                FailingTarget().value = _cribo_assignment_target_727_1
                 pass
-    except RuntimeError:
-        assert EARLY_WITH_VALUE == "with"
-    try:
-        with CompoundContext() as _cribo_with_target_727_0:
-            _cribo_assignment_target_727_0, _cribo_assignment_target_727_1 = _cribo_with_target_727_0
-            WITH_PARTIAL_VALUE = _cribo_assignment_target_727_0
-            with_source.WITH_PARTIAL_VALUE = WITH_PARTIAL_VALUE
-            FailingTarget().value = _cribo_assignment_target_727_1
-            pass
-    except RuntimeError:
-        assert WITH_PARTIAL_VALUE == "partial"
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        except RuntimeError:
+            assert WITH_PARTIAL_VALUE == "partial"
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 with_source.__init__ = _cribo_init___cribo_e1cf19_with_source
 with_source = _cribo_init___cribo_e1cf19_with_source(with_source)
 print(with_source.EARLY_WITH_VALUE)

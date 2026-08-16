@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -125,43 +125,47 @@ def _cribo_init___cribo_a3a28c_partial_observer(_cribo_self, *, _cribo_getattr=g
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = None
-    global partial_source
-    partial_source = _cribo_init___cribo_e09ba2_partial_source(partial_source)
-    _cribo_self.partial_source = partial_source
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = None
+        global partial_source
+        partial_source = _cribo_init___cribo_e09ba2_partial_source(partial_source)
+        _cribo_self.partial_source = partial_source
 
-    class FailingTarget:
+        class FailingTarget:
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'partial_observer'), _cribo_f)[1])
-        def __setattr__(self, name, value):
-            object.__setattr__(self, "assignment_visible", partial_source.ASSIGNED == value)
-            raise RuntimeError
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'partial_observer'), _cribo_f)[1])
+            def __setattr__(self, name, value):
+                object.__setattr__(self, "assignment_visible", partial_source.ASSIGNED == value)
+                raise RuntimeError
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'partial_observer'), _cribo_f)[1])
-        def __delattr__(self, name):
-            object.__setattr__(self, "deletion_applied", not hasattr(partial_source, "DELETED"))
-            raise RuntimeError
-    FailingTarget.__module__ = 'partial_observer'
-    FailingTarget.__qualname__ = 'FailingTarget'
-    _cribo_self.FailingTarget = FailingTarget
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'partial_observer'), _cribo_f)[1])
+            def __delattr__(self, name):
+                object.__setattr__(self, "deletion_applied", not hasattr(partial_source, "DELETED"))
+                raise RuntimeError
+        FailingTarget.__module__ = 'partial_observer'
+        FailingTarget.__qualname__ = 'FailingTarget'
+        _cribo_self.FailingTarget = FailingTarget
 
-    class FailingUnpackTarget:
+        class FailingUnpackTarget:
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'partial_observer'), _cribo_f)[1])
-        def __init__(self, expected_bindings):
-            object.__setattr__(self, "expected_bindings", expected_bindings)
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'partial_observer'), _cribo_f)[1])
+            def __init__(self, expected_bindings):
+                object.__setattr__(self, "expected_bindings", expected_bindings)
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'partial_observer'), _cribo_f)[1])
-        def __setattr__(self, name, value):
-            object.__setattr__(self, "unpacking_visible", all(getattr(partial_source, binding) == expected for binding, expected in self.expected_bindings))
-            raise RuntimeError
-    FailingUnpackTarget.__module__ = 'partial_observer'
-    FailingUnpackTarget.__qualname__ = 'FailingUnpackTarget'
-    _cribo_self.FailingUnpackTarget = FailingUnpackTarget
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'partial_observer'), _cribo_f)[1])
+            def __setattr__(self, name, value):
+                object.__setattr__(self, "unpacking_visible", all(getattr(partial_source, binding) == expected for binding, expected in self.expected_bindings))
+                raise RuntimeError
+        FailingUnpackTarget.__module__ = 'partial_observer'
+        FailingUnpackTarget.__qualname__ = 'FailingUnpackTarget'
+        _cribo_self.FailingUnpackTarget = FailingUnpackTarget
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 partial_observer.__init__ = _cribo_init___cribo_a3a28c_partial_observer
 def _cribo_init___cribo_e09ba2_partial_source(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
@@ -169,75 +173,79 @@ def _cribo_init___cribo_e09ba2_partial_source(_cribo_self, *, _cribo_getattr=get
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = None
-    global partial_observer
-    if _cribo_self.__name__ != "__main__":
-        partial_observer = _cribo_init___cribo_a3a28c_partial_observer(partial_observer)
-        partial_source.partial_observer = partial_observer
-        target = partial_observer.FailingTarget()
-        partial_source.target = target
-        try:
-            _cribo_assignment_value_119 = "assigned"
-            ASSIGNED = _cribo_assignment_value_119
-            partial_source.ASSIGNED = ASSIGNED
-            target.value = _cribo_assignment_value_119
-        except RuntimeError:
-            assert target.assignment_visible
-        DELETED = "deleted"
-        partial_source.DELETED = DELETED
-        try:
-            del DELETED
-            if _cribo.builtins.hasattr(partial_source, 'DELETED'):
-                _cribo.builtins.delattr(partial_source, 'DELETED')
-            del target.value
-        except RuntimeError:
-            assert target.deletion_applied
-        direct_target = partial_observer.FailingUnpackTarget((("UNPACKED_FIRST", "first"),))
-        partial_source.direct_target = direct_target
-        try:
-            _cribo_assignment_target_475_0, _cribo_assignment_target_475_1 = "first", "ignored"
-            UNPACKED_FIRST = _cribo_assignment_target_475_0
-            partial_source.UNPACKED_FIRST = UNPACKED_FIRST
-            direct_target.value = _cribo_assignment_target_475_1
-        except RuntimeError:
-            assert direct_target.unpacking_visible
-        nested_target = partial_observer.FailingUnpackTarget((("NESTED_OUTER", "outer"), ("NESTED_INNER", "inner")))
-        partial_source.nested_target = nested_target
-        try:
-            _cribo_assignment_target_751_0, _cribo_assignment_target_751_1 = "outer", ("inner", "ignored")
-            NESTED_OUTER = _cribo_assignment_target_751_0
-            partial_source.NESTED_OUTER = NESTED_OUTER
-            _cribo_assignment_target_751_2, _cribo_assignment_target_751_3 = _cribo_assignment_target_751_1
-            NESTED_INNER = _cribo_assignment_target_751_2
-            partial_source.NESTED_INNER = NESTED_INNER
-            nested_target.value = _cribo_assignment_target_751_3
-        except RuntimeError:
-            assert nested_target.unpacking_visible
-        starred_target = partial_observer.FailingUnpackTarget((("STAR_FIRST", "first"), ("STAR_REST", ["middle"])))
-        partial_source.starred_target = starred_target
-        try:
-            _cribo_assignment_target_1086_0, *_cribo_assignment_target_1086_1, _cribo_assignment_target_1086_2 = "first", "middle", "ignored"
-            STAR_FIRST = _cribo_assignment_target_1086_0
-            partial_source.STAR_FIRST = STAR_FIRST
-            STAR_REST = _cribo_assignment_target_1086_1
-            partial_source.STAR_REST = STAR_REST
-            starred_target.value = _cribo_assignment_target_1086_2
-        except RuntimeError:
-            assert starred_target.unpacking_visible
-        ASSIGNMENT_VISIBLE = target.assignment_visible
-        partial_source.ASSIGNMENT_VISIBLE = ASSIGNMENT_VISIBLE
-        DELETION_APPLIED = target.deletion_applied
-        partial_source.DELETION_APPLIED = DELETION_APPLIED
-        DIRECT_UNPACKING_VISIBLE = direct_target.unpacking_visible
-        partial_source.DIRECT_UNPACKING_VISIBLE = DIRECT_UNPACKING_VISIBLE
-        NESTED_UNPACKING_VISIBLE = nested_target.unpacking_visible
-        partial_source.NESTED_UNPACKING_VISIBLE = NESTED_UNPACKING_VISIBLE
-        STARRED_UNPACKING_VISIBLE = starred_target.unpacking_visible
-        partial_source.STARRED_UNPACKING_VISIBLE = STARRED_UNPACKING_VISIBLE
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = None
+        global partial_observer
+        if _cribo_self.__name__ != "__main__":
+            partial_observer = _cribo_init___cribo_a3a28c_partial_observer(partial_observer)
+            partial_source.partial_observer = partial_observer
+            target = partial_observer.FailingTarget()
+            partial_source.target = target
+            try:
+                _cribo_assignment_value_119 = "assigned"
+                ASSIGNED = _cribo_assignment_value_119
+                partial_source.ASSIGNED = ASSIGNED
+                target.value = _cribo_assignment_value_119
+            except RuntimeError:
+                assert target.assignment_visible
+            DELETED = "deleted"
+            partial_source.DELETED = DELETED
+            try:
+                del DELETED
+                if _cribo.builtins.hasattr(partial_source, 'DELETED'):
+                    _cribo.builtins.delattr(partial_source, 'DELETED')
+                del target.value
+            except RuntimeError:
+                assert target.deletion_applied
+            direct_target = partial_observer.FailingUnpackTarget((("UNPACKED_FIRST", "first"),))
+            partial_source.direct_target = direct_target
+            try:
+                _cribo_assignment_target_475_0, _cribo_assignment_target_475_1 = "first", "ignored"
+                UNPACKED_FIRST = _cribo_assignment_target_475_0
+                partial_source.UNPACKED_FIRST = UNPACKED_FIRST
+                direct_target.value = _cribo_assignment_target_475_1
+            except RuntimeError:
+                assert direct_target.unpacking_visible
+            nested_target = partial_observer.FailingUnpackTarget((("NESTED_OUTER", "outer"), ("NESTED_INNER", "inner")))
+            partial_source.nested_target = nested_target
+            try:
+                _cribo_assignment_target_751_0, _cribo_assignment_target_751_1 = "outer", ("inner", "ignored")
+                NESTED_OUTER = _cribo_assignment_target_751_0
+                partial_source.NESTED_OUTER = NESTED_OUTER
+                _cribo_assignment_target_751_2, _cribo_assignment_target_751_3 = _cribo_assignment_target_751_1
+                NESTED_INNER = _cribo_assignment_target_751_2
+                partial_source.NESTED_INNER = NESTED_INNER
+                nested_target.value = _cribo_assignment_target_751_3
+            except RuntimeError:
+                assert nested_target.unpacking_visible
+            starred_target = partial_observer.FailingUnpackTarget((("STAR_FIRST", "first"), ("STAR_REST", ["middle"])))
+            partial_source.starred_target = starred_target
+            try:
+                _cribo_assignment_target_1086_0, *_cribo_assignment_target_1086_1, _cribo_assignment_target_1086_2 = "first", "middle", "ignored"
+                STAR_FIRST = _cribo_assignment_target_1086_0
+                partial_source.STAR_FIRST = STAR_FIRST
+                STAR_REST = _cribo_assignment_target_1086_1
+                partial_source.STAR_REST = STAR_REST
+                starred_target.value = _cribo_assignment_target_1086_2
+            except RuntimeError:
+                assert starred_target.unpacking_visible
+            ASSIGNMENT_VISIBLE = target.assignment_visible
+            partial_source.ASSIGNMENT_VISIBLE = ASSIGNMENT_VISIBLE
+            DELETION_APPLIED = target.deletion_applied
+            partial_source.DELETION_APPLIED = DELETION_APPLIED
+            DIRECT_UNPACKING_VISIBLE = direct_target.unpacking_visible
+            partial_source.DIRECT_UNPACKING_VISIBLE = DIRECT_UNPACKING_VISIBLE
+            NESTED_UNPACKING_VISIBLE = nested_target.unpacking_visible
+            partial_source.NESTED_UNPACKING_VISIBLE = NESTED_UNPACKING_VISIBLE
+            STARRED_UNPACKING_VISIBLE = starred_target.unpacking_visible
+            partial_source.STARRED_UNPACKING_VISIBLE = STARRED_UNPACKING_VISIBLE
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 partial_source.__init__ = _cribo_init___cribo_e09ba2_partial_source
 partial_source = _cribo_init___cribo_e09ba2_partial_source(partial_source)
 print(partial_source.ASSIGNED)

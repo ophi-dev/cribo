@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -123,14 +123,18 @@ def _cribo_init___cribo_95bf5f_pkg(_cribo_self, *, _cribo_getattr=getattr, _crib
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'pkg'
-    _cribo_self.__doc__ = None
-    print("pkg package initialized")
-    PACKAGE_FLAG = "pkg-init"
-    _cribo_self.PACKAGE_FLAG = PACKAGE_FLAG
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+    try:
+        _cribo_self.__package__ = 'pkg'
+        _cribo_self.__doc__ = None
+        print("pkg package initialized")
+        PACKAGE_FLAG = "pkg-init"
+        _cribo_self.PACKAGE_FLAG = PACKAGE_FLAG
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 pkg.__init__ = _cribo_init___cribo_95bf5f_pkg
 pkg_sub = _cribo.types.SimpleNamespace(__name__='pkg.sub', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('pkg.sub', pkg_sub)
@@ -140,24 +144,28 @@ def _cribo_init___cribo_fd3e12_pkg_sub(_cribo_self, *, _cribo_getattr=getattr, _
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'pkg'
-    _cribo_self.__doc__ = None
-    print("pkg.sub initialized")
-    VALUE = "sub value"
-    _cribo_self.VALUE = VALUE
+    try:
+        _cribo_self.__package__ = 'pkg'
+        _cribo_self.__doc__ = None
+        print("pkg.sub initialized")
+        VALUE = "sub value"
+        _cribo_self.VALUE = VALUE
 
-    def parent_flag():
-        __cribo_init_result = _cribo_init___cribo_95bf5f_pkg(pkg)
-        for attr in dir(__cribo_init_result):
-            if not attr.startswith('_'):
-                setattr(pkg, attr, getattr(__cribo_init_result, attr))
-        return pkg.PACKAGE_FLAG
-    parent_flag.__module__ = 'pkg.sub'
-    parent_flag.__qualname__ = 'parent_flag'
-    _cribo_self.parent_flag = parent_flag
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def parent_flag():
+            __cribo_init_result = _cribo_init___cribo_95bf5f_pkg(pkg)
+            for attr in dir(__cribo_init_result):
+                if not attr.startswith('_'):
+                    setattr(pkg, attr, getattr(__cribo_init_result, attr))
+            return pkg.PACKAGE_FLAG
+        parent_flag.__module__ = 'pkg.sub'
+        parent_flag.__qualname__ = 'parent_flag'
+        _cribo_self.parent_flag = parent_flag
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 pkg_sub.__init__ = _cribo_init___cribo_fd3e12_pkg_sub
 pkg.sub = pkg_sub
 '''Dotted preserved import_module targets initialize parents via the machinery.\n\nImporting "pkg.sub" must run pkg/__init__.py first, exactly like Python.\n'''

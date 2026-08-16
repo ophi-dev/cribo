@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -136,22 +136,26 @@ def _cribo_init___cribo_f70f3a_pkg(_cribo_self, *, _cribo_getattr=getattr, _crib
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'pkg'
-    _cribo_self.__doc__ = 'Package that triggers forward reference.'
-    global pkg_core
-    """Package that triggers forward reference."""
-    compat = pkg_compat
-    _cribo_self.compat = compat
-    pkg_core = _cribo_init___cribo_1a829c_pkg_core(pkg_core)
-    core = pkg.core
-    _cribo_self.core = core
-    pkg_core = _cribo_init___cribo_1a829c_pkg_core(pkg_core)
-    get_value = pkg_core.get_value
-    _cribo_self.get_value = get_value
-    _cribo_self.get_value = get_value
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+    try:
+        _cribo_self.__package__ = 'pkg'
+        _cribo_self.__doc__ = 'Package that triggers forward reference.'
+        global pkg_core
+        """Package that triggers forward reference."""
+        compat = pkg_compat
+        _cribo_self.compat = compat
+        pkg_core = _cribo_init___cribo_1a829c_pkg_core(pkg_core)
+        core = pkg.core
+        _cribo_self.core = core
+        pkg_core = _cribo_init___cribo_1a829c_pkg_core(pkg_core)
+        get_value = pkg_core.get_value
+        _cribo_self.get_value = get_value
+        _cribo_self.get_value = get_value
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 pkg.__init__ = _cribo_init___cribo_f70f3a_pkg
 def _cribo_init___cribo_1a829c_pkg_core(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
@@ -159,32 +163,36 @@ def _cribo_init___cribo_1a829c_pkg_core(_cribo_self, *, _cribo_getattr=getattr, 
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'pkg'
-    _cribo_self.__doc__ = 'Core module that uses compat at top level.'
-    """Core module that uses compat at top level."""
-    CONSTANT = pkg_compat.CONSTANT
-    pkg_core.CONSTANT = CONSTANT
-    BaseClass = pkg_compat.BaseClass
-    pkg_core.BaseClass = BaseClass
-    _cached_value = f"Cached: {CONSTANT}"
-    _cribo_self._cached_value = _cached_value
+    try:
+        _cribo_self.__package__ = 'pkg'
+        _cribo_self.__doc__ = 'Core module that uses compat at top level.'
+        """Core module that uses compat at top level."""
+        CONSTANT = pkg_compat.CONSTANT
+        pkg_core.CONSTANT = CONSTANT
+        BaseClass = pkg_compat.BaseClass
+        pkg_core.BaseClass = BaseClass
+        _cached_value = f"Cached: {CONSTANT}"
+        _cribo_self._cached_value = _cached_value
 
-    class DerivedClass(BaseClass):
-        """Class that inherits from compat."""
-        pass
-    DerivedClass.__module__ = 'pkg.core'
-    DerivedClass.__qualname__ = 'DerivedClass'
-    _cribo_self.DerivedClass = DerivedClass
+        class DerivedClass(BaseClass):
+            """Class that inherits from compat."""
+            pass
+        DerivedClass.__module__ = 'pkg.core'
+        DerivedClass.__qualname__ = 'DerivedClass'
+        _cribo_self.DerivedClass = DerivedClass
 
-    def get_value():
-        """Get the cached value."""
-        return _cached_value
-    get_value.__module__ = 'pkg.core'
-    get_value.__qualname__ = 'get_value'
-    _cribo_self.get_value = get_value
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def get_value():
+            """Get the cached value."""
+            return _cached_value
+        get_value.__module__ = 'pkg.core'
+        get_value.__qualname__ = 'get_value'
+        _cribo_self.get_value = get_value
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 pkg_core.__init__ = _cribo_init___cribo_1a829c_pkg_core
 _cribo_captured['BaseClass'] = BaseClass
 _cribo_captured['CONSTANT'] = CONSTANT

@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -199,62 +199,66 @@ def _cribo_init___cribo_952a76_yaml_module(_cribo_self, *, _cribo_getattr=getatt
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'yaml_module'
-    _cribo_self.__doc__ = None
-    BaseLoader = yaml_module_loader.BaseLoader
-    Loader = yaml_module_loader.Loader
-    FullLoader = yaml_module_loader.FullLoader
-    UnsafeLoader = yaml_module_loader.UnsafeLoader
-    BaseDumper = yaml_module_dumper.BaseDumper
-    Dumper = yaml_module_dumper.Dumper
+    try:
+        _cribo_self.__package__ = 'yaml_module'
+        _cribo_self.__doc__ = None
+        BaseLoader = yaml_module_loader.BaseLoader
+        Loader = yaml_module_loader.Loader
+        FullLoader = yaml_module_loader.FullLoader
+        UnsafeLoader = yaml_module_loader.UnsafeLoader
+        BaseDumper = yaml_module_dumper.BaseDumper
+        Dumper = yaml_module_dumper.Dumper
 
-    class YAMLObjectMetaclass(type):
-        """The metaclass for YAMLObject."""
+        class YAMLObjectMetaclass(type):
+            """The metaclass for YAMLObject."""
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'yaml_module'), _cribo_f)[1])
-        def __init__(cls, name, bases, kwds):
-            super().__init__(name, bases, kwds)
-            if "yaml_tag" in kwds and kwds.get("yaml_tag") is not None:
-                print(f"Metaclass: Registering {name} with tag {kwds['yaml_tag']}")
-                if hasattr(cls, "yaml_loader"):
-                    if isinstance(cls.yaml_loader, list):
-                        for loader in cls.yaml_loader:
-                            print(f"  - Would register with {loader.__name__}")
-                    else:
-                        print(f"  - Would register with {cls.yaml_loader.__name__}")
-    YAMLObjectMetaclass.__module__ = 'yaml_module'
-    YAMLObjectMetaclass.__qualname__ = 'YAMLObjectMetaclass'
-    _cribo_self.YAMLObjectMetaclass = YAMLObjectMetaclass
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'yaml_module'), _cribo_f)[1])
+            def __init__(cls, name, bases, kwds):
+                super().__init__(name, bases, kwds)
+                if "yaml_tag" in kwds and kwds.get("yaml_tag") is not None:
+                    print(f"Metaclass: Registering {name} with tag {kwds['yaml_tag']}")
+                    if hasattr(cls, "yaml_loader"):
+                        if isinstance(cls.yaml_loader, list):
+                            for loader in cls.yaml_loader:
+                                print(f"  - Would register with {loader.__name__}")
+                        else:
+                            print(f"  - Would register with {cls.yaml_loader.__name__}")
+        YAMLObjectMetaclass.__module__ = 'yaml_module'
+        YAMLObjectMetaclass.__qualname__ = 'YAMLObjectMetaclass'
+        _cribo_self.YAMLObjectMetaclass = YAMLObjectMetaclass
 
-    class YAMLObject(metaclass=YAMLObjectMetaclass):
-        """\n    An object that can be serialized to/from YAML.\n    Uses wildcard-imported symbols in class body.\n    """
-        __slots__ = ()
-        yaml_loader = [Loader, FullLoader, UnsafeLoader]
-        yaml_dumper = Dumper
-        yaml_tag = None
-        yaml_flow_style = None
+        class YAMLObject(metaclass=YAMLObjectMetaclass):
+            """\n    An object that can be serialized to/from YAML.\n    Uses wildcard-imported symbols in class body.\n    """
+            __slots__ = ()
+            yaml_loader = [Loader, FullLoader, UnsafeLoader]
+            yaml_dumper = Dumper
+            yaml_tag = None
+            yaml_flow_style = None
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'yaml_module'), _cribo_f)[1])
-        def __repr__(self):
-            return f"YAMLObject(loaders={len(self.yaml_loader)}, dumper={self.yaml_dumper.__name__})"
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'yaml_module'), _cribo_f)[1])
+            def __repr__(self):
+                return f"YAMLObject(loaders={len(self.yaml_loader)}, dumper={self.yaml_dumper.__name__})"
 
-        @classmethod
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'yaml_module'), _cribo_f)[1])
-        def from_yaml(cls, loader, node):
-            return f"Loading {cls.__name__} from YAML"
+            @classmethod
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'yaml_module'), _cribo_f)[1])
+            def from_yaml(cls, loader, node):
+                return f"Loading {cls.__name__} from YAML"
 
-        @classmethod
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'yaml_module'), _cribo_f)[1])
-        def to_yaml(cls, dumper, data):
-            return f"Dumping {cls.__name__} to YAML"
-    YAMLObject.__module__ = 'yaml_module'
-    YAMLObject.__qualname__ = 'YAMLObject'
-    _cribo_self.YAMLObject = YAMLObject
-    _cribo_self.dumper = yaml_module_dumper
-    _cribo_self.loader = yaml_module_loader
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+            @classmethod
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'yaml_module'), _cribo_f)[1])
+            def to_yaml(cls, dumper, data):
+                return f"Dumping {cls.__name__} to YAML"
+        YAMLObject.__module__ = 'yaml_module'
+        YAMLObject.__qualname__ = 'YAMLObject'
+        _cribo_self.YAMLObject = YAMLObject
+        _cribo_self.dumper = yaml_module_dumper
+        _cribo_self.loader = yaml_module_loader
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 yaml_module.__init__ = _cribo_init___cribo_952a76_yaml_module
 _cribo_captured['BaseLoader'] = BaseLoader
 _cribo_captured['Loader'] = Loader

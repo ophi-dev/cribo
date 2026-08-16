@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -130,33 +130,37 @@ def _cribo_init___cribo_33ed77_config(_cribo_self, *, _cribo_getattr=getattr, _c
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = 'Config module with side effects (triggers wrapper) and conditional wildcard import.'
-    """Config module with side effects (triggers wrapper) and conditional wildcard import."""
-    print("config module loaded")
     try:
-        API_VERSION = API_VERSION_2
-        config.API_VERSION = API_VERSION
-        DEFAULT_TIMEOUT = DEFAULT_TIMEOUT_2
-        config.DEFAULT_TIMEOUT = DEFAULT_TIMEOUT
-        MAX_RETRIES = MAX_RETRIES_2
-        config.MAX_RETRIES = MAX_RETRIES
-    except ImportError:
-        MAX_RETRIES = 1
-        config.MAX_RETRIES = MAX_RETRIES
-        DEFAULT_TIMEOUT = 60
-        config.DEFAULT_TIMEOUT = DEFAULT_TIMEOUT
-        API_VERSION = "v1"
-        config.API_VERSION = API_VERSION
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = 'Config module with side effects (triggers wrapper) and conditional wildcard import.'
+        """Config module with side effects (triggers wrapper) and conditional wildcard import."""
+        print("config module loaded")
+        try:
+            API_VERSION = API_VERSION_2
+            config.API_VERSION = API_VERSION
+            DEFAULT_TIMEOUT = DEFAULT_TIMEOUT_2
+            config.DEFAULT_TIMEOUT = DEFAULT_TIMEOUT
+            MAX_RETRIES = MAX_RETRIES_2
+            config.MAX_RETRIES = MAX_RETRIES
+        except ImportError:
+            MAX_RETRIES = 1
+            config.MAX_RETRIES = MAX_RETRIES
+            DEFAULT_TIMEOUT = 60
+            config.DEFAULT_TIMEOUT = DEFAULT_TIMEOUT
+            API_VERSION = "v1"
+            config.API_VERSION = API_VERSION
 
-    def get_config():
-        return {"max_retries": MAX_RETRIES, "timeout": DEFAULT_TIMEOUT, "api_version": API_VERSION}
-    get_config.__module__ = 'config'
-    get_config.__qualname__ = 'get_config'
-    _cribo_self.get_config = get_config
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def get_config():
+            return {"max_retries": MAX_RETRIES, "timeout": DEFAULT_TIMEOUT, "api_version": API_VERSION}
+        get_config.__module__ = 'config'
+        get_config.__qualname__ = 'get_config'
+        _cribo_self.get_config = get_config
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 config.__init__ = _cribo_init___cribo_33ed77_config
 """\nTest that conditional wildcard imports (from x import *) inside try\nblocks in wrapper modules do not produce invalid code like `module.* = *`.\n"""
 config = _cribo_init___cribo_33ed77_config(config)

@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -170,38 +170,42 @@ def _cribo_init___cribo_1fb248_pkg(_cribo_self, *, _cribo_getattr=getattr, _crib
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'pkg'
-    _cribo_self.__doc__ = 'Package that sets __module__ on all exported items, like httpx does.'
-    _cribo_self.AsyncStream = pkg__types.AsyncStream
-    _cribo_self.SyncStream = pkg__types.SyncStream
-    global pkg__client, pkg__main
-    """Package that sets __module__ on all exported items, like httpx does."""
-    AsyncStream = pkg__types.AsyncStream
-    SyncStream = pkg__types.SyncStream
-    pkg__client = _cribo_init___cribo_7e63ae_pkg__client(pkg__client)
-    Client = pkg__client.Client
-    _cribo_self.Client = Client
-    _cribo_self.Client = Client
-    Request = pkg__models.Request
-    pkg.Request = Request
-    Response = pkg__models.Response
-    pkg.Response = Response
-    pkg__main = _cribo_init___cribo_fc6bcd_pkg__main(pkg__main)
-    main = pkg__main.main
-    _cribo_self.main = main
-    _cribo_self.main = main
-    __all__ = ["AsyncStream", "SyncStream", "Client", "Request", "Response", "main"]
-    __locals = vars(_cribo_self)
-    _cribo_self.__locals = __locals
-    for __name in __all__:
-        pkg.__name = __name
-        if not __name.startswith("__"):
-            setattr(__locals[__name], "__module__", "pkg")
-    _cribo_self._models = pkg__models
-    _cribo_self._types = pkg__types
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+    try:
+        _cribo_self.__package__ = 'pkg'
+        _cribo_self.__doc__ = 'Package that sets __module__ on all exported items, like httpx does.'
+        _cribo_self.AsyncStream = pkg__types.AsyncStream
+        _cribo_self.SyncStream = pkg__types.SyncStream
+        global pkg__client, pkg__main
+        """Package that sets __module__ on all exported items, like httpx does."""
+        AsyncStream = pkg__types.AsyncStream
+        SyncStream = pkg__types.SyncStream
+        pkg__client = _cribo_init___cribo_7e63ae_pkg__client(pkg__client)
+        Client = pkg__client.Client
+        _cribo_self.Client = Client
+        _cribo_self.Client = Client
+        Request = pkg__models.Request
+        pkg.Request = Request
+        Response = pkg__models.Response
+        pkg.Response = Response
+        pkg__main = _cribo_init___cribo_fc6bcd_pkg__main(pkg__main)
+        main = pkg__main.main
+        _cribo_self.main = main
+        _cribo_self.main = main
+        __all__ = ["AsyncStream", "SyncStream", "Client", "Request", "Response", "main"]
+        __locals = vars(_cribo_self)
+        _cribo_self.__locals = __locals
+        for __name in __all__:
+            pkg.__name = __name
+            if not __name.startswith("__"):
+                setattr(__locals[__name], "__module__", "pkg")
+        _cribo_self._models = pkg__models
+        _cribo_self._types = pkg__types
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 pkg.__init__ = _cribo_init___cribo_1fb248_pkg
 def _cribo_init___cribo_7e63ae_pkg__client(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
@@ -209,38 +213,42 @@ def _cribo_init___cribo_7e63ae_pkg__client(_cribo_self, *, _cribo_getattr=getatt
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'pkg'
-    _cribo_self.__doc__ = 'Client module with circular import and other dependencies.'
-    """Client module with circular import and other dependencies."""
-    AsyncStream = pkg.AsyncStream
-    _cribo_self.AsyncStream = AsyncStream
-    _cribo_self.AsyncStream = AsyncStream
-    SyncStream = pkg.SyncStream
-    _cribo_self.SyncStream = SyncStream
-    _cribo_self.SyncStream = SyncStream
-    Request = pkg__models.Request
-    pkg__client.Request = Request
-    Response = pkg__models.Response
-    pkg__client.Response = Response
+    try:
+        _cribo_self.__package__ = 'pkg'
+        _cribo_self.__doc__ = 'Client module with circular import and other dependencies.'
+        """Client module with circular import and other dependencies."""
+        AsyncStream = pkg.AsyncStream
+        _cribo_self.AsyncStream = AsyncStream
+        _cribo_self.AsyncStream = AsyncStream
+        SyncStream = pkg.SyncStream
+        _cribo_self.SyncStream = SyncStream
+        _cribo_self.SyncStream = SyncStream
+        Request = pkg__models.Request
+        pkg__client.Request = Request
+        Response = pkg__models.Response
+        pkg__client.Response = Response
 
-    class Client:
-        """Client that uses streams."""
+        class Client:
+            """Client that uses streams."""
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg._client'), _cribo_f)[1])
-        def __init__(self):
-            self.async_stream = AsyncStream()
-            self.sync_stream = SyncStream()
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg._client'), _cribo_f)[1])
+            def __init__(self):
+                self.async_stream = AsyncStream()
+                self.sync_stream = SyncStream()
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg._client'), _cribo_f)[1])
-        def make_request(self):
-            req = Request()
-            return Response()
-    Client.__module__ = 'pkg._client'
-    Client.__qualname__ = 'Client'
-    _cribo_self.Client = Client
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg._client'), _cribo_f)[1])
+            def make_request(self):
+                req = Request()
+                return Response()
+        Client.__module__ = 'pkg._client'
+        Client.__qualname__ = 'Client'
+        _cribo_self.Client = Client
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 pkg__client.__init__ = _cribo_init___cribo_7e63ae_pkg__client
 def _cribo_init___cribo_fc6bcd_pkg__main(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
@@ -248,25 +256,29 @@ def _cribo_init___cribo_fc6bcd_pkg__main(_cribo_self, *, _cribo_getattr=getattr,
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'pkg'
-    _cribo_self.__doc__ = 'Main module that imports client which imports back to parent.'
-    global pkg__client
-    """Main module that imports client which imports back to parent."""
-    pkg__client = _cribo_init___cribo_7e63ae_pkg__client(pkg__client)
-    Client = pkg._client.Client
-    _cribo_self.Client = Client
-    _cribo_self.Client = Client
+    try:
+        _cribo_self.__package__ = 'pkg'
+        _cribo_self.__doc__ = 'Main module that imports client which imports back to parent.'
+        global pkg__client
+        """Main module that imports client which imports back to parent."""
+        pkg__client = _cribo_init___cribo_7e63ae_pkg__client(pkg__client)
+        Client = pkg._client.Client
+        _cribo_self.Client = Client
+        _cribo_self.Client = Client
 
-    def main():
-        """Main function using Client."""
-        client = Client()
-        return client.make_request()
-    main.__module__ = 'pkg._main'
-    main.__qualname__ = 'main'
-    _cribo_self.main = main
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def main():
+            """Main function using Client."""
+            client = Client()
+            return client.make_request()
+        main.__module__ = 'pkg._main'
+        main.__qualname__ = 'main'
+        _cribo_self.main = main
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 pkg__main.__init__ = _cribo_init___cribo_fc6bcd_pkg__main
 _cribo_captured['AsyncStream'] = AsyncStream
 _cribo_captured['SyncStream'] = SyncStream

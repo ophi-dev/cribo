@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -123,18 +123,22 @@ def _cribo_init___cribo_cd2833_shared(_cribo_self, *, _cribo_getattr=getattr, _c
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = None
-    print("shared loaded")
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = None
+        print("shared loaded")
 
-    def exported():
-        return "canonical result"
-    exported.__module__ = 'shared'
-    exported.__qualname__ = 'exported'
-    _cribo_self.exported = exported
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def exported():
+            return "canonical result"
+        exported.__module__ = 'shared'
+        exported.__qualname__ = 'exported'
+        _cribo_self.exported = exported
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 shared.__init__ = _cribo_init___cribo_cd2833_shared
 provider = _cribo.types.SimpleNamespace(__name__='provider', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('provider', provider)
@@ -144,34 +148,38 @@ def _cribo_init___cribo_66e67b_provider(_cribo_self, *, _cribo_getattr=getattr, 
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = None
-    global shared
-    print("provider loaded")
-    shared = _cribo_init___cribo_cd2833_shared(shared)
-    shared_exported = shared.exported
-    _cribo_self.shared_exported = shared_exported
-    _cribo_self.shared_exported = shared_exported
-
-    def replace_with_shared(_function):
-        return shared_exported
-    replace_with_shared.__module__ = 'provider'
-    replace_with_shared.__qualname__ = 'replace_with_shared'
-    _cribo_self.replace_with_shared = replace_with_shared
-
-    @replace_with_shared
-    def exported():
-        return "never seen"
     try:
-        if getattr(exported, '__name__', None) == 'exported' and getattr(exported, '__module__', None) == (lambda: None).__module__:
-            exported.__module__ = 'provider'
-            exported.__qualname__ = 'exported'
-    except (AttributeError, TypeError):
-        pass
-    _cribo_self.exported = exported
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = None
+        global shared
+        print("provider loaded")
+        shared = _cribo_init___cribo_cd2833_shared(shared)
+        shared_exported = shared.exported
+        _cribo_self.shared_exported = shared_exported
+        _cribo_self.shared_exported = shared_exported
+
+        def replace_with_shared(_function):
+            return shared_exported
+        replace_with_shared.__module__ = 'provider'
+        replace_with_shared.__qualname__ = 'replace_with_shared'
+        _cribo_self.replace_with_shared = replace_with_shared
+
+        @replace_with_shared
+        def exported():
+            return "never seen"
+        try:
+            if getattr(exported, '__name__', None) == 'exported' and getattr(exported, '__module__', None) == (lambda: None).__module__:
+                exported.__module__ = 'provider'
+                exported.__qualname__ = 'exported'
+        except (AttributeError, TypeError):
+            pass
+        _cribo_self.exported = exported
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 provider.__init__ = _cribo_init___cribo_66e67b_provider
 """A decorator returning a SAME-NAMED imported callable must not be re-stamped.\n\nThe shared function's __name__ equals the decorated binding, so a name-only\nidentity check would wrongly treat it as the newly defined object; the\nprovenance probe (creation module) must reject it inside wrapper inits too,\nkeeping the shared callable attributed to its defining module.\n"""
 shared = _cribo_init___cribo_cd2833_shared(shared)

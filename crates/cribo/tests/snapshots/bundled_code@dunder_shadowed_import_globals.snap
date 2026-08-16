@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -123,31 +123,35 @@ def _cribo_init___cribo_24fe86_provider_worker(_cribo_self, *, _cribo_getattr=ge
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'provider'
-    _cribo_self.__doc__ = None
-    print("worker loaded from", _cribo_self.__package__)
+    try:
+        _cribo_self.__package__ = 'provider'
+        _cribo_self.__doc__ = None
+        print("worker loaded from", _cribo_self.__package__)
 
-    def with_param(__package__):
-        return __package__
-    with_param.__module__ = 'provider.worker'
-    with_param.__qualname__ = 'with_param'
-    _cribo_self.with_param = with_param
+        def with_param(__package__):
+            return __package__
+        with_param.__module__ = 'provider.worker'
+        with_param.__qualname__ = 'with_param'
+        _cribo_self.with_param = with_param
 
-    def with_local():
-        __name__ = "local"
-        return __name__
-    with_local.__module__ = 'provider.worker'
-    with_local.__qualname__ = 'with_local'
-    _cribo_self.with_local = with_local
+        def with_local():
+            __name__ = "local"
+            return __name__
+        with_local.__module__ = 'provider.worker'
+        with_local.__qualname__ = 'with_local'
+        _cribo_self.with_local = with_local
 
-    def normal():
-        return _cribo_self.__package__
-    normal.__module__ = 'provider.worker'
-    normal.__qualname__ = 'normal'
-    _cribo_self.normal = normal
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def normal():
+            return _cribo_self.__package__
+        normal.__module__ = 'provider.worker'
+        normal.__qualname__ = 'normal'
+        _cribo_self.normal = normal
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 provider_worker.__init__ = _cribo_init___cribo_24fe86_provider_worker
 provider = _cribo.types.SimpleNamespace(__name__='provider', __initializing__=False, __initialized__=False, __path__=[])
 provider.worker = provider_worker
@@ -157,12 +161,16 @@ def _cribo_init___cribo_75d811_provider(_cribo_self, *, _cribo_getattr=getattr, 
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'provider'
-    _cribo_self.__doc__ = None
-    print("provider ready")
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+    try:
+        _cribo_self.__package__ = 'provider'
+        _cribo_self.__doc__ = None
+        print("provider ready")
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 provider.__init__ = _cribo_init___cribo_75d811_provider
 """Local rebindings of import globals keep their own resolution.\n\nA parameter or local named __package__/__name__ shadows the import global\ninside its scope; unshadowed reads still observe the module's values.\n"""
 __cribo_init_result = _cribo_init___cribo_75d811_provider(provider)

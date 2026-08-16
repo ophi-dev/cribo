@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -122,29 +122,33 @@ def _cribo_init___cribo_97f65c_compat_module(_cribo_self, *, _cribo_getattr=geta
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = 'Module with side effects that assigns builtin types to variables.\n\nThis minimal test case reproduces the bug where builtin types are incorrectly\ntransformed to module.str, module.int, etc. when the bundler wraps modules\nwith side effects in init functions.\n'
-    """Module with side effects that assigns builtin types to variables.\n\nThis minimal test case reproduces the bug where builtin types are incorrectly\ntransformed to module.str, module.int, etc. when the bundler wraps modules\nwith side effects in init functions.\n"""
-    print("Loading compat module...")
-    str = __import__('builtins').str
-    _cribo_self.str = str
-    int = __import__('builtins').int
-    _cribo_self.int = int
-    bytes = __import__('builtins').bytes
-    _cribo_self.bytes = bytes
-    builtin_str = __import__('builtins').str
-    _cribo_self.builtin_str = builtin_str
-    builtin_int = __import__('builtins').int
-    _cribo_self.builtin_int = builtin_int
-    builtin_bytes = __import__('builtins').bytes
-    _cribo_self.builtin_bytes = builtin_bytes
-    basestring = __import__('builtins').str, __import__('builtins').bytes
-    _cribo_self.basestring = basestring
-    numeric_types = __import__('builtins').int, float
-    _cribo_self.numeric_types = numeric_types
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = 'Module with side effects that assigns builtin types to variables.\n\nThis minimal test case reproduces the bug where builtin types are incorrectly\ntransformed to module.str, module.int, etc. when the bundler wraps modules\nwith side effects in init functions.\n'
+        """Module with side effects that assigns builtin types to variables.\n\nThis minimal test case reproduces the bug where builtin types are incorrectly\ntransformed to module.str, module.int, etc. when the bundler wraps modules\nwith side effects in init functions.\n"""
+        print("Loading compat module...")
+        str = __import__('builtins').str
+        _cribo_self.str = str
+        int = __import__('builtins').int
+        _cribo_self.int = int
+        bytes = __import__('builtins').bytes
+        _cribo_self.bytes = bytes
+        builtin_str = __import__('builtins').str
+        _cribo_self.builtin_str = builtin_str
+        builtin_int = __import__('builtins').int
+        _cribo_self.builtin_int = builtin_int
+        builtin_bytes = __import__('builtins').bytes
+        _cribo_self.builtin_bytes = builtin_bytes
+        basestring = __import__('builtins').str, __import__('builtins').bytes
+        _cribo_self.basestring = basestring
+        numeric_types = __import__('builtins').int, float
+        _cribo_self.numeric_types = numeric_types
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 compat_module.__init__ = _cribo_init___cribo_97f65c_compat_module
 """Test that builtin type assignments work in modules with side effects."""
 compat_module = _cribo_init___cribo_97f65c_compat_module(compat_module)

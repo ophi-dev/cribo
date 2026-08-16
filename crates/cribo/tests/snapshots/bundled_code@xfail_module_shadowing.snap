@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -123,21 +123,25 @@ def _cribo_init___cribo_b061eb_pandera(_cribo_self, *, _cribo_getattr=getattr, _
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = 'First-party module that shadows the third-party pandera package.'
-    """First-party module that shadows the third-party pandera package."""
-    print("Loading first-party pandera module")
-    __version__ = "0.0.1-local"
-    _cribo_self.__version__ = __version__
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = 'First-party module that shadows the third-party pandera package.'
+        """First-party module that shadows the third-party pandera package."""
+        print("Loading first-party pandera module")
+        __version__ = "0.0.1-local"
+        _cribo_self.__version__ = __version__
 
-    def local_function():
-        return "This is from the local pandera module"
-    local_function.__module__ = 'pandera'
-    local_function.__qualname__ = 'local_function'
-    _cribo_self.local_function = local_function
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def local_function():
+            return "This is from the local pandera module"
+        local_function.__module__ = 'pandera'
+        local_function.__qualname__ = 'local_function'
+        _cribo_self.local_function = local_function
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 pandera.__init__ = _cribo_init___cribo_b061eb_pandera
 test_import = _cribo.types.SimpleNamespace(__name__='test_import', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('test_import', test_import)
@@ -147,48 +151,52 @@ def _cribo_init___cribo_2a6a8f_test_import(_cribo_self, *, _cribo_getattr=getatt
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = "Test module that tries to import pandera.polars.\n\nThis demonstrates what happens when we have a local 'pandera' module\nthat shadows the third-party pandera package, and we try to import\na submodule that only exists in the third-party package.\n"
-    global pandera
-    """Test module that tries to import pandera.polars.\n\nThis demonstrates what happens when we have a local 'pandera' module\nthat shadows the third-party pandera package, and we try to import\na submodule that only exists in the third-party package.\n"""
-    print("Starting test_import.py")
     try:
-        raise ImportError("No module named 'pandera.polars'; 'pandera' is not a package")
-        print("Successfully imported pandera.polars")
-        print(f"pandera.polars module: {pa.__name__}")
-    except ImportError as e:
-        test_import.e = e
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = "Test module that tries to import pandera.polars.\n\nThis demonstrates what happens when we have a local 'pandera' module\nthat shadows the third-party pandera package, and we try to import\na submodule that only exists in the third-party package.\n"
+        global pandera
+        """Test module that tries to import pandera.polars.\n\nThis demonstrates what happens when we have a local 'pandera' module\nthat shadows the third-party pandera package, and we try to import\na submodule that only exists in the third-party package.\n"""
+        print("Starting test_import.py")
         try:
-            print(f"ImportError: {e}")
-        finally:
-            if _cribo.builtins.hasattr(test_import, 'e'):
-                _cribo.builtins.delattr(test_import, 'e')
-    except AttributeError as e:
-        test_import.e = e
+            raise ImportError("No module named 'pandera.polars'; 'pandera' is not a package")
+            print("Successfully imported pandera.polars")
+            print(f"pandera.polars module: {pa.__name__}")
+        except ImportError as e:
+            test_import.e = e
+            try:
+                print(f"ImportError: {e}")
+            finally:
+                if _cribo.builtins.hasattr(test_import, 'e'):
+                    _cribo.builtins.delattr(test_import, 'e')
+        except AttributeError as e:
+            test_import.e = e
+            try:
+                print(f"AttributeError: {e}")
+            finally:
+                if _cribo.builtins.hasattr(test_import, 'e'):
+                    _cribo.builtins.delattr(test_import, 'e')
         try:
-            print(f"AttributeError: {e}")
-        finally:
-            if _cribo.builtins.hasattr(test_import, 'e'):
-                _cribo.builtins.delattr(test_import, 'e')
-    try:
-        pandera = _cribo_init___cribo_b061eb_pandera(pandera)
-        test_import.pandera = pandera
-        print("\nImported pandera successfully")
-        print(f"pandera.__version__: {pandera.__version__}")
-        if hasattr(pandera, "local_function"):
-            print(f"This is the local pandera module: {pandera.local_function()}")
-        else:
-            print("This is the third-party pandera module")
-    except ImportError as e:
-        test_import.e = e
-        try:
-            print(f"\nFailed to import pandera: {e}")
-        finally:
-            if _cribo.builtins.hasattr(test_import, 'e'):
-                _cribo.builtins.delattr(test_import, 'e')
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+            pandera = _cribo_init___cribo_b061eb_pandera(pandera)
+            test_import.pandera = pandera
+            print("\nImported pandera successfully")
+            print(f"pandera.__version__: {pandera.__version__}")
+            if hasattr(pandera, "local_function"):
+                print(f"This is the local pandera module: {pandera.local_function()}")
+            else:
+                print("This is the third-party pandera module")
+        except ImportError as e:
+            test_import.e = e
+            try:
+                print(f"\nFailed to import pandera: {e}")
+            finally:
+                if _cribo.builtins.hasattr(test_import, 'e'):
+                    _cribo.builtins.delattr(test_import, 'e')
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 test_import.__init__ = _cribo_init___cribo_2a6a8f_test_import
 """Main entry point that imports test_import to demonstrate module shadowing behavior."""
 print("=== Module Shadowing Test ===")

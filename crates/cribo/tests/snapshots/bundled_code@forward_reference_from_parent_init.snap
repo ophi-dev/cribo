@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -181,32 +181,36 @@ def _cribo_init___cribo_710264_parent(_cribo_self, *, _cribo_getattr=getattr, _c
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'parent'
-    _cribo_self.__doc__ = 'Parent module that re-exports child module symbols.'
-    """Parent module that re-exports child module symbols."""
-    BaseClass = parent_base.BaseClass
-    parent.BaseClass = BaseClass
-    AnotherClass = parent_another.AnotherClass
-    parent.AnotherClass = AnotherClass
-    MyClass = parent_child.MyClass
-    parent.MyClass = MyClass
-    helper_function = parent_child.helper_function
-    parent.helper_function = helper_function
-    __cribo_init_result = _cribo_init___cribo_0ac738_parent_subpkg(parent_subpkg)
-    for attr in dir(__cribo_init_result):
-        if not attr.startswith('_'):
-            setattr(parent.subpkg, attr, getattr(__cribo_init_result, attr))
-    SubpkgClass = parent.subpkg.SubpkgClass
-    parent.SubpkgClass = SubpkgClass
-    _cribo_self.child = parent_child
-    _cribo_self.another = parent_another
-    _cribo_self.base = parent_base
-    _cribo_self.BaseClass = BaseClass
-    _cribo_self.AnotherClass = AnotherClass
-    _cribo_self.MyClass = MyClass
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+    try:
+        _cribo_self.__package__ = 'parent'
+        _cribo_self.__doc__ = 'Parent module that re-exports child module symbols.'
+        """Parent module that re-exports child module symbols."""
+        BaseClass = parent_base.BaseClass
+        parent.BaseClass = BaseClass
+        AnotherClass = parent_another.AnotherClass
+        parent.AnotherClass = AnotherClass
+        MyClass = parent_child.MyClass
+        parent.MyClass = MyClass
+        helper_function = parent_child.helper_function
+        parent.helper_function = helper_function
+        __cribo_init_result = _cribo_init___cribo_0ac738_parent_subpkg(parent_subpkg)
+        for attr in dir(__cribo_init_result):
+            if not attr.startswith('_'):
+                setattr(parent.subpkg, attr, getattr(__cribo_init_result, attr))
+        SubpkgClass = parent.subpkg.SubpkgClass
+        parent.SubpkgClass = SubpkgClass
+        _cribo_self.child = parent_child
+        _cribo_self.another = parent_another
+        _cribo_self.base = parent_base
+        _cribo_self.BaseClass = BaseClass
+        _cribo_self.AnotherClass = AnotherClass
+        _cribo_self.MyClass = MyClass
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 parent.__init__ = _cribo_init___cribo_710264_parent
 def _cribo_init___cribo_0ac738_parent_subpkg(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
@@ -214,16 +218,20 @@ def _cribo_init___cribo_0ac738_parent_subpkg(_cribo_self, *, _cribo_getattr=geta
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'parent.subpkg'
-    _cribo_self.__doc__ = 'Subpackage with wildcard export.'
-    """Subpackage with wildcard export."""
-    SubpkgClass = parent_subpkg_submodule.SubpkgClass
-    parent_subpkg.SubpkgClass = SubpkgClass
-    _cribo_self.submodule = parent_subpkg_submodule
-    _cribo_self.SubpkgClass = SubpkgClass
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+    try:
+        _cribo_self.__package__ = 'parent.subpkg'
+        _cribo_self.__doc__ = 'Subpackage with wildcard export.'
+        """Subpackage with wildcard export."""
+        SubpkgClass = parent_subpkg_submodule.SubpkgClass
+        parent_subpkg.SubpkgClass = SubpkgClass
+        _cribo_self.submodule = parent_subpkg_submodule
+        _cribo_self.SubpkgClass = SubpkgClass
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 parent_subpkg.__init__ = _cribo_init___cribo_0ac738_parent_subpkg
 _cribo_captured['BaseClass'] = BaseClass
 _cribo_captured['AnotherClass'] = AnotherClass

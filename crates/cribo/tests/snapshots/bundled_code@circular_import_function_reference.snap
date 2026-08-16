@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -138,18 +138,22 @@ def _cribo_init___cribo_6d9930_pkg(_cribo_self, *, _cribo_getattr=getattr, _crib
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'pkg'
-    _cribo_self.__doc__ = None
-    global pkg_adapters, pkg_auth
-    pkg_adapters = _cribo_init___cribo_12d613_pkg_adapters(pkg_adapters)
-    adapters = pkg.adapters
-    _cribo_self.adapters = adapters
-    pkg_auth = _cribo_init___cribo_e94ab8_pkg_auth(pkg_auth)
-    auth = pkg.auth
-    _cribo_self.auth = auth
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+    try:
+        _cribo_self.__package__ = 'pkg'
+        _cribo_self.__doc__ = None
+        global pkg_adapters, pkg_auth
+        pkg_adapters = _cribo_init___cribo_12d613_pkg_adapters(pkg_adapters)
+        adapters = pkg.adapters
+        _cribo_self.adapters = adapters
+        pkg_auth = _cribo_init___cribo_e94ab8_pkg_auth(pkg_auth)
+        auth = pkg.auth
+        _cribo_self.auth = auth
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 pkg.__init__ = _cribo_init___cribo_6d9930_pkg
 def _cribo_init___cribo_12d613_pkg_adapters(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
@@ -157,38 +161,42 @@ def _cribo_init___cribo_12d613_pkg_adapters(_cribo_self, *, _cribo_getattr=getat
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'pkg'
-    _cribo_self.__doc__ = 'Adapters module that imports a function from auth.'
-    global pkg_auth, pkg_models
-    """Adapters module that imports a function from auth."""
-    pkg_auth = _cribo_init___cribo_e94ab8_pkg_auth(pkg_auth)
-    _basic_auth_str = pkg.auth._basic_auth_str
-    _cribo_self._basic_auth_str = _basic_auth_str
-    pkg_models = _cribo_init___cribo_01ad7c_pkg_models(pkg_models)
-    BaseModel = pkg.models.BaseModel
-    _cribo_self.BaseModel = BaseModel
-    _cribo_self.BaseModel = BaseModel
+    try:
+        _cribo_self.__package__ = 'pkg'
+        _cribo_self.__doc__ = 'Adapters module that imports a function from auth.'
+        global pkg_auth, pkg_models
+        """Adapters module that imports a function from auth."""
+        pkg_auth = _cribo_init___cribo_e94ab8_pkg_auth(pkg_auth)
+        _basic_auth_str = pkg.auth._basic_auth_str
+        _cribo_self._basic_auth_str = _basic_auth_str
+        pkg_models = _cribo_init___cribo_01ad7c_pkg_models(pkg_models)
+        BaseModel = pkg.models.BaseModel
+        _cribo_self.BaseModel = BaseModel
+        _cribo_self.BaseModel = BaseModel
 
-    class Adapter(BaseModel):
-        """Adapter class that uses auth functionality."""
+        class Adapter(BaseModel):
+            """Adapter class that uses auth functionality."""
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.adapters'), _cribo_f)[1])
-        def __init__(self):
-            super().__init__()
-            self.auth_header = None
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.adapters'), _cribo_f)[1])
+            def __init__(self):
+                super().__init__()
+                self.auth_header = None
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.adapters'), _cribo_f)[1])
-        def use_auth(self, username, password):
-            """Use the imported auth function."""
-            self.auth_header = _basic_auth_str(username, password)
-            print(f"Auth header set: {self.auth_header}")
-            return self.auth_header
-    Adapter.__module__ = 'pkg.adapters'
-    Adapter.__qualname__ = 'Adapter'
-    _cribo_self.Adapter = Adapter
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.adapters'), _cribo_f)[1])
+            def use_auth(self, username, password):
+                """Use the imported auth function."""
+                self.auth_header = _basic_auth_str(username, password)
+                print(f"Auth header set: {self.auth_header}")
+                return self.auth_header
+        Adapter.__module__ = 'pkg.adapters'
+        Adapter.__qualname__ = 'Adapter'
+        _cribo_self.Adapter = Adapter
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 pkg_adapters.__init__ = _cribo_init___cribo_12d613_pkg_adapters
 def _cribo_init___cribo_e94ab8_pkg_auth(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
@@ -196,39 +204,43 @@ def _cribo_init___cribo_e94ab8_pkg_auth(_cribo_self, *, _cribo_getattr=getattr, 
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'pkg'
-    _cribo_self.__doc__ = 'Auth module that defines a utility function.'
-    global pkg_utils
-    """Auth module that defines a utility function."""
-    pkg_utils = _cribo_init___cribo_bdb497_pkg_utils(pkg_utils)
-    utils = pkg.utils
-    _cribo_self.utils = utils
+    try:
+        _cribo_self.__package__ = 'pkg'
+        _cribo_self.__doc__ = 'Auth module that defines a utility function.'
+        global pkg_utils
+        """Auth module that defines a utility function."""
+        pkg_utils = _cribo_init___cribo_bdb497_pkg_utils(pkg_utils)
+        utils = pkg.utils
+        _cribo_self.utils = utils
 
-    def _basic_auth_str(username, password):
-        """Returns a basic auth string."""
-        formatted = utils.format_credentials(username, password)
-        return f"Basic {formatted}"
-    _basic_auth_str.__module__ = 'pkg.auth'
-    _basic_auth_str.__qualname__ = '_basic_auth_str'
-    _cribo_self._basic_auth_str = _basic_auth_str
+        def _basic_auth_str(username, password):
+            """Returns a basic auth string."""
+            formatted = utils.format_credentials(username, password)
+            return f"Basic {formatted}"
+        _basic_auth_str.__module__ = 'pkg.auth'
+        _basic_auth_str.__qualname__ = '_basic_auth_str'
+        _cribo_self._basic_auth_str = _basic_auth_str
 
-    class HTTPBasicAuth:
-        """Basic authentication class."""
+        class HTTPBasicAuth:
+            """Basic authentication class."""
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.auth'), _cribo_f)[1])
-        def __init__(self, username, password):
-            self.username = username
-            self.password = password
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.auth'), _cribo_f)[1])
+            def __init__(self, username, password):
+                self.username = username
+                self.password = password
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.auth'), _cribo_f)[1])
-        def get_header(self):
-            return _basic_auth_str(self.username, self.password)
-    HTTPBasicAuth.__module__ = 'pkg.auth'
-    HTTPBasicAuth.__qualname__ = 'HTTPBasicAuth'
-    _cribo_self.HTTPBasicAuth = HTTPBasicAuth
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.auth'), _cribo_f)[1])
+            def get_header(self):
+                return _basic_auth_str(self.username, self.password)
+        HTTPBasicAuth.__module__ = 'pkg.auth'
+        HTTPBasicAuth.__qualname__ = 'HTTPBasicAuth'
+        _cribo_self.HTTPBasicAuth = HTTPBasicAuth
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 pkg_auth.__init__ = _cribo_init___cribo_e94ab8_pkg_auth
 def _cribo_init___cribo_01ad7c_pkg_models(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
@@ -236,31 +248,35 @@ def _cribo_init___cribo_01ad7c_pkg_models(_cribo_self, *, _cribo_getattr=getattr
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'pkg'
-    _cribo_self.__doc__ = 'Models module that creates part of the circular chain.'
-    global pkg_adapters
-    """Models module that creates part of the circular chain."""
-    pkg_adapters = _cribo_init___cribo_12d613_pkg_adapters(pkg_adapters)
-    _adapters_module = pkg.adapters
-    _cribo_self._adapters_module = _adapters_module
+    try:
+        _cribo_self.__package__ = 'pkg'
+        _cribo_self.__doc__ = 'Models module that creates part of the circular chain.'
+        global pkg_adapters
+        """Models module that creates part of the circular chain."""
+        pkg_adapters = _cribo_init___cribo_12d613_pkg_adapters(pkg_adapters)
+        _adapters_module = pkg.adapters
+        _cribo_self._adapters_module = _adapters_module
 
-    class BaseModel:
-        """Base model class."""
+        class BaseModel:
+            """Base model class."""
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.models'), _cribo_f)[1])
-        def __init__(self):
-            self.model_type = "base"
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.models'), _cribo_f)[1])
+            def __init__(self):
+                self.model_type = "base"
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.models'), _cribo_f)[1])
-        def get_adapter_class(self):
-            """Reference to adapter class (creates circular dependency)."""
-            return _adapters_module.Adapter if hasattr(_adapters_module, "Adapter") else None
-    BaseModel.__module__ = 'pkg.models'
-    BaseModel.__qualname__ = 'BaseModel'
-    _cribo_self.BaseModel = BaseModel
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'pkg.models'), _cribo_f)[1])
+            def get_adapter_class(self):
+                """Reference to adapter class (creates circular dependency)."""
+                return _adapters_module.Adapter if hasattr(_adapters_module, "Adapter") else None
+        BaseModel.__module__ = 'pkg.models'
+        BaseModel.__qualname__ = 'BaseModel'
+        _cribo_self.BaseModel = BaseModel
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 pkg_models.__init__ = _cribo_init___cribo_01ad7c_pkg_models
 def _cribo_init___cribo_bdb497_pkg_utils(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
@@ -268,26 +284,30 @@ def _cribo_init___cribo_bdb497_pkg_utils(_cribo_self, *, _cribo_getattr=getattr,
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'pkg'
-    _cribo_self.__doc__ = 'Utils module that completes the circular chain.'
-    global pkg_models
-    """Utils module that completes the circular chain."""
-    pkg_models = _cribo_init___cribo_01ad7c_pkg_models(pkg_models)
-    BaseModel = pkg.models.BaseModel
-    _cribo_self.BaseModel = BaseModel
-    _cribo_self.BaseModel = BaseModel
+    try:
+        _cribo_self.__package__ = 'pkg'
+        _cribo_self.__doc__ = 'Utils module that completes the circular chain.'
+        global pkg_models
+        """Utils module that completes the circular chain."""
+        pkg_models = _cribo_init___cribo_01ad7c_pkg_models(pkg_models)
+        BaseModel = pkg.models.BaseModel
+        _cribo_self.BaseModel = BaseModel
+        _cribo_self.BaseModel = BaseModel
 
-    def format_credentials(username, password):
-        """Format credentials for auth."""
-        if BaseModel:
-            return f"{username}:{password}"
-        return ""
-    format_credentials.__module__ = 'pkg.utils'
-    format_credentials.__qualname__ = 'format_credentials'
-    _cribo_self.format_credentials = format_credentials
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def format_credentials(username, password):
+            """Format credentials for auth."""
+            if BaseModel:
+                return f"{username}:{password}"
+            return ""
+        format_credentials.__module__ = 'pkg.utils'
+        format_credentials.__qualname__ = 'format_credentials'
+        _cribo_self.format_credentials = format_credentials
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 pkg_utils.__init__ = _cribo_init___cribo_bdb497_pkg_utils
 """Test fixture for circular import with function reference issue.\n\nThis reproduces the _basic_auth_str issue from requests where a function\ndefined in one module (auth) is imported by another module (adapters),\nbut due to circular dependencies, the function is not available when needed.\n"""
 __cribo_init_result = _cribo_init___cribo_6d9930_pkg(pkg)

@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -127,22 +127,26 @@ def _cribo_init___cribo_d50b51_rich(_cribo_self, *, _cribo_getattr=getattr, _cri
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'rich'
-    _cribo_self.__doc__ = None
-    global rich_jupyter
+    try:
+        _cribo_self.__package__ = 'rich'
+        _cribo_self.__doc__ = None
+        global rich_jupyter
 
-    def get_console():
-        return "console"
-    get_console.__module__ = 'rich'
-    get_console.__qualname__ = 'get_console'
-    _cribo_self.get_console = get_console
-    rich_jupyter = _cribo_init___cribo_951ad9_rich_jupyter(rich_jupyter)
-    jupyter = rich.jupyter
-    _cribo_self.jupyter = jupyter
-    _cribo_self.console = rich_console
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+        def get_console():
+            return "console"
+        get_console.__module__ = 'rich'
+        get_console.__qualname__ = 'get_console'
+        _cribo_self.get_console = get_console
+        rich_jupyter = _cribo_init___cribo_951ad9_rich_jupyter(rich_jupyter)
+        jupyter = rich.jupyter
+        _cribo_self.jupyter = jupyter
+        _cribo_self.console = rich_console
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 rich.__init__ = _cribo_init___cribo_d50b51_rich
 def _cribo_init___cribo_951ad9_rich_jupyter(_cribo_self, *, _cribo_getattr=getattr, _cribo_base_exception=BaseException, _cribo=_cribo, _sys=_sys):
     if _cribo_getattr(_cribo_self, '__initialized__', False):
@@ -150,13 +154,17 @@ def _cribo_init___cribo_951ad9_rich_jupyter(_cribo_self, *, _cribo_getattr=getat
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = 'rich'
-    _cribo_self.__doc__ = None
-    console = rich_console
-    _cribo_self.console = console
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+    try:
+        _cribo_self.__package__ = 'rich'
+        _cribo_self.__doc__ = None
+        console = rich_console
+        _cribo_self.console = console
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 rich_jupyter.__init__ = _cribo_init___cribo_951ad9_rich_jupyter
 __cribo_init_result = _cribo_init___cribo_d50b51_rich(rich)
 for attr in dir(__cribo_init_result):

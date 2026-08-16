@@ -37,7 +37,7 @@ class _CriboPreservedLoader:
         self._namespace = namespace
         self._reload_target = reload_target
 
-    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _SimpleNamespace=_cribo.types.SimpleNamespace, _captured=_cribo_captured):
+    def create_module(self, spec, *, _getattr=getattr, _globals=globals, _id=id, _setattr=setattr, _type=type, _ModuleType=_cribo.types.ModuleType, _captured=_cribo_captured):
         module = None
         if self._namespace is not None:
             module = self._namespace
@@ -46,12 +46,12 @@ class _CriboPreservedLoader:
         if module is not None:
             if _getattr(module, '_cribo_machinery_loaded', False):
                 saved = _type(self)._pristine.get(_id(module))
-                fresh = _SimpleNamespace()
+                fresh = _ModuleType(spec.name)
                 fresh.__dict__.update(saved if saved is not None else {'__name__': spec.name})
                 fresh._cribo_fresh_life = True
                 return fresh
             return module
-        module = _SimpleNamespace(__name__=spec.name)
+        module = _ModuleType(spec.name)
         for export, binding in self._entry[3].items():
             _setattr(module, export, _captured[binding] if binding in _captured else _globals()[binding])
         return module
@@ -123,33 +123,37 @@ def _cribo_init___cribo_a6386c_base(_cribo_self, *, _cribo_getattr=getattr, _cri
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = 'Base module with metaclass definitions.'
-    """Base module with metaclass definitions."""
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = 'Base module with metaclass definitions.'
+        """Base module with metaclass definitions."""
 
-    class MyMetaclass(type):
-        """A metaclass that adds attributes."""
+        class MyMetaclass(type):
+            """A metaclass that adds attributes."""
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'base'), _cribo_f)[1])
-        def __init__(cls, name, bases, kwds):
-            super(MyMetaclass, cls).__init__(name, bases, kwds)
-            cls.base_attr = "from base"
-    MyMetaclass.__module__ = 'base'
-    MyMetaclass.__qualname__ = 'MyMetaclass'
-    _cribo_self.MyMetaclass = MyMetaclass
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'base'), _cribo_f)[1])
+            def __init__(cls, name, bases, kwds):
+                super(MyMetaclass, cls).__init__(name, bases, kwds)
+                cls.base_attr = "from base"
+        MyMetaclass.__module__ = 'base'
+        MyMetaclass.__qualname__ = 'MyMetaclass'
+        _cribo_self.MyMetaclass = MyMetaclass
 
-    class MyObject(metaclass=MyMetaclass):
-        """A class using the metaclass."""
+        class MyObject(metaclass=MyMetaclass):
+            """A class using the metaclass."""
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'base'), _cribo_f)[1])
-        def __repr__(self):
-            return f"MyObject(base_attr={self.base_attr})"
-    MyObject.__module__ = 'base'
-    MyObject.__qualname__ = 'MyObject'
-    _cribo_self.MyObject = MyObject
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'base'), _cribo_f)[1])
+            def __repr__(self):
+                return f"MyObject(base_attr={self.base_attr})"
+        MyObject.__module__ = 'base'
+        MyObject.__qualname__ = 'MyObject'
+        _cribo_self.MyObject = MyObject
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 base.__init__ = _cribo_init___cribo_a6386c_base
 other = _cribo.types.SimpleNamespace(__name__='other', __initializing__=False, __initialized__=False)
 _cribo_finder.bind('other', other)
@@ -159,33 +163,37 @@ def _cribo_init___cribo_c0fc3d_other(_cribo_self, *, _cribo_getattr=getattr, _cr
     if _cribo_getattr(_cribo_self, '__initializing__', False):
         return _cribo_self
     _cribo_self.__initializing__ = True
-    _cribo_self.__package__ = ''
-    _cribo_self.__doc__ = 'Another module with similar class names to trigger renaming.'
-    """Another module with similar class names to trigger renaming."""
+    try:
+        _cribo_self.__package__ = ''
+        _cribo_self.__doc__ = 'Another module with similar class names to trigger renaming.'
+        """Another module with similar class names to trigger renaming."""
 
-    class MyMetaclass(type):
-        """Another metaclass with the same name."""
+        class MyMetaclass(type):
+            """Another metaclass with the same name."""
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'other'), _cribo_f)[1])
-        def __init__(cls, name, bases, kwds):
-            super(MyMetaclass, cls).__init__(name, bases, kwds)
-            cls.other_attr = "from other"
-    MyMetaclass.__module__ = 'other'
-    MyMetaclass.__qualname__ = 'MyMetaclass'
-    _cribo_self.MyMetaclass = MyMetaclass
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'other'), _cribo_f)[1])
+            def __init__(cls, name, bases, kwds):
+                super(MyMetaclass, cls).__init__(name, bases, kwds)
+                cls.other_attr = "from other"
+        MyMetaclass.__module__ = 'other'
+        MyMetaclass.__qualname__ = 'MyMetaclass'
+        _cribo_self.MyMetaclass = MyMetaclass
 
-    class MyObject(metaclass=MyMetaclass):
-        """Another class with the same name."""
+        class MyObject(metaclass=MyMetaclass):
+            """Another class with the same name."""
 
-        @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'other'), _cribo_f)[1])
-        def __repr__(self):
-            return f"OtherMyObject(other_attr={self.other_attr})"
-    MyObject.__module__ = 'other'
-    MyObject.__qualname__ = 'MyObject'
-    _cribo_self.MyObject = MyObject
-    _cribo_self.__initialized__ = True
-    _cribo_self.__initializing__ = False
-    return _cribo_self
+            @(lambda _cribo_f, _cribo_setattr=setattr: (_cribo_setattr(_cribo_f, '__module__', 'other'), _cribo_f)[1])
+            def __repr__(self):
+                return f"OtherMyObject(other_attr={self.other_attr})"
+        MyObject.__module__ = 'other'
+        MyObject.__qualname__ = 'MyObject'
+        _cribo_self.MyObject = MyObject
+        _cribo_self.__initialized__ = True
+        _cribo_self.__initializing__ = False
+        return _cribo_self
+    except _cribo_base_exception:
+        _cribo_self.__initializing__ = False
+        raise
 other.__init__ = _cribo_init___cribo_c0fc3d_other
 """\nTest fixture for metaclass forward reference with renaming issue.\n\nThis reproduces the bug where class renaming causes forward references\nto metaclasses, similar to what happens with PyYAML.\n"""
 base = _cribo_init___cribo_a6386c_base(base)
