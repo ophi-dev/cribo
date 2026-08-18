@@ -21,6 +21,7 @@
 - 🔄 **Circular dependency resolution** using Tarjan's strongly connected components (SCC) analysis and function-level lazy import transformations, with detailed diagnostics
 - 🧹 **Unused import trimming** to clean up Python files standalone
 - 📦 **Requirements generation** with optional `requirements.txt` output
+- 🔎 **Dependency detection** (`cribo deps`) that reports the third-party requirements of any Python file or directory without bundling
 - 🔧 **Configurable** import classification and source directories
 - 🚀 **Fast** and memory-efficient
 
@@ -124,6 +125,9 @@ cribo --entry mypackage/ --output bundle.py
 # Generate requirements.txt
 cribo --entry src/main.py --output bundle.py --emit-requirements
 
+# Detect third-party dependencies without bundling (see "Dependency Detection")
+cribo deps --entry src/main.py
+
 # Resolve requirement names from a specific Python environment
 cribo --entry src/main.py --output bundle.py --emit-requirements \
   --python .venv/bin/python
@@ -153,6 +157,8 @@ cribo --entry src/main.py --output bundle.py --config my-cribo.toml
 - `--target-version <VERSION>`: Target Python version (e.g., py38, py39, py310, py311, py312, py313)
 - `-h, --help`: Print help information
 - `-V, --version`: Print version information
+
+Cribo also provides a `deps` subcommand for third-party dependency detection without bundling — see [Dependency Detection](#dependency-detection-cribo-deps).
 
 The verbose flag is particularly useful for debugging bundling issues. Each level provides progressively more detail:
 
@@ -205,6 +211,63 @@ cribo --entry main.py --output bundle.py --no-tree-shake
 - If you encounter undefined symbol errors with complex circular dependencies
 - When you need to preserve all code for dynamic imports or reflection
 - For debugging purposes to see the complete bundled output
+
+### Dependency Detection (`cribo deps`)
+
+The `deps` subcommand analyzes a Python file or directory and reports the third-party
+distributions it requires — without producing a bundle. It reuses the same machinery
+as bundling: module discovery, dependency-graph construction, import classification
+against your environment (entry directory, `PYTHONPATH`, configured `src`
+directories, and virtualenv site-packages), distribution-metadata resolution, and
+tree-shaking.
+
+```bash
+# Print requirements for a script to stdout
+cribo deps --entry src/main.py
+
+# Analyze a package directory (follows __init__.py / __main__.py)
+cribo deps --entry mypackage/
+
+# Analyze a plain source directory: every script and package inside is scanned,
+# including package submodules that nothing imports
+cribo deps --entry src/
+
+# Write a requirements.txt file
+cribo deps --entry src/main.py --output requirements.txt
+
+# Structured JSON with per-import detail (requirement mapping, which first-party
+# modules import it, and whether it is TYPE_CHECKING-only or conditional)
+cribo deps --entry src/main.py --format json
+
+# Skip imports used only under `if TYPE_CHECKING:`
+cribo deps --entry src/main.py --exclude-type-checking
+
+# Skip imports that only appear inside conditional control flow
+# (if/elif/else, try/except, loops)
+cribo deps --entry src/main.py --exclude-conditional
+
+# Include imports even when only unused code references them
+cribo deps --entry src/main.py --no-tree-shake
+
+# Resolve requirement names from a specific Python environment
+cribo deps --entry src/main.py --python .venv/bin/python
+```
+
+**Options:**
+
+- `-e, --entry <PATH>`: Entry point — a Python file, a package directory, or a plain directory of sources (required)
+- `-o, --output <PATH>`: Write the report to a file instead of stdout
+- `--format <FORMAT>`: `requirements` (default; one PEP 508 requirement per line) or `json` (structured report with per-import detail)
+- `--exclude-type-checking`: Exclude imports used only within `if TYPE_CHECKING:` blocks
+- `--exclude-conditional`: Exclude imports that appear only inside conditional control flow; `TYPE_CHECKING` blocks are governed by `--exclude-type-checking` instead
+- `--no-tree-shake`: Include third-party imports even when they are only referenced by unused code
+
+**Behavior notes:**
+
+- Import names are mapped to distribution names (e.g. `cv2` → `opencv-python`) through installed distribution metadata, honoring `requirements.module-map` overrides from your configuration
+- With tree-shaking enabled (the default), imports that only unused code references are omitted — matching what a bundle would actually need
+- `TYPE_CHECKING`-only and conditional (try/except, if-block) imports are included by default and are controlled exclusively by their dedicated flags, since such imports are genuine (if optional) dependencies
+- When scanning a plain directory, files that fail to parse are skipped with a warning instead of aborting the whole scan; a single-file entry still fails fast
 
 ## Configuration
 
