@@ -1186,17 +1186,9 @@ fn is_import_used_by_all_exports(
     module_dep_graph: &crate::dependency_graph::ModuleDepGraph,
     local_name: &str,
 ) -> bool {
-    // Find __all__ assignment and get the exported symbols
-    let mut all_exports = Vec::new();
-    for item_data in module_dep_graph.items.values() {
-        if let crate::dependency_graph::ItemType::Assignment { targets, .. } = &item_data.item_type
-            && targets.contains(&"__all__".to_owned())
-        {
-            // The eventual_read_vars contains the names in __all__
-            all_exports.extend(item_data.eventual_read_vars.iter().cloned());
-            break;
-        }
-    }
+    // Use the graph's indexed `__all__` names: unlike a scan stopping at the
+    // first assignment, the index also covers `__all__ += [...]` extensions
+    let all_exports = module_dep_graph.explicit_all_names();
 
     if all_exports.is_empty() {
         return false;
@@ -1210,7 +1202,7 @@ fn is_import_used_by_all_exports(
 
     // Check if any __all__ symbol uses this import
     for export_name in all_exports {
-        let uses = module_dep_graph.does_symbol_use_import(&export_name, local_name);
+        let uses = module_dep_graph.does_symbol_use_import(export_name, local_name);
         if uses {
             log::debug!("  __all__ symbol '{export_name}' uses import '{local_name}'");
             return true;

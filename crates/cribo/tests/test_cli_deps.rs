@@ -334,6 +334,28 @@ fn test_deps_directory_with_main() {
     assert_eq!(stdout_of(&output), "runnable-distribution\n");
 }
 
+/// A directory symlink pointing at an ancestor must not send the scan into
+/// infinite recursion.
+#[cfg(unix)]
+#[test]
+fn test_deps_directory_scan_survives_symlink_cycle() {
+    let sandbox = DepsSandbox::new();
+    sandbox.install("looped_pkg", "looped-distribution");
+    sandbox.write_file(
+        "src/main.py",
+        "import looped_pkg\n\nprint(looped_pkg.__name__)\n",
+    );
+    // src/loop -> src creates a directory cycle
+    std::os::unix::fs::symlink(
+        sandbox.project_dir.join("src"),
+        sandbox.project_dir.join("src").join("loop"),
+    )
+    .expect("Failed to create cyclic symlink");
+
+    let output = sandbox.run_deps(&sandbox.project_dir.join("src"), &[]);
+    assert_eq!(stdout_of(&output), "looped-distribution\n");
+}
+
 /// In directory-scan mode a broken file is skipped with a warning instead of
 /// hiding every other file's dependencies.
 #[test]

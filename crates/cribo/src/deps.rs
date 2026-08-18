@@ -165,7 +165,17 @@ fn is_python_file(path: &Path) -> bool {
 /// Collect analysis roots for a scanned directory: top-level Python files become
 /// individual roots, while package directories (containing `__init__.py`) become
 /// single package roots handled by the regular entry machinery.
-fn scan_directory_roots(dir: &Path, roots: &mut Vec<PathBuf>) -> Result<()> {
+///
+/// `visited` holds canonical paths of already walked directories so symlink
+/// cycles cannot recurse forever.
+fn scan_directory_roots(
+    dir: &Path,
+    roots: &mut Vec<PathBuf>,
+    visited: &mut FxIndexSet<PathBuf>,
+) -> Result<()> {
+    if !mark_directory_visited(dir, visited) {
+        return Ok(());
+    }
     for path in sorted_dir_entries(dir)? {
         if path.is_dir() {
             if is_skipped_scan_directory(&path) {
@@ -175,7 +185,7 @@ fn scan_directory_roots(dir: &Path, roots: &mut Vec<PathBuf>) -> Result<()> {
                 // Package root: bundle_core follows the package as one entry
                 roots.push(path);
             } else {
-                scan_directory_roots(&path, roots)?;
+                scan_directory_roots(&path, roots, visited)?;
             }
         } else if is_python_file(&path) {
             roots.push(path);
@@ -186,17 +196,41 @@ fn scan_directory_roots(dir: &Path, roots: &mut Vec<PathBuf>) -> Result<()> {
 
 /// Collect every Python file under `dir` (descending into packages) so a final
 /// sweep can pick up files not reachable from any package or script root.
-fn collect_all_python_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+///
+/// `visited` holds canonical paths of already walked directories so symlink
+/// cycles cannot recurse forever.
+fn collect_all_python_files(
+    dir: &Path,
+    files: &mut Vec<PathBuf>,
+    visited: &mut FxIndexSet<PathBuf>,
+) -> Result<()> {
+    if !mark_directory_visited(dir, visited) {
+        return Ok(());
+    }
     for path in sorted_dir_entries(dir)? {
         if path.is_dir() {
             if !is_skipped_scan_directory(&path) {
-                collect_all_python_files(&path, files)?;
+                collect_all_python_files(&path, files, visited)?;
             }
         } else if is_python_file(&path) {
             files.push(path);
         }
     }
     Ok(())
+}
+
+/// Record a directory as visited by its canonical path; returns false when it
+/// was walked before (e.g. reached again through a symlink cycle).
+fn mark_directory_visited(dir: &Path, visited: &mut FxIndexSet<PathBuf>) -> bool {
+    let canonical = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    let first_visit = visited.insert(canonical);
+    if !first_visit {
+        debug!(
+            "Skipping already visited directory {} (symlink cycle?)",
+            dir.display()
+        );
+    }
+    first_visit
 }
 
 /// Return whether an import statement location is conditional control flow.
@@ -278,8 +312,8 @@ struct DepsAggregation {
     imports: FxIndexMap<String, ImportOccurrences>,
     /// Canonical paths of every analyzed module file
     covered_files: FxIndexSet<PathBuf>,
-    /// Distribution-metadata search directories from the last resolver
-    metadata_directories: Vec<PathBuf>,
+    /// Distribution-metadata search directories contributed by every resolver
+    metadata_directories: FxIndexSet<PathBuf>,
 }
 
 impl BundleOrchestrator {
@@ -314,7 +348,8 @@ impl BundleOrchestrator {
         // submodules never imported by their package) still contribute dependencies
         if let Some(scan_root) = &directory_scan_root {
             let mut all_files = Vec::new();
-            collect_all_python_files(scan_root, &mut all_files)?;
+            let mut visited = FxIndexSet::default();
+            collect_all_python_files(scan_root, &mut all_files, &mut visited)?;
             for file in all_files {
                 let canonical = file.canonicalize().unwrap_or_else(|_| file.clone());
                 if aggregation.covered_files.contains(&canonical) {
@@ -420,7 +455,12 @@ impl BundleOrchestrator {
             }
         }
 
-        aggregation.metadata_directories = resolver.get_distribution_metadata_search_directories();
+        // Each root's resolver may contribute different search directories (its
+        // own entry directory and environment paths): merge them so imports from
+        // every root can be mapped to installed distribution metadata
+        aggregation
+            .metadata_directories
+            .extend(resolver.get_distribution_metadata_search_directories());
         Ok(())
     }
 
@@ -501,8 +541,11 @@ impl BundleOrchestrator {
         let resolutions = if requirement_imports.is_empty() {
             IndexMap::new()
         } else {
-            RequirementResolver::new(requirements_config, metadata_directories)
-                .resolve_detailed(&requirement_imports)?
+            RequirementResolver::new(
+                requirements_config,
+                metadata_directories.into_iter().collect(),
+            )
+            .resolve_detailed(&requirement_imports)?
         };
 
         let requirements =
@@ -636,7 +679,8 @@ fn collect_analysis_roots(entry_path: &Path) -> Result<(Vec<PathBuf>, Option<Pat
     }
 
     let mut roots = Vec::new();
-    scan_directory_roots(entry_path, &mut roots)?;
+    let mut visited = FxIndexSet::default();
+    scan_directory_roots(entry_path, &mut roots, &mut visited)?;
     if roots.is_empty() {
         return Err(anyhow!(
             "No Python files found in directory {}",

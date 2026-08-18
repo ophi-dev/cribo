@@ -20,7 +20,6 @@ pub(crate) mod ast_builder;
 pub(crate) mod ast_indexer;
 pub(crate) mod code_generator;
 pub(crate) mod combine;
-pub(crate) mod deps;
 pub(crate) mod dirs;
 pub(crate) mod graph_builder;
 pub(crate) mod import_alias_tracker;
