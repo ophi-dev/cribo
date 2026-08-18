@@ -60,19 +60,35 @@ impl<'a> RequirementResolver<'a> {
         &self,
         imports: &IndexMap<String, Option<PathBuf>>,
     ) -> Result<IndexSet<String>> {
-        let mut requirements = IndexSet::new();
+        Ok(self
+            .resolve_detailed(imports)?
+            .into_values()
+            .flatten()
+            .collect())
+    }
+
+    /// Resolve imported module names to normalized PEP 508 requirements, keyed by
+    /// the import that produced each requirement.
+    ///
+    /// A `None` value marks an import that could not be mapped to any installed
+    /// distribution and whose root is not a valid requirement name either.
+    pub(crate) fn resolve_detailed(
+        &self,
+        imports: &IndexMap<String, Option<PathBuf>>,
+    ) -> Result<IndexMap<String, Option<String>>> {
+        let mut resolutions: IndexMap<String, Option<String>> = IndexMap::new();
         let mut pending = Vec::new();
 
         for (import_name, preferred_path) in imports {
             if let Some(requirement) = self.override_for(import_name)? {
-                requirements.insert(requirement);
+                resolutions.insert(import_name.clone(), Some(requirement));
             } else {
                 pending.push((import_name.clone(), preferred_path.clone()));
             }
         }
 
         if pending.is_empty() {
-            return Ok(requirements);
+            return Ok(resolutions);
         }
 
         let python = self.python_executable()?;
@@ -84,29 +100,34 @@ impl<'a> RequirementResolver<'a> {
         let response = self.query_metadata(&python, pending)?;
 
         for import_name in imports.keys() {
-            if self.override_for(import_name)?.is_some() {
+            if resolutions.contains_key(import_name) {
+                // Already resolved through an explicit module-map override
                 continue;
             }
             let candidates = response.resolutions.get(import_name).ok_or_else(|| {
                 anyhow!("Python metadata query omitted import '{import_name}' from its response")
             })?;
-            if let Some(requirement) = Self::select_candidate(import_name, candidates)? {
-                requirements.insert(requirement);
-            } else if let Some(fallback) = Self::fallback_requirement(import_name) {
-                warn!(
-                    "Could not map import '{import_name}' to installed distribution metadata; \
-                     using '{fallback}'"
-                );
-                requirements.insert(fallback);
-            } else {
-                warn!(
-                    "Could not map import '{import_name}' to installed distribution metadata, and \
-                     its root is not a valid requirement name; skipping it"
-                );
-            }
+            let requirement = Self::select_candidate(import_name, candidates)?.map_or_else(
+                || {
+                    let fallback = Self::fallback_requirement(import_name);
+                    match &fallback {
+                        Some(name) => warn!(
+                            "Could not map import '{import_name}' to installed distribution \
+                             metadata; using '{name}'"
+                        ),
+                        None => warn!(
+                            "Could not map import '{import_name}' to installed distribution \
+                             metadata, and its root is not a valid requirement name; skipping it"
+                        ),
+                    }
+                    fallback
+                },
+                Some,
+            );
+            resolutions.insert(import_name.clone(), requirement);
         }
 
-        Ok(requirements)
+        Ok(resolutions)
     }
 
     /// Return the longest matching explicit module-map override.
@@ -533,11 +554,8 @@ assert search_path_candidates(
         fs::create_dir_all(&metadata_dir)?;
         fs::write(
             metadata_dir.join("METADATA"),
-            "Metadata-Version: 2.5\n\
-             Name: conflicting\n\
-             Version: 1.0\n\
-             Import-Name: shared\n\
-             Import-Namespace: shared\n",
+            "Metadata-Version: 2.5\nName: conflicting\nVersion: 1.0\nImport-Name: \
+             shared\nImport-Namespace: shared\n",
         )?;
 
         let config = RequirementsConfig::default();
@@ -562,21 +580,16 @@ assert search_path_candidates(
         fs::create_dir_all(&conflicting_metadata)?;
         fs::write(
             conflicting_metadata.join("METADATA"),
-            "Metadata-Version: 2.5\n\
-             Name: conflicting\n\
-             Version: 1.0\n\
-             Import-Name: unrelated\n\
-             Import-Namespace: unrelated\n",
+            "Metadata-Version: 2.5\nName: conflicting\nVersion: 1.0\nImport-Name: \
+             unrelated\nImport-Namespace: unrelated\n",
         )?;
 
         let requested_metadata = temp_dir.path().join("requested_provider-1.0.dist-info");
         fs::create_dir_all(&requested_metadata)?;
         fs::write(
             requested_metadata.join("METADATA"),
-            "Metadata-Version: 2.5\n\
-             Name: requested-provider\n\
-             Version: 1.0\n\
-             Import-Name: requested\n",
+            "Metadata-Version: 2.5\nName: requested-provider\nVersion: 1.0\nImport-Name: \
+             requested\n",
         )?;
 
         let config = RequirementsConfig::default();

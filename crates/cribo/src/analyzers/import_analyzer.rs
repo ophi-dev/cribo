@@ -909,6 +909,368 @@ impl<'a> ruff_python_ast::visitor::Visitor<'a> for SymbolImportVisitor<'a> {
     }
 }
 
+/// Extend `unused_imports` with module-level imports that are only used by
+/// tree-shaken code.
+///
+/// This is the single source of truth for deciding whether an import survives
+/// tree-shaking; it is shared by bundle code generation (import trimming) and
+/// dependency detection (`cribo deps`).
+///
+/// Scoped imports (inside functions/classes) are intentionally skipped here and
+/// left to local unused-import analysis.
+pub(crate) fn extend_unused_imports_after_tree_shaking(
+    shaker: &crate::tree_shaking::TreeShaker<'_>,
+    module_id: ModuleId,
+    module_dep_graph: &crate::dependency_graph::ModuleDepGraph,
+    unused_imports: &mut Vec<UnusedImportInfo>,
+) {
+    // Get the symbols that survive tree-shaking for this module.
+    // TreeShaker still uses string-based module names, get it from the dep graph
+    let module_name = &module_dep_graph.module_name;
+    let used_symbols = shaker.get_used_symbols_for_module(module_name);
+
+    // Check each import to see if it's only used by tree-shaken code
+    let import_items = module_dep_graph.get_all_import_items();
+    log::debug!(
+        "Checking {} import items in module '{}' for tree-shaking",
+        import_items.len(),
+        module_name
+    );
+    for (item_id, import_item) in import_items {
+        if import_item.containing_scope.is_some() {
+            log::debug!(
+                "Leaving scoped import {:?} to local unused-import analysis",
+                import_item.containing_scope
+            );
+            continue;
+        }
+
+        match &import_item.item_type {
+            crate::dependency_graph::ItemType::FromImport {
+                module: from_module,
+                names,
+                level,
+                ..
+            } => {
+                let unresolved_from_module = from_module.trim_start_matches('.');
+                let resolved_from_module =
+                    shaker.resolve_import_module_name(module_id, unresolved_from_module, *level);
+
+                // For from imports, check each imported name
+                for (imported_name, alias_opt) in names {
+                    let local_name = alias_opt.as_ref().unwrap_or(imported_name);
+
+                    // Skip if already marked as unused
+                    if unused_imports.iter().any(|u| u.name == *local_name) {
+                        continue;
+                    }
+
+                    // Skip if this is a re-export (in __all__ or explicit
+                    // re-export)
+                    if import_item.reexported_names.contains(local_name)
+                        || module_dep_graph.is_in_all_export(local_name)
+                    {
+                        log::debug!(
+                            "Skipping tree-shaking for re-exported import '{local_name}' from \
+                             '{from_module}'"
+                        );
+                        continue;
+                    }
+
+                    // Check if this imported symbol itself is marked as used by tree
+                    // shaker This handles the case
+                    // where the symbol is accessed via module attributes
+                    // (e.g., yaml_module.OtherYAMLObject where OtherYAMLObject is from
+                    // an import) Check both the local
+                    // name (alias) and the original imported name
+                    if shaker.is_symbol_used(module_name, local_name)
+                        || shaker.is_symbol_used(module_name, imported_name)
+                    {
+                        log::debug!(
+                            "Skipping tree-shaking for import '{local_name}' from '{from_module}' \
+                             - symbol is marked as used"
+                        );
+                        continue;
+                    }
+
+                    // Check if this import is actually importing a submodule
+                    // For example, "from mypackage import utils" where utils is
+                    // mypackage.utils
+                    let submodule_name = format!("{resolved_from_module}.{imported_name}");
+                    let submodule_id = shaker.get_graph_module_id(&submodule_name);
+
+                    // If this is a submodule import, check if the submodule has side
+                    // effects or is otherwise needed
+                    let submodule_needed = submodule_id.is_some_and(|submodule_id| {
+                        log::debug!(
+                            "Import '{local_name}' is a submodule import for '{submodule_name}'"
+                        );
+                        // Check if the submodule has side effects or symbols that
+                        // survived Even if no
+                        // symbols survived, if it has side effects, we need to keep it
+                        let has_side_effects = shaker.module_has_side_effects(submodule_id);
+                        let has_used_symbols = !shaker
+                            .get_used_symbols_for_module(&submodule_name)
+                            .is_empty();
+
+                        log::debug!(
+                            "Submodule '{submodule_name}' - has_side_effects: {has_side_effects}, \
+                             has_used_symbols: {has_used_symbols}"
+                        );
+
+                        has_side_effects || has_used_symbols
+                    });
+
+                    // Check if this import is only used by symbols that were
+                    // tree-shaken
+                    let mut used_by_surviving_code = submodule_needed
+                        || is_import_used_by_surviving_symbols(
+                            &used_symbols,
+                            module_dep_graph,
+                            local_name,
+                        )
+                        || is_import_used_by_side_effect_code(shaker, module_dep_graph, local_name);
+
+                    // Also check if this import is used by symbols in __all__
+                    // These symbols might be exported even if not directly used
+                    if !used_by_surviving_code {
+                        log::debug!("Checking if '{local_name}' is used by __all__ symbols");
+                        used_by_surviving_code =
+                            is_import_used_by_all_exports(module_dep_graph, local_name);
+                    }
+
+                    if !used_by_surviving_code {
+                        // This import is not used by any surviving symbol or
+                        // module-level code
+                        log::debug!(
+                            "Import '{local_name}' from '{from_module}' is not used by surviving \
+                             code after tree-shaking"
+                        );
+                        unused_imports.push(UnusedImportInfo {
+                            name: local_name.clone(),
+                            module: from_module.clone(),
+                        });
+                    }
+                }
+            }
+            crate::dependency_graph::ItemType::Import { module, .. } => {
+                // For regular imports (import module), check if they're only used
+                // by tree-shaken code
+                let import_name = import_item.var_decls.iter().next().map_or_else(
+                    || module.split('.').next().unwrap_or(module),
+                    String::as_str,
+                );
+
+                log::debug!(
+                    "Checking module import '{import_name}' (full: '{module}') for tree-shaking"
+                );
+
+                // Skip if already marked as unused
+                if unused_imports.iter().any(|u| u.name == *import_name) {
+                    continue;
+                }
+
+                // Skip if this is a re-export
+                if import_item.reexported_names.contains(import_name)
+                    || module_dep_graph.is_in_all_export(import_name)
+                {
+                    log::debug!("Skipping tree-shaking for re-exported import '{import_name}'");
+                    continue;
+                }
+
+                if shaker.is_symbol_used(module_name, import_name) {
+                    log::debug!(
+                        "Skipping tree-shaking for import '{import_name}' - local binding is \
+                         marked as used"
+                    );
+                    continue;
+                }
+
+                // Check if the imported module itself has side effects and needs
+                // initialization This handles the case
+                // where a wrapper module with side effects is imported
+                // but not directly used (e.g., import mypackage where mypackage has
+                // print statements)
+                let module_has_side_effects = shaker
+                    .get_graph_module_id(module)
+                    .is_some_and(|id| shaker.module_has_side_effects(id));
+                if module_has_side_effects {
+                    log::debug!(
+                        "Module '{module}' has side effects - preserving import for initialization"
+                    );
+                    continue;
+                }
+
+                // Check if this import is only used by symbols that were
+                // tree-shaken
+                log::debug!(
+                    "Checking if any of {} surviving symbols use import '{import_name}'",
+                    used_symbols.len()
+                );
+                let mut used_by_surviving_code = is_import_used_by_surviving_symbols(
+                    &used_symbols,
+                    module_dep_graph,
+                    import_name,
+                );
+
+                // Also check if any module-level code that has side effects uses it
+                if !used_by_surviving_code {
+                    log::debug!(
+                        "No surviving symbols use '{import_name}', checking module-level side \
+                         effects"
+                    );
+                    used_by_surviving_code =
+                        is_module_import_used_by_side_effects(module_dep_graph, import_name);
+                }
+
+                // Special case: Check if this import is only used by assignment
+                // statements that were removed by tree-shaking
+                if !used_by_surviving_code {
+                    used_by_surviving_code = is_import_used_by_surviving_assignments(
+                        module_dep_graph,
+                        import_name,
+                        &used_symbols,
+                    );
+                }
+
+                // Also check if this import is used by symbols in __all__
+                // These symbols might be exported even if not directly used
+                if !used_by_surviving_code {
+                    log::debug!("Checking if '{import_name}' is used by __all__ symbols");
+                    used_by_surviving_code =
+                        is_import_used_by_all_exports(module_dep_graph, import_name);
+                }
+
+                if !used_by_surviving_code {
+                    log::debug!(
+                        "Import '{import_name}' from module '{module}' is not used by surviving \
+                         code after tree-shaking (item_id: {item_id:?})"
+                    );
+                    unused_imports.push(UnusedImportInfo {
+                        name: import_name.to_owned(),
+                        module: module.clone(),
+                    });
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Check if an import is used by any surviving symbol after tree-shaking
+fn is_import_used_by_surviving_symbols(
+    used_symbols: &FxIndexSet<String>,
+    module_dep_graph: &crate::dependency_graph::ModuleDepGraph,
+    local_name: &str,
+) -> bool {
+    log::debug!(
+        "Checking if any of {} surviving symbols use import '{}'",
+        used_symbols.len(),
+        local_name
+    );
+    let result = used_symbols.iter().any(|symbol| {
+        let uses = module_dep_graph.does_symbol_use_import(symbol, local_name);
+        if uses {
+            log::debug!("  Symbol '{symbol}' uses import '{local_name}'");
+        }
+        uses
+    });
+    if !result {
+        log::debug!("  No surviving symbols use import '{local_name}'");
+    }
+    result
+}
+
+/// Check if an import is used by any symbols in __all__ exports
+fn is_import_used_by_all_exports(
+    module_dep_graph: &crate::dependency_graph::ModuleDepGraph,
+    local_name: &str,
+) -> bool {
+    // Use the graph's indexed `__all__` names: unlike a scan stopping at the
+    // first assignment, the index also covers `__all__ += [...]` extensions
+    let all_exports = module_dep_graph.explicit_all_names();
+
+    if all_exports.is_empty() {
+        return false;
+    }
+
+    log::debug!(
+        "Checking if import '{}' is used by any of {} __all__ symbols",
+        local_name,
+        all_exports.len()
+    );
+
+    // Check if any __all__ symbol uses this import
+    for export_name in all_exports {
+        let uses = module_dep_graph.does_symbol_use_import(export_name, local_name);
+        if uses {
+            log::debug!("  __all__ symbol '{export_name}' uses import '{local_name}'");
+            return true;
+        }
+    }
+
+    log::debug!("  Import '{local_name}' is not used by any __all__ symbols");
+    false
+}
+
+/// Check if an import is used by module-level code with side effects
+fn is_import_used_by_side_effect_code(
+    shaker: &crate::tree_shaking::TreeShaker<'_>,
+    module_dep_graph: &crate::dependency_graph::ModuleDepGraph,
+    local_name: &str,
+) -> bool {
+    let module_id = module_dep_graph.module_id;
+
+    if !shaker.module_has_side_effects(module_id) {
+        return false;
+    }
+
+    module_dep_graph.items.values().any(|item| {
+        item.executes_at_module_import()
+            && matches!(
+                item.item_type,
+                crate::dependency_graph::ItemType::Expression
+                    | crate::dependency_graph::ItemType::Assignment { .. }
+                    | crate::dependency_graph::ItemType::Other
+            )
+            && (item.read_vars.contains(local_name) || item.eventual_read_vars.contains(local_name))
+    })
+}
+
+/// Check if a module import is used by surviving code in a module with side effects
+fn is_module_import_used_by_side_effects(
+    module_dep_graph: &crate::dependency_graph::ModuleDepGraph,
+    import_name: &str,
+) -> bool {
+    module_dep_graph.items.values().any(|item| {
+        item.executes_at_module_import()
+            && item.has_side_effects
+            && !matches!(
+                item.item_type,
+                crate::dependency_graph::ItemType::Import { .. }
+                    | crate::dependency_graph::ItemType::FromImport { .. }
+            )
+            && (item.read_vars.contains(import_name)
+                || item.eventual_read_vars.contains(import_name))
+    })
+}
+
+/// Check if an import is used by surviving assignment statements
+fn is_import_used_by_surviving_assignments(
+    module_dep_graph: &crate::dependency_graph::ModuleDepGraph,
+    import_name: &str,
+    used_symbols: &FxIndexSet<String>,
+) -> bool {
+    module_dep_graph.items.values().any(|item| {
+        if let crate::dependency_graph::ItemType::Assignment { targets } = &item.item_type {
+            item.read_vars.contains(import_name)
+                && targets.iter().any(|target| used_symbols.contains(target))
+        } else {
+            false
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use ruff_python_parser::parse_module;

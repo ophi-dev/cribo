@@ -127,6 +127,41 @@ impl BundleOrchestrator {
         }
     }
 
+    /// Read access to the effective configuration.
+    pub(crate) const fn config(&self) -> &Config {
+        &self.config
+    }
+
+    /// Override the third-party bundling policy (used by dependency detection,
+    /// which must always keep third-party imports external).
+    pub(crate) const fn set_bundle_third_party(&mut self, value: bool) {
+        self.config.bundle_third_party = Some(value);
+    }
+
+    /// Static `importlib.import_module` targets recorded during the last discovery
+    /// run that must reach requirements generation (external targets plus preserved
+    /// runtime calls).
+    pub(crate) fn importlib_requirement_targets(&self) -> Vec<String> {
+        let mut targets: Vec<String> = self
+            .external_importlib_targets
+            .lock()
+            .expect("external importlib targets lock poisoned")
+            .iter()
+            .cloned()
+            .collect();
+        for target in self
+            .preserved_importlib_targets
+            .lock()
+            .expect("preserved importlib targets lock poisoned")
+            .iter()
+        {
+            if !targets.contains(target) {
+                targets.push(target.clone());
+            }
+        }
+        targets
+    }
+
     /// Single entry point for parsing and processing modules
     /// This is THE ONLY place where `ruff_python_parser::parse_module` should be called
     ///
@@ -194,6 +229,23 @@ impl BundleOrchestrator {
         Ok(ProcessedModule { ast, source, facts })
     }
 
+    /// Return the cached module facts for a previously processed module path.
+    ///
+    /// Facts are populated by [`Self::process_module`] during dependency-graph
+    /// construction, so every module registered in the graph has an entry.
+    pub(crate) fn cached_module_facts(&self, module_path: &Path) -> Option<Arc<ModuleFacts>> {
+        let canonical_path = module_path
+            .canonicalize()
+            .unwrap_or_else(|_| module_path.to_path_buf());
+        let cache = self
+            .module_cache
+            .lock()
+            .expect("Failed to acquire module cache lock");
+        cache
+            .get(&canonical_path)
+            .map(|processed| Arc::clone(&processed.facts))
+    }
+
     /// Format error message for unresolvable cycles
     fn format_unresolvable_cycles_error(
         cycles: &[CircularDependencyGroup],
@@ -226,7 +278,7 @@ impl BundleOrchestrator {
     /// Core bundling logic shared between file and string output modes
     /// Returns the entry module name, parsed modules, circular dependency analysis, and optional
     /// tree shaker, with graph and resolver populated via mutable references
-    fn bundle_core(
+    pub(crate) fn bundle_core(
         &mut self,
         entry_path: &Path,
         graph: &mut DependencyGraph,
@@ -445,7 +497,7 @@ impl BundleOrchestrator {
     }
 
     /// Helper to get sorted modules from graph
-    fn get_sorted_modules_from_graph(
+    pub(crate) fn get_sorted_modules_from_graph(
         &self,
         graph: &DependencyGraph,
         circular_dep_analysis: Option<&CircularDependencyAnalysis>,
@@ -1681,8 +1733,8 @@ impl BundleOrchestrator {
                 let classification = params.resolver.classify_import(&resolved_name);
                 if classification.should_bundle() {
                     debug!(
-                        "Resolved ImportlibStatic '{import}' to module '{resolved_name}' at \
-                         path: {}",
+                        "Resolved ImportlibStatic '{import}' to module '{resolved_name}' at path: \
+                         {}",
                         import_path.display()
                     );
                     // Use the resolved name instead of the original import
@@ -1756,8 +1808,8 @@ impl BundleOrchestrator {
                         );
                     } else {
                         return Err(anyhow!(
-                            "Failed to resolve bundled module '{import}'. \nThis import would fail \
-                             at runtime with: ModuleNotFoundError: No module named '{import}'"
+                            "Failed to resolve bundled module '{import}'. \nThis import would \
+                             fail at runtime with: ModuleNotFoundError: No module named '{import}'"
                         ));
                     }
                 }
@@ -2149,68 +2201,68 @@ impl BundleOrchestrator {
             resolver.get_distribution_metadata_search_directories(),
         );
         let resolved_requirements = requirement_resolver.resolve(&requirement_imports)?;
-        let requirements: Vec<String> = resolved_requirements.into_iter().collect();
+        let mut entries: Vec<String> = resolved_requirements.into_iter().collect();
 
         // Carry over Requires-Dist constraints declared by bundled distributions for
-        // their external (or dynamically imported) dependencies. Entries are grouped
-        // by normalized name; within one name, equal-marker declarations are merged
-        // (preferring a constrained declaration over a bare resolved name) while
-        // distinct marker branches stay on separate lines, since pip evaluates each
-        // line's marker independently
-        use std::str::FromStr;
-        type ParsedRequirement = pep508_rs::Requirement<pep508_rs::VerbatimUrl>;
-        let mut entries_by_name: IndexMap<String, Vec<ParsedRequirement>> = IndexMap::new();
-        let mut unparsable_entries: Vec<String> = Vec::new();
-        let mut record_entry =
-            |entry: String, entries: &mut IndexMap<String, Vec<ParsedRequirement>>| {
-                let Ok(parsed) = ParsedRequirement::from_str(&entry) else {
-                    if !unparsable_entries.contains(&entry) {
-                        unparsable_entries.push(entry);
-                    }
-                    return;
-                };
-                let name = parsed.name.to_string();
-                let branches = entries.entry(name).or_default();
-                if let Some(existing) = branches
-                    .iter_mut()
-                    .find(|existing| existing.marker == parsed.marker)
-                {
-                    // Same-marker duplicates intersect their constraints: extras are
-                    // unioned and version-specifier sets combined, so a module-map
-                    // override and a bundled distribution's Requires-Dist entry both
-                    // apply, like a normal installation would resolve them.
-                    // Conflicting direct URLs are unmergeable: both lines are
-                    // emitted so the installer reports the conflict.
-                    if let Some(unmergeable) =
-                        ModuleResolver::merge_requirement_constraints(existing, parsed)
-                    {
-                        branches.push(unmergeable);
-                    }
-                } else {
-                    branches.push(parsed);
-                }
-            };
-        for entry in requirements {
-            record_entry(entry, &mut entries_by_name);
-        }
+        // their external (or dynamically imported) dependencies.
         // Distributions whose metadata bundled code queries at runtime (e.g.
         // `importlib.metadata.version("provider")`) need their dist-info installed
         // even when no module of theirs is imported; the query alone is a dependency,
         // and constrained literals (`pkg_resources.require("provider[speed]>=2")`)
         // keep their extras and version specifiers
         if self.config.bundle_third_party() {
-            for requirement in resolver.queried_installed_distribution_requirements() {
-                record_entry(requirement, &mut entries_by_name);
-            }
+            entries.extend(resolver.queried_installed_distribution_requirements());
             // Global enumeration (entry_points(), packages_distributions())
             // observes EVERY installed distribution, including plugin providers
             // that are never imported: carry them all into requirements
-            for requirement in resolver.globally_enumerated_distribution_requirements() {
-                record_entry(requirement, &mut entries_by_name);
-            }
+            entries.extend(resolver.globally_enumerated_distribution_requirements());
         }
-        for declared in resolver.bundled_distribution_requirements(&bundled_third_party_imports) {
-            record_entry(declared, &mut entries_by_name);
+        entries.extend(resolver.bundled_distribution_requirements(&bundled_third_party_imports));
+
+        let requirements = Self::merge_requirement_entries(entries);
+
+        Ok(requirements.join("\n"))
+    }
+
+    /// Merge raw requirement entries into a sorted, deduplicated requirement list.
+    ///
+    /// Entries are grouped by normalized name; within one name, equal-marker
+    /// declarations are merged (preferring a constrained declaration over a bare
+    /// resolved name) while distinct marker branches stay on separate lines, since
+    /// pip evaluates each line's marker independently. Unparsable entries are kept
+    /// verbatim so the installer can report them.
+    pub(crate) fn merge_requirement_entries(entries: Vec<String>) -> Vec<String> {
+        use std::str::FromStr;
+        type ParsedRequirement = pep508_rs::Requirement<pep508_rs::VerbatimUrl>;
+        let mut entries_by_name: IndexMap<String, Vec<ParsedRequirement>> = IndexMap::new();
+        let mut unparsable_entries: Vec<String> = Vec::new();
+        for entry in entries {
+            let Ok(parsed) = ParsedRequirement::from_str(&entry) else {
+                if !unparsable_entries.contains(&entry) {
+                    unparsable_entries.push(entry);
+                }
+                continue;
+            };
+            let name = parsed.name.to_string();
+            let branches = entries_by_name.entry(name).or_default();
+            if let Some(existing) = branches
+                .iter_mut()
+                .find(|existing| existing.marker == parsed.marker)
+            {
+                // Same-marker duplicates intersect their constraints: extras are
+                // unioned and version-specifier sets combined, so a module-map
+                // override and a bundled distribution's Requires-Dist entry both
+                // apply, like a normal installation would resolve them.
+                // Conflicting direct URLs are unmergeable: both lines are
+                // emitted so the installer reports the conflict.
+                if let Some(unmergeable) =
+                    ModuleResolver::merge_requirement_constraints(existing, parsed)
+                {
+                    branches.push(unmergeable);
+                }
+            } else {
+                branches.push(parsed);
+            }
         }
         let mut requirements: Vec<String> = entries_by_name
             .into_values()
@@ -2219,8 +2271,7 @@ impl BundleOrchestrator {
             .collect();
         requirements.extend(unparsable_entries);
         requirements.sort();
-
-        Ok(requirements.join("\n"))
+        requirements
     }
 
     /// Return the extras requested for a bundled import through a
