@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.9.0](https://github.com/ophi-dev/cribo/compare/v0.8.2...v0.9.0) (2026-08-19)
+
+
+### Features
+
+* **cli:** add deps subcommand for third-party dependency detection ([#564](https://github.com/ophi-dev/cribo/issues/564)) ([4ee7014](https://github.com/ophi-dev/cribo/commit/4ee70145821763f0a6d095c535ee1dca4b6e67aa))
+* opt-in bundling of pure-Python third-party dependencies ([#555](https://github.com/ophi-dev/cribo/issues/555)) ([bc48dfe](https://github.com/ophi-dev/cribo/commit/bc48dfeb2d697775319d7a22362a51b53d2090ea))
+* unify bundling and tree-shaking analysis facts ([#468](https://github.com/ophi-dev/cribo/issues/468)) ([21b9cb3](https://github.com/ophi-dev/cribo/commit/21b9cb37bee6a89065a5175322f1d868afc4f659))
+
+
+### Bug Fixes
+
+* add certifi to typos allow list ([#456](https://github.com/ophi-dev/cribo/issues/456)) ([9f425ea](https://github.com/ophi-dev/cribo/commit/9f425ea7b07ba9280efb438e9191062697bff8f7))
+* **ci:** work around maturin 1.11+ bin bindings regression ([#453](https://github.com/ophi-dev/cribo/issues/453)) ([349ad62](https://github.com/ophi-dev/cribo/commit/349ad6290f06e8f3bb066bbfb485cb74dfe8e5de))
+* **deps:** update env_logger to 0.11.10 to deduplicate anstream ([#454](https://github.com/ophi-dev/cribo/issues/454)) ([9ef981c](https://github.com/ophi-dev/cribo/commit/9ef981c48b524a817cb1f03cdc8b1c08056cbfea))
+* remove bin from platform specific npm packages ([1aa8c90](https://github.com/ophi-dev/cribo/commit/1aa8c90119cd5bebc8550ff339efc9631f32711e))
+* split bundler.rs into directory module ([#461](https://github.com/ophi-dev/cribo/issues/461)) ([5d7c6e1](https://github.com/ophi-dev/cribo/commit/5d7c6e163e2653a407a68eea0945c7af3e596bf8))
+
+
+### Performance Improvements
+
+* use `Arc<ModModule>` in module AST maps to avoid cloning all ASTs in `prepare_modules` ([#465](https://github.com/ophi-dev/cribo/issues/465)) ([ce6b414](https://github.com/ophi-dev/cribo/commit/ce6b41421b8daa44f848a9faf632589bd7e9430f))
+
+
+### Miscellaneous Chores
+
+* release 0.9.0 ([cea5e3b](https://github.com/ophi-dev/cribo/commit/cea5e3b5fc95575d311f58d59d2261af9ee80db2))
+
 ## [0.8.2](https://github.com/ophi-dev/cribo/compare/v0.8.1...v0.8.2) (2026-07-19)
 
 
