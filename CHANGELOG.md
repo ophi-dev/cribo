@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.1](https://github.com/ophi-dev/cribo/compare/v0.9.0...v0.9.1) (2026-08-19)
+
+
+### Bug Fixes
+
+* **ci:** use repository Rust toolchain for releases ([fab5093](https://github.com/ophi-dev/cribo/commit/fab5093e7bb17beeb24cda286cd37c4f7e305c13))
+
 ## [0.9.0](https://github.com/ophi-dev/cribo/compare/v0.8.2...v0.9.0) (2026-08-19)
 
 
