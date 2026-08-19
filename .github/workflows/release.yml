@@ -36,7 +36,6 @@ jobs:
       CARGO_NET_RETRY: 10
       CARGO_TERM_COLOR: always
       RUSTUP_MAX_RETRIES: 10
-      RUSTUP_TOOLCHAIN: '1.94.1'
 
     strategy:
       matrix:
@@ -82,9 +81,8 @@ jobs:
       - name: Set up Rust toolchain
         shell: bash
         run: |
-          rustup toolchain install "${RUSTUP_TOOLCHAIN}" --profile minimal
-          rustup target add ${{ matrix.platform.rust_target }} --toolchain "${RUSTUP_TOOLCHAIN}"
           rustup show
+          rustup target add "${{ matrix.platform.rust_target }}"
           echo "CARGO_BUILD_TARGET=${{ matrix.platform.rust_target }}" >> "$GITHUB_ENV"
 
       - name: Install musl toolchain
