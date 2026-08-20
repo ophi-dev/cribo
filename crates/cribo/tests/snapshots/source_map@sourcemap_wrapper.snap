@@ -2,10 +2,10 @@
 source: crates/cribo/tests/test_bundling_snapshots.rs
 input_file: crates/cribo/tests/fixtures/sourcemap_wrapper/main.py
 ---
-bundle:706  `print("effects module loading")` -> effects.py:1
-bundle:707  `COUNTER = 1` -> effects.py:3
-bundle:710  `def boost(value):` -> effects.py:6
-bundle:711  `boosted = value * 2 + COUNTER` -> effects.py:7
-bundle:712  `return boosted` -> effects.py:8
-bundle:724  `print("counter:", effects.COUNTER)` -> main.py:3
-bundle:725  `print("boosted:", effects.boost(10))` -> main.py:4
+bundle:746  `print("effects module loading")` -> effects.py:1
+bundle:747  `COUNTER = 1` -> effects.py:3
+bundle:750  `def boost(value):` -> effects.py:6
+bundle:751  `boosted = value * 2 + COUNTER` -> effects.py:7
+bundle:752  `return boosted` -> effects.py:8
+bundle:764  `print("counter:", effects.COUNTER)` -> main.py:3
+bundle:765  `print("boosted:", effects.boost(10))` -> main.py:4

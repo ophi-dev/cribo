@@ -11,10 +11,27 @@ Note: this leading docstring is stripped at injection time so the bundle's
 ``__doc__`` is not affected.
 """
 
-import binascii as _cribo_binascii
-import os as _cribo_os
 import sys as _cribo_sys
-import threading as _cribo_threading
+
+
+def _cribo_sm_import(name):
+    """Import a stdlib module immune to script-directory shadowing.
+
+    The bundle's own directory is `sys.path[0]` (or `''` for `-c`/stdin), so a
+    project file named e.g. `threading.py` sitting next to the bundle would
+    otherwise shadow the stdlib for this runtime. Already-imported modules are
+    taken from `sys.modules`; otherwise the import runs with that first path
+    entry dropped. (`sys` itself is a builtin and can never be shadowed.)
+    """
+    module = _cribo_sys.modules.get(name)
+    if module is not None:
+        return module
+    saved_path = _cribo_sys.path
+    _cribo_sys.path = list(saved_path[1:])
+    try:
+        return __import__(name)
+    finally:
+        _cribo_sys.path = saved_path
 
 
 class _CriboSmStream(object):
@@ -51,20 +68,20 @@ class _CriboSourceMapRuntime(object):
     _B64 = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
     _CHUNK = 8192
 
-    def __init__(self, mode, bundle_file):
+    def __init__(self, mode, bundle_file, os_mod, binascii_mod, threading_mod):
         self._mode = mode
         self._bundle = bundle_file
-        self._os = _cribo_os
+        self._os = os_mod
         self._sys = _cribo_sys
-        self._binascii = _cribo_binascii
-        self._threading = _cribo_threading
+        self._binascii = binascii_mod
+        self._threading = threading_mod
         self._stream_cls = _CriboSmStream
         # Re-entrancy guard; thread-local so a hook firing on one thread never
         # disables remapping on another.
-        self._local = _cribo_threading.local()
+        self._local = threading_mod.local()
         self._prev_excepthook = _cribo_sys.excepthook
         self._prev_unraisablehook = _cribo_sys.unraisablehook
-        self._prev_threading_hook = _cribo_threading.excepthook
+        self._prev_threading_hook = threading_mod.excepthook
         try:
             self._group_type = BaseExceptionGroup
         except NameError:  # Python < 3.11
@@ -75,6 +92,25 @@ class _CriboSourceMapRuntime(object):
         self._sys.excepthook = self.excepthook
         self._sys.unraisablehook = self.unraisablehook
         self._threading.excepthook = self.threading_hook
+
+    @classmethod
+    def _bootstrap(cls, mode, bundle_file):
+        """Import dependencies safely, construct, and install — fail-open.
+
+        Any failure (however exotic the host environment) leaves the program
+        running without remapping instead of aborting it at startup.
+        """
+        try:
+            runtime = cls(
+                mode,
+                bundle_file,
+                _cribo_sm_import("os"),
+                _cribo_sm_import("binascii"),
+                _cribo_sm_import("threading"),
+            )
+            runtime.install()
+        except BaseException:
+            pass
 
     # -- map location and raw chunk access ---------------------------------
 
@@ -473,14 +509,31 @@ class _CriboSourceMapRuntime(object):
             handle.close()
         return None
 
-    def _write_frames(self, traceback_obj, table, sources, map_dir, write):
+    def _effective_tb_limit(self):
+        """The application's `sys.tracebacklimit`, or None when unset/invalid."""
+        limit = getattr(self._sys, "tracebacklimit", None)
+        return limit if isinstance(limit, int) else None
+
+    def _write_frames(self, traceback_obj, table, sources, map_dir, write, limit):
         """Write remapped frame lines, collapsing repeated frames like CPython.
 
         Consecutive identical frames (recursion) print at most 3 times followed
         by a "[Previous line repeated N more times]" marker; source line text
         is cached per (file, line) within one rendering to avoid re-reading
-        files.
+        files. A positive `limit` keeps only the last `limit` frames, matching
+        the interpreter's `sys.tracebacklimit` handling in the default hook.
         """
+        if limit is not None:
+            total = 0
+            probe = traceback_obj
+            while probe is not None:
+                total += 1
+                probe = probe.tb_next
+            skip = total - limit
+            while skip > 0 and traceback_obj is not None:
+                traceback_obj = traceback_obj.tb_next
+                skip -= 1
+
         cache = {}
         last = None
         repeats = 0
@@ -570,10 +623,18 @@ class _CriboSourceMapRuntime(object):
                         "occurred:\n\n"
                     )
             tb = getattr(exc, "__traceback__", None)
-            if tb is not None:
+            limit = self._effective_tb_limit()
+            if tb is not None and (limit is None or limit > 0):
                 write("Traceback (most recent call last):\n")
-                self._write_frames(tb, table, sources, map_dir, write)
+                self._write_frames(tb, table, sources, map_dir, write, limit)
             write(self._exception_line(exc))
+            notes = getattr(exc, "__notes__", None)
+            if notes:
+                try:
+                    for note in notes:
+                        write("%s\n" % (note,))
+                except BaseException:
+                    pass
 
     def _try_render(self, exc_value, traceback_obj, prefix):
         """Attempt a remapped rendering to stderr; True on success.
@@ -695,6 +756,6 @@ class _CriboSourceMapRuntime(object):
         self._prev_unraisablehook(unraisable)
 
 
-_CriboSourceMapRuntime(
+_CriboSourceMapRuntime._bootstrap(
     "__CRIBO_SOURCEMAP_MODE__", globals().get("__file__", "<stdin>")
-).install()
+)

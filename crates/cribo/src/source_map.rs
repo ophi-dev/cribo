@@ -368,6 +368,25 @@ impl ParallelWalker<'_> {
                             gen_handler;
                         let ruff_python_ast::ExceptHandler::ExceptHandler(orig_handler) =
                             orig_handler;
+                        // Evaluating an exception matcher can itself raise, and
+                        // Python reports the `except` header line; give the
+                        // header its own mapping via the matcher expression's
+                        // provenance.
+                        if let (Some(_), Some(orig_type)) =
+                            (&gen_handler.type_, &orig_handler.type_)
+                            && let Some((module_ordinal, original_line)) = self.provenance.resolve(
+                                orig_type.node_index().load(),
+                                orig_handler.range().start(),
+                            )
+                        {
+                            self.records.push(MappingRecord {
+                                generated_line: self
+                                    .line_index
+                                    .line_of(gen_handler.range().start()),
+                                module_ordinal,
+                                original_line,
+                            });
+                        }
                         self.walk_body(&gen_handler.body, &orig_handler.body);
                     }
                 }
@@ -478,19 +497,17 @@ pub(crate) fn inject_runtime_prologue(
     match ruff_python_parser::parse_module(&source) {
         Ok(parsed) => {
             let mut statements = parsed.into_syntax().body;
-            // Drop the template's leading docstring: injected at position zero
-            // it would otherwise become the bundle's module docstring and
+            // Drop the template's leading docstring: injected near position
+            // zero it could otherwise become the bundle's module docstring and
             // change the program's observable `__doc__`.
-            if statements.first().is_some_and(|stmt| {
-                matches!(
-                    stmt,
-                    Stmt::Expr(expr) if expr.value.is_string_literal_expr()
-                )
-            }) {
+            if statements.first().is_some_and(is_docstring) {
                 statements.remove(0);
             }
-            let insert_at = bundled_ast
-                .body
+            // Insert after the bundle's own docstring (which must stay first to
+            // remain `__doc__`) and after any `from __future__` imports (which
+            // must precede all other code).
+            let mut insert_at = usize::from(bundled_ast.body.first().is_some_and(is_docstring));
+            insert_at += bundled_ast.body[insert_at..]
                 .iter()
                 .take_while(|stmt| is_future_import(stmt))
                 .count();
@@ -509,6 +526,11 @@ fn is_future_import(stmt: &Stmt) -> bool {
         Stmt::ImportFrom(import)
             if import.module.as_ref().is_some_and(|module| module.as_str() == "__future__")
     )
+}
+
+/// Whether a statement is a bare string-literal expression (a docstring when leading).
+fn is_docstring(stmt: &Stmt) -> bool {
+    matches!(stmt, Stmt::Expr(expr) if expr.value.is_string_literal_expr())
 }
 
 /// Build the complete Source Map v3 JSON for an emitted bundle.

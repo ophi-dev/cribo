@@ -857,3 +857,151 @@ fn runtime_notifies_preinstalled_custom_excepthook() {
         "the preinstalled custom hook must still be notified after a remap: {stderr}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Second review round: shadowing, docstring, tracebacklimit, notes, handlers
+// ---------------------------------------------------------------------------
+
+#[test]
+fn runtime_survives_shadowing_threading_module() {
+    // A project file named threading.py next to the bundle must not be able
+    // to break (or be imported by) the runtime's own stdlib imports.
+    let dir = crash_project();
+    let bundle = bundle_crash_project(&dir, "--sourcemap=linked");
+    fs::write(
+        dir.path().join("threading.py"),
+        "raise RuntimeError(\"shadow module imported\")\n",
+    )
+    .expect("write shadowing module");
+
+    let (ok, _, stderr) = run_python(&bundle, &[]);
+    assert!(!ok, "the crash must still surface");
+    assert!(
+        !stderr.contains("shadow module imported"),
+        "the runtime must not import the adjacent threading.py: {stderr}"
+    );
+    assert_remapped(&stderr);
+}
+
+#[test]
+fn bundle_docstring_survives_runtime_injection() {
+    let dir = make_project(&[
+        ("main.py", "\"\"\"Entry doc.\"\"\"\n\nprint(__doc__)\n"),
+        ("helper.py", "unused = True\n"),
+    ]);
+    let out = dir.path().join("bundle.py");
+    let (ok, _, stderr) = run_cribo(&[
+        "--entry",
+        &entry_arg(&dir),
+        "--output",
+        &out.to_string_lossy(),
+        "--sourcemap=inline",
+    ]);
+    assert!(ok, "bundling must succeed: {stderr}");
+    let (ok, stdout, stderr) = run_python(&out, &[]);
+    assert!(ok, "bundle must run: {stderr}");
+    assert!(
+        stdout.contains("Entry doc."),
+        "the injected runtime must not displace the bundle docstring: {stdout}"
+    );
+}
+
+#[test]
+fn runtime_honors_tracebacklimit() {
+    let dir = make_project(&[
+        (
+            "main.py",
+            // Set the limit on the real sys module: the bundler's stdlib
+            // import proxy forwards attribute reads but not writes, so a
+            // plain `sys.tracebacklimit = 0` would only decorate the proxy
+            // (true for bundles with or without source maps).
+            "from helper import boom\n\n__import__(\"sys\").tracebacklimit = 0\nboom()\n",
+        ),
+        (
+            "helper.py",
+            "def boom():\n    raise ValueError(\"limited kaboom\")\n",
+        ),
+    ]);
+    let bundle = bundle_crash_project(&dir, "--sourcemap=linked");
+    let (ok, _, stderr) = run_python(&bundle, &[]);
+    assert!(!ok);
+    assert!(stderr.contains("ValueError: limited kaboom"), "{stderr}");
+    assert!(
+        !stderr.contains("Traceback (most recent call last):"),
+        "tracebacklimit = 0 must suppress the frame listing: {stderr}"
+    );
+    assert!(
+        !stderr.contains("File \""),
+        "tracebacklimit = 0 must suppress all frames: {stderr}"
+    );
+}
+
+#[test]
+fn runtime_renders_exception_notes() {
+    let dir = make_project(&[
+        ("main.py", "from helper import boom\n\nboom()\n"),
+        (
+            "helper.py",
+            "def boom():\n    error = ValueError(\"kaboom\")\n    error.add_note(\"NOTE: check \
+             the flux capacitor\")\n    raise error\n",
+        ),
+    ]);
+    let bundle = bundle_crash_project(&dir, "--sourcemap=linked");
+    let (ok, _, stderr) = run_python(&bundle, &[]);
+    assert!(!ok);
+    assert!(
+        stderr.contains("helper.py\", line 4, in boom"),
+        "traceback must be remapped: {stderr}"
+    );
+    assert!(
+        stderr.contains("NOTE: check the flux capacitor"),
+        "__notes__ must survive remapped rendering: {stderr}"
+    );
+}
+
+#[test]
+fn map_covers_elif_and_except_headers() {
+    let dir = make_project(&[
+        (
+            "main.py",
+            "from helper import classify\n\nprint(classify(2))\n",
+        ),
+        (
+            "helper.py",
+            "def classify(value):\n    if value == 0:\n        return \"zero\"\n    elif value == \
+             1:\n        return \"one\"\n    elif value == 2:\n        return \"two\"\n    \
+             try:\n        return int(value)\n    except ValueError:\n        return \"other\"\n",
+        ),
+    ]);
+    let out = dir.path().join("bundle.py");
+    let (ok, _, stderr) = run_cribo(&[
+        "--entry",
+        &entry_arg(&dir),
+        "--output",
+        &out.to_string_lossy(),
+        "--sourcemap=linked",
+    ]);
+    assert!(ok, "bundling must succeed: {stderr}");
+    let map_json = fs::read_to_string(dir.path().join("bundle.py.map")).expect("read map");
+    let map = parse_map(&map_json);
+
+    let helper_id = (0..map.get_sources().count() as u32)
+        .find(|id| {
+            map.get_source(*id)
+                .is_some_and(|s| s.ends_with("helper.py"))
+        })
+        .expect("helper.py in sources");
+    let mapped_helper_lines: Vec<u32> = map
+        .get_tokens()
+        .filter(|token| token.get_source_id() == Some(helper_id))
+        .map(|token| token.get_src_line())
+        .collect();
+    // 0-based original lines: 3 and 5 are the `elif` headers, 9 is `except ValueError:`.
+    for header_line in [3, 5, 9] {
+        assert!(
+            mapped_helper_lines.contains(&header_line),
+            "helper.py 0-based line {header_line} (a clause header) must be mapped; mapped \
+             lines: {mapped_helper_lines:?}"
+        );
+    }
+}
