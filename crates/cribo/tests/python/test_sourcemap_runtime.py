@@ -27,7 +27,12 @@ def load_runtime(path):
     spec.loader.exec_module(module)
     sys.excepthook, sys.unraisablehook, threading.excepthook = prev_hooks
     return module._CriboSourceMapRuntime(
-        "external", "<test-bundle>", os, __import__("binascii"), threading
+        "external",
+        "<test-bundle>",
+        os,
+        __import__("binascii"),
+        threading,
+        __import__("traceback"),
     )
 
 
@@ -213,7 +218,12 @@ def test_env_path_wins_for_every_mode(rt):
     try:
         os.environ["CRIBO_SOURCE_MAPS"] = path
         inline_stdin = type(rt)(
-            "inline", "<stdin>", os, __import__("binascii"), threading
+            "inline",
+            "<stdin>",
+            os,
+            __import__("binascii"),
+            threading,
+            __import__("traceback"),
         )
         loaded = inline_stdin._load({1})
         assert loaded is not None, "env path must activate a <stdin> inline bundle"

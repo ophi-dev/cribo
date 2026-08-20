@@ -203,10 +203,13 @@ Decisions made (or refined) during implementation:
   consecutive frames, then `[Previous line repeated N more times]`), with a
   per-render line-text cache; a `RecursionError` traceback stays small and does
   not trigger thousands of file reads.
-- **`threading` is imported at bundle startup** (aliased) so
-  `threading.excepthook` can be installed; this is the only non-trivial startup
-  cost and is negligible in practice. Map location checks, environment reads,
-  file access, and decoding all remain deferred to the first exception.
+- **`threading` and `traceback` are imported at bundle startup** (through a
+  shadow-proof importer that skips the script directory) so
+  `threading.excepthook` can be installed and exception formatting cannot be
+  degraded by a first-party module registering `sys.modules["traceback"]`;
+  these are the only non-trivial startup costs and are negligible in practice.
+  Map location checks, environment reads, file access, and decoding all remain
+  deferred to the first exception.
 - **Snapshot integration:** fixtures under `crates/cribo/tests/fixtures/` whose
   name starts with `sourcemap_` are bundled with `--sourcemap=linked` and gain a
   `source_map@<fixture>.snap` snapshot: a normalized, path-free dump of every

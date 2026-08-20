@@ -749,7 +749,11 @@ impl BundleOrchestrator {
                 || std::ffi::OsString::from("bundle.py.map"),
                 std::ffi::OsStr::to_os_string,
             );
-            tmp_name.push(".tmp");
+            // Process-unique staging name: concurrent builds targeting the same
+            // output must not stomp each other's staged map (concurrent writers
+            // to one output path remain externally undefined, as for the bundle
+            // file itself, but each publish stays internally consistent).
+            tmp_name.push(format!(".{}.tmp", std::process::id()));
             let tmp_path = map_path.with_file_name(tmp_name);
             fs::write(&tmp_path, map_json).with_context(|| {
                 format!("Failed to stage source map file: {}", tmp_path.display())
