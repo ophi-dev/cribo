@@ -703,16 +703,15 @@ impl BundleOrchestrator {
         })?;
         let mut bundled_code = emitted.code;
 
-        // Apply the configured source map delivery mode.
+        // Apply the configured source map delivery mode. The map file itself is
+        // written only after the bundle write succeeds, so a failed run never
+        // leaves an orphaned (and potentially stale) map next to an old bundle.
+        let mut pending_map: Option<(PathBuf, &str)> = None;
         if let (Some(mode), Some(map_json)) = (self.config.sourcemap, emitted.source_map.as_deref())
         {
             match mode {
                 SourceMapMode::Linked | SourceMapMode::External => {
                     let map_path = source_map_path_for(output_path);
-                    fs::write(&map_path, map_json).with_context(|| {
-                        format!("Failed to write source map file: {}", map_path.display())
-                    })?;
-                    info!("Source map written to: {}", map_path.display());
                     if mode == SourceMapMode::Linked {
                         let map_file_name = map_path.file_name().map_or_else(
                             || map_path.to_string_lossy().into_owned(),
@@ -723,6 +722,7 @@ impl BundleOrchestrator {
                             &map_file_name,
                         ));
                     }
+                    pending_map = Some((map_path, map_json));
                 }
                 SourceMapMode::Inline => {
                     bundled_code.push('\n');
@@ -742,6 +742,13 @@ impl BundleOrchestrator {
             .with_context(|| format!("Failed to write output file: {}", output_path.display()))?;
 
         info!("Bundle written to: {}", output_path.display());
+
+        if let Some((map_path, map_json)) = pending_map {
+            fs::write(&map_path, map_json).with_context(|| {
+                format!("Failed to write source map file: {}", map_path.display())
+            })?;
+            info!("Source map written to: {}", map_path.display());
+        }
 
         Ok(())
     }

@@ -254,16 +254,23 @@ Runtime activation follows the delivery mode:
   time — delete the map to ship without remapping, drop it back to re-enable
 - `external`: dormant unless `CRIBO_SOURCE_MAPS=1` is set (or the variable holds a
   path to the map file)
+- In every mode, `CRIBO_SOURCE_MAPS=<path>` points the runtime at an explicit map
+  file — the only way to remap a bundle executed via `python -` (stdin), whose
+  inline map cannot be re-read at run time
 
 The runtime is lazy (zero file access, parsing, or decoding until the first
 uncaught exception), streams the map in constant memory so it works under resource
 pressure, covers `sys.excepthook`, `threading.excepthook`, and
-`sys.unraisablehook`, and falls back to the standard traceback on any failure.
-Known limitations: user code that formats tracebacks itself (e.g.
-`traceback.format_exc()`) is not remapped, and under a hard out-of-memory
-condition no pure-Python hook can run. Configuration-file equivalents:
-`sourcemap = "linked" | "inline" | "external"` and `sources-content = true|false`
-in `cribo.toml`. Full design: [docs/source-maps.md](docs/source-maps.md).
+`sys.unraisablehook`, chains to any pre-installed custom hooks, preserves the
+default silent handling of `SystemExit` in worker threads, and falls back to the
+standard traceback on any failure. Known limitations: user code that formats
+tracebacks itself (e.g. `traceback.format_exc()`) is not remapped;
+`ExceptionGroup` chains defer to the standard (unremapped but complete) rendering;
+and under a hard out-of-memory condition no pure-Python hook can run.
+Configuration-file equivalents: `sourcemap = "linked" | "inline" | "external"` and
+`sources-content = true|false` in `cribo.toml`; environment equivalents:
+`CRIBO_SOURCEMAP` and `CRIBO_SOURCES_CONTENT`. Full design:
+[docs/source-maps.md](docs/source-maps.md).
 
 ### Dependency Detection (`cribo deps`)
 

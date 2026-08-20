@@ -187,6 +187,8 @@ pub(crate) struct EnvConfig {
     pub target_version: Option<String>,
     pub tree_shake: Option<bool>,
     pub bundle_third_party: Option<bool>,
+    pub sourcemap: Option<SourceMapMode>,
+    pub sources_content: Option<bool>,
     pub python: Option<PathBuf>,
 }
 
@@ -259,6 +261,16 @@ impl EnvConfig {
             config.bundle_third_party = parse_bool(&bundle_third_party_str);
         }
 
+        // CRIBO_SOURCEMAP - source map delivery mode (linked|inline|external)
+        if let Ok(sourcemap_str) = env::var("CRIBO_SOURCEMAP") {
+            config.sourcemap = parse_sourcemap_mode(&sourcemap_str);
+        }
+
+        // CRIBO_SOURCES_CONTENT - boolean flag overriding the sourcesContent default
+        if let Ok(sources_content_str) = env::var("CRIBO_SOURCES_CONTENT") {
+            config.sources_content = parse_bool(&sources_content_str);
+        }
+
         if let Ok(python) = env::var("CRIBO_PYTHON") {
             config.python = parse_env_path(&python);
         }
@@ -292,6 +304,12 @@ impl EnvConfig {
         if let Some(bundle_third_party) = self.bundle_third_party {
             config.bundle_third_party = Some(bundle_third_party);
         }
+        if let Some(sourcemap) = self.sourcemap {
+            config.sourcemap = Some(sourcemap);
+        }
+        if let Some(sources_content) = self.sources_content {
+            config.sources_content = Some(sources_content);
+        }
         if let Some(python) = self.python {
             config.requirements.python = Some(python);
         }
@@ -305,6 +323,17 @@ fn parse_bool(value: &str) -> Option<bool> {
     match value.cow_to_lowercase().as_ref() {
         "true" | "1" | "yes" | "on" => Some(true),
         "false" | "0" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+/// Parse a source map delivery mode from an environment value.
+fn parse_sourcemap_mode(value: &str) -> Option<SourceMapMode> {
+    use cow_utils::CowUtils;
+    match value.cow_to_lowercase().as_ref() {
+        "linked" => Some(SourceMapMode::Linked),
+        "inline" => Some(SourceMapMode::Inline),
+        "external" => Some(SourceMapMode::External),
         _ => None,
     }
 }

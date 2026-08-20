@@ -12,20 +12,27 @@ use tempfile::TempDir;
 /// Marker prefix of an inline source map comment.
 const INLINE_MARKER: &str = "# sourceMappingURL=data:application/json;base64,";
 
+/// Create a project from (file name, content) pairs and return its directory.
+fn make_project(files: &[(&str, &str)]) -> TempDir {
+    let dir = TempDir::new().expect("create temp dir");
+    for (name, content) in files {
+        fs::write(dir.path().join(name), content).expect("write fixture file");
+    }
+    dir
+}
+
 /// Create a two-module fixture project and return its directory.
 fn fixture_project() -> TempDir {
-    let dir = TempDir::new().expect("create temp dir");
-    fs::write(
-        dir.path().join("main.py"),
-        "from helper import greet\n\nprint(greet(\"world\"))\n",
-    )
-    .expect("write main.py");
-    fs::write(
-        dir.path().join("helper.py"),
-        "def greet(name):\n    message = f\"hello {name}\"\n    return message\n",
-    )
-    .expect("write helper.py");
-    dir
+    make_project(&[
+        (
+            "main.py",
+            "from helper import greet\n\nprint(greet(\"world\"))\n",
+        ),
+        (
+            "helper.py",
+            "def greet(name):\n    message = f\"hello {name}\"\n    return message\n",
+        ),
+    ])
 }
 
 /// Run the cribo binary with `args`, returning (status success, stdout, stderr).
@@ -46,10 +53,12 @@ fn parse_map(json: &str) -> oxc_sourcemap::SourceMap<'_> {
     oxc_sourcemap::SourceMap::from_json_string(json).expect("valid Source Map v3 JSON")
 }
 
+/// Return the fixture entry path (`main.py`) as a CLI argument string.
 fn entry_arg(dir: &TempDir) -> String {
     dir.path().join("main.py").to_string_lossy().into_owned()
 }
 
+/// Assert the map targets `bundle_file`, lists `helper.py`, and has mappings.
 fn assert_map_covers_helper(map_json: &str, bundle_file: &str) {
     let map = parse_map(map_json);
     assert_eq!(map.get_file(), Some(bundle_file));
@@ -353,18 +362,13 @@ fn config_file_sources_content_key_is_honored() {
 
 /// Create a fixture whose entry crashes two calls deep inside helper.py.
 fn crash_project() -> TempDir {
-    let dir = TempDir::new().expect("create temp dir");
-    fs::write(
-        dir.path().join("main.py"),
-        "from helper import boom\n\nboom()\n",
-    )
-    .expect("write main.py");
-    fs::write(
-        dir.path().join("helper.py"),
-        "def boom():\n    inner()\n\ndef inner():\n    raise ValueError(\"kaboom\")\n",
-    )
-    .expect("write helper.py");
-    dir
+    make_project(&[
+        ("main.py", "from helper import boom\n\nboom()\n"),
+        (
+            "helper.py",
+            "def boom():\n    inner()\n\ndef inner():\n    raise ValueError(\"kaboom\")\n",
+        ),
+    ])
 }
 
 /// Bundle the crash project with the given sourcemap argument; return bundle path.
@@ -385,6 +389,8 @@ fn bundle_crash_project(dir: &TempDir, sourcemap_arg: &str) -> std::path::PathBu
 fn run_python(bundle: &Path, envs: &[(&str, &str)]) -> (bool, String, String) {
     let mut command = Command::new(common::get_python_executable());
     command.arg(bundle);
+    // The env-gating tests require a clean slate; an explicit entry below wins.
+    command.env_remove("CRIBO_SOURCE_MAPS");
     for (key, value) in envs {
         command.env(key, value);
     }
@@ -534,21 +540,18 @@ fn python_runtime_unit_tests() {
         output.status.success(),
         "python runtime unit tests failed:\n{stdout}\n{stderr}"
     );
-    assert!(stdout.contains("ALL 12 RUNTIME TESTS PASSED"), "{stdout}");
+    // The harness discovers its tests and reports the count itself; assert the
+    // sentinel plus a sanity floor instead of duplicating the exact count here.
+    assert!(stdout.contains("RUNTIME TESTS PASSED"), "{stdout}");
+    assert!(
+        stdout.matches("PASS test_").count() >= 10,
+        "expected a healthy number of runtime unit tests: {stdout}"
+    );
 }
 
 // ---------------------------------------------------------------------------
 // Full hook coverage, duress conditions, and laziness
 // ---------------------------------------------------------------------------
-
-/// Create a project from (file name, content) pairs and return its directory.
-fn make_project(files: &[(&str, &str)]) -> TempDir {
-    let dir = TempDir::new().expect("create temp dir");
-    for (name, content) in files {
-        fs::write(dir.path().join(name), content).expect("write fixture file");
-    }
-    dir
-}
 
 #[test]
 fn runtime_remaps_thread_crash() {
@@ -639,8 +642,9 @@ fn runtime_survives_memory_pressure() {
         (
             "main.py",
             "import resource\nfrom helper import hoard\n\n_soft, hard = \
-             resource.getrlimit(resource.RLIMIT_AS)\n\
-             resource.setrlimit(resource.RLIMIT_AS, (512 * 1024 * 1024, hard))\nhoard()\n",
+             resource.getrlimit(resource.RLIMIT_AS)\ntarget = 512 * 1024 * 1024\nif hard != \
+             resource.RLIM_INFINITY:\n    target = min(target, hard)\n\
+             resource.setrlimit(resource.RLIMIT_AS, (target, hard))\nhoard()\n",
         ),
         (
             "helper.py",
@@ -704,7 +708,7 @@ fn runtime_falls_back_cleanly_on_fd_exhaustion() {
 }
 
 #[test]
-fn runtime_is_lazy_on_happy_path() {
+fn runtime_tolerates_broken_map_on_happy_path() {
     let dir = fixture_project(); // non-throwing project
     let out = dir.path().join("bundle.py");
     let (ok, _, stderr) = run_cribo(&[
@@ -716,8 +720,11 @@ fn runtime_is_lazy_on_happy_path() {
     ]);
     assert!(ok, "bundling must succeed: {stderr}");
 
-    // Replace the map with something that would fail loudly on ANY access:
-    // garbage content and, on Unix, no read permission at all.
+    // Replace the map with garbage (and drop read permission on Unix, though
+    // that is a no-op when running as root). The runtime is fail-open, so this
+    // cannot *prove* the map is never touched — laziness itself is enforced by
+    // the runtime design (all map access lives behind the hook path). What it
+    // proves is that a broken or unreadable map never disturbs a successful run.
     let map_path = dir.path().join("bundle.py.map");
     fs::write(&map_path, "NOT JSON {{{").expect("overwrite map");
     #[cfg(unix)]
@@ -732,6 +739,121 @@ fn runtime_is_lazy_on_happy_path() {
     assert!(stdout.contains("hello world"));
     assert!(
         stderr.is_empty(),
-        "no map access may happen on the happy path: {stderr}"
+        "a broken map must not disturb a successful run: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Precedence, environment configuration, and hook-chaining behavior
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cli_sourcemap_flag_overrides_config_file() {
+    let dir = fixture_project();
+    fs::write(dir.path().join("cribo.toml"), "sourcemap = \"external\"\n").expect("write config");
+    let out = dir.path().join("bundle.py");
+    let (ok, _, stderr) = run_cribo(&[
+        "--entry",
+        &entry_arg(&dir),
+        "--output",
+        &out.to_string_lossy(),
+        "--config",
+        &dir.path().join("cribo.toml").to_string_lossy(),
+        "--sourcemap=linked",
+    ]);
+    assert!(ok, "bundling must succeed: {stderr}");
+    let bundle = fs::read_to_string(&out).expect("read bundle");
+    assert!(
+        bundle.contains("# sourceMappingURL=bundle.py.map"),
+        "CLI --sourcemap=linked must override the config file's external mode"
+    );
+}
+
+#[test]
+fn env_var_enables_sourcemap_generation() {
+    let dir = fixture_project();
+    let out = dir.path().join("bundle.py");
+    let output = Command::new(env!("CARGO_BIN_EXE_cribo"))
+        .args([
+            "--entry",
+            &entry_arg(&dir),
+            "--output",
+            &out.to_string_lossy(),
+        ])
+        .env("CRIBO_SOURCEMAP", "external")
+        .env("CRIBO_SOURCES_CONTENT", "false")
+        .output()
+        .expect("run cribo binary");
+    assert!(
+        output.status.success(),
+        "bundling must succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let map_json = fs::read_to_string(dir.path().join("bundle.py.map"))
+        .expect("CRIBO_SOURCEMAP env var must enable map emission");
+    assert_map_covers_helper(&map_json, "bundle.py");
+    assert!(
+        !map_json.contains("sourcesContent"),
+        "CRIBO_SOURCES_CONTENT=false must strip embedding"
+    );
+}
+
+#[test]
+fn runtime_keeps_thread_sys_exit_silent() {
+    let dir = make_project(&[
+        (
+            "main.py",
+            "import sys\nimport threading\n\nworker = threading.Thread(target=lambda: \
+             sys.exit(3))\nworker.start()\nworker.join()\nprint(\"done\")\n",
+        ),
+        ("helper.py", "unused = True\n"),
+    ]);
+    let out = dir.path().join("bundle.py");
+    let (ok, _, stderr) = run_cribo(&[
+        "--entry",
+        &entry_arg(&dir),
+        "--output",
+        &out.to_string_lossy(),
+        "--sourcemap=linked",
+    ]);
+    assert!(ok, "bundling must succeed: {stderr}");
+    let (ok, stdout, stderr) = run_python(&out, &[]);
+    assert!(
+        ok,
+        "sys.exit in a worker thread must not fail the process: {stderr}"
+    );
+    assert!(stdout.contains("done"));
+    assert!(
+        stderr.is_empty(),
+        "SystemExit in a thread must stay silent, as with the default hook: {stderr}"
+    );
+}
+
+#[test]
+fn runtime_notifies_preinstalled_custom_excepthook() {
+    // A custom excepthook installed before the bundle's prologue (via
+    // sitecustomize) must still observe the exception after a successful remap.
+    let dir = crash_project();
+    fs::write(
+        dir.path().join("sitecustomize.py"),
+        "import sys\n\n_original = sys.excepthook\n\n\ndef reporting_hook(exc_type, exc_value, \
+         tb):\n    print(\"REPORTER SAW:\", exc_type.__name__, file=sys.stderr)\n\n\nsys.excepthook \
+         = reporting_hook\n",
+    )
+    .expect("write sitecustomize");
+    let bundle = bundle_crash_project(&dir, "--sourcemap=linked");
+
+    let mut command = Command::new(common::get_python_executable());
+    command.arg(&bundle);
+    command.env_remove("CRIBO_SOURCE_MAPS");
+    // Make usercustomize importable so the custom hook installs before the bundle.
+    command.env("PYTHONPATH", dir.path());
+    let output = command.output().expect("run python");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert_remapped(&stderr);
+    assert!(
+        stderr.contains("REPORTER SAW: ValueError"),
+        "the preinstalled custom hook must still be notified after a remap: {stderr}"
     );
 }

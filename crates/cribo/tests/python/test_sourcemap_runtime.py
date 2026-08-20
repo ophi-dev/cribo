@@ -3,6 +3,9 @@
 Driven by the Rust integration test `python_runtime_unit_tests` (plain asserts,
 no pytest dependency). Usage: python test_sourcemap_runtime.py <runtime.py>
 where <runtime.py> is the template with the mode placeholder substituted.
+
+Tests are discovered automatically: every module-level callable whose name
+starts with ``test_`` runs once, receiving the runtime instance.
 """
 
 import importlib.util
@@ -13,17 +16,21 @@ import threading
 
 
 def load_runtime(path):
-    """Import the runtime module, then restore the hooks it installs."""
+    """Import the runtime module and return a runtime instance for testing.
+
+    The import installs the hooks; they are restored immediately so failures
+    in this harness surface as normal tracebacks.
+    """
     prev_hooks = (sys.excepthook, sys.unraisablehook, threading.excepthook)
     spec = importlib.util.spec_from_file_location("cribo_sm_runtime", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     sys.excepthook, sys.unraisablehook, threading.excepthook = prev_hooks
-    return module
+    return module._CriboSourceMapRuntime("external", "<test-bundle>")
 
 
 def test_stream_reads_across_chunk_boundaries(rt):
-    stream = rt._CriboSmStream([b"ab", b"", b"c", b"de"])
+    stream = rt._stream_cls([b"ab", b"", b"c", b"de"])
     got = []
     while True:
         byte = stream.read_byte()
@@ -35,7 +42,7 @@ def test_stream_reads_across_chunk_boundaries(rt):
 
 
 def _scan(rt, json_text, needed, max_needed):
-    return rt._cribo_sm_scan([json_text.encode("utf-8")], needed, max_needed)
+    return rt._scan([json_text.encode("utf-8")], needed, max_needed)
 
 
 def test_scan_extracts_sources_and_mappings(rt):
@@ -94,7 +101,7 @@ def test_vlq_early_exit_stops_reading(rt):
         yield b'{"sources":["a.py"],"mappings":"AAAA;AACA;'
         raise Boom("decoder read past its early-exit point")
 
-    sources, table = rt._cribo_sm_scan(chunks(), {0}, 0)
+    _sources, table = rt._scan(chunks(), {0}, 0)
     assert table == {0: (0, 0)}, table
 
 
@@ -108,7 +115,7 @@ def test_vlq_rejects_escapes_in_mappings(rt):
         raise AssertionError("escape inside mappings must raise")
 
 
-def make_inline_bundle(payload_json, line_length=None):
+def make_inline_bundle(payload_json):
     """Create a temp file shaped like an inline-mode bundle; return its path."""
     import base64
 
@@ -129,12 +136,10 @@ def test_inline_payload_scan_and_chunked_base64(rt):
     json_text = '{"filler":"' + filler + '","sources":["a.py"],"mappings":"AAAA"}'
     path = make_inline_bundle(json_text)
     try:
-        decoded = b"".join(rt._cribo_sm_inline_chunks(path))
+        decoded = b"".join(rt._inline_chunks(path))
         assert decoded.decode("utf-8") == json_text
         # And end-to-end through the scanner:
-        sources, table = rt._cribo_sm_scan(
-            rt._cribo_sm_inline_chunks(path), {0}, 0
-        )
+        sources, table = rt._scan(rt._inline_chunks(path), {0}, 0)
         assert sources == ["a.py"], sources
         assert table == {0: (0, 0)}, table
     finally:
@@ -148,7 +153,7 @@ def test_inline_scan_without_marker_yields_nothing(rt):
     with handle as f:
         f.write("print('no map here')\n" * 50)
     try:
-        assert b"".join(rt._cribo_sm_inline_chunks(handle.name)) == b""
+        assert b"".join(rt._inline_chunks(handle.name)) == b""
     finally:
         os.unlink(handle.name)
 
@@ -157,42 +162,69 @@ def test_json_fallback_matches_streaming(rt):
     json_text = '{"sources":["a.py","b.py"],"mappings":"AAAA;ACCA"}'
     streaming = _scan(rt, json_text, {0, 1}, 1)
 
-    path = None
-    handle = tempfile.NamedTemporaryFile("w", suffix=".map", delete=False)
+    handle = tempfile.NamedTemporaryFile(
+        "w", suffix=".map", delete=False, encoding="utf-8"
+    )
     with handle as f:
         f.write(json_text)
     path = handle.name
+    previous = os.environ.get("CRIBO_SOURCE_MAPS")
     try:
         os.environ["CRIBO_SOURCE_MAPS"] = path
-        loaded = rt._cribo_sm_load_json_fallback({1, 2})
+        loaded = rt._load_json_fallback({1, 2})
         assert loaded is not None
         table, sources, _map_dir = loaded
         # Fallback tables are 1-based.
-        expected = {line0 + 1: (idx, line0src + 1) for line0, (idx, line0src) in streaming[1].items()}
+        expected = {
+            line0 + 1: (idx, src_line0 + 1)
+            for line0, (idx, src_line0) in streaming[1].items()
+        }
         assert table == expected, (table, expected)
         assert sources == streaming[0]
     finally:
-        del os.environ["CRIBO_SOURCE_MAPS"]
+        if previous is None:
+            os.environ.pop("CRIBO_SOURCE_MAPS", None)
+        else:
+            os.environ["CRIBO_SOURCE_MAPS"] = previous
+        os.unlink(path)
+
+
+def test_env_path_wins_for_every_mode(rt):
+    # A CRIBO_SOURCE_MAPS path activates the runtime even for a <stdin> bundle
+    # (the stdin piping workflow cannot re-read its own inline map).
+    handle = tempfile.NamedTemporaryFile(
+        "w", suffix=".map", delete=False, encoding="utf-8"
+    )
+    with handle as f:
+        f.write('{"sources":["a.py"],"mappings":"AAAA"}')
+    path = handle.name
+    previous = os.environ.get("CRIBO_SOURCE_MAPS")
+    try:
+        os.environ["CRIBO_SOURCE_MAPS"] = path
+        inline_stdin = type(rt)("inline", "<stdin>")
+        loaded = inline_stdin._load({1})
+        assert loaded is not None, "env path must activate a <stdin> inline bundle"
+        table, sources, _map_dir = loaded
+        assert sources == ["a.py"]
+        assert table == {1: (0, 1)}, table
+        # Without the env override, a <stdin> inline bundle stays inactive.
+        os.environ.pop("CRIBO_SOURCE_MAPS", None)
+        assert inline_stdin._map_location() is None
+    finally:
+        if previous is None:
+            os.environ.pop("CRIBO_SOURCE_MAPS", None)
+        else:
+            os.environ["CRIBO_SOURCE_MAPS"] = previous
         os.unlink(path)
 
 
 def main():
     runtime_path = sys.argv[1]
     rt = load_runtime(runtime_path)
-    tests = [
-        test_stream_reads_across_chunk_boundaries,
-        test_scan_extracts_sources_and_mappings,
-        test_scan_negative_delta,
-        test_scan_source_index_delta,
-        test_scan_ignores_adversarial_sources_content,
-        test_scan_handles_unicode_escapes_in_sources,
-        test_scan_null_in_sources_array,
-        test_vlq_early_exit_stops_reading,
-        test_vlq_rejects_escapes_in_mappings,
-        test_inline_payload_scan_and_chunked_base64,
-        test_inline_scan_without_marker_yields_nothing,
-        test_json_fallback_matches_streaming,
-    ]
+    tests = sorted(
+        (obj for name, obj in globals().items() if name.startswith("test_") and callable(obj)),
+        key=lambda obj: obj.__name__,
+    )
     for test in tests:
         test(rt)
         print("PASS %s" % test.__name__)

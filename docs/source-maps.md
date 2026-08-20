@@ -228,3 +228,34 @@ Known limitations (documented in the README as well):
 - Mappings are statement/line-level with column 0 by design; Python tracebacks
   are line-oriented, so finer columns would add cost without changing the
   rendered output.
+
+
+## Review-Driven Refinements (PR #570)
+
+- **The runtime is a single class** (`_CriboSourceMapRuntime`); all collaborators
+  (modules, previous hooks, state) live on the instance and the installed hooks
+  are bound methods, so bundled user code rebinding any injected module-level
+  name cannot break remapping.
+- **Custom pre-installed hooks stay notified.** After a successful remap, a
+  previous `sys.excepthook`/`threading.excepthook`/`sys.unraisablehook` that
+  differs from the interpreter default is still invoked (error reporters and
+  `sitecustomize` integrations keep working); the default printer is the only
+  thing the remap replaces.
+- **`SystemExit` in worker threads stays silent**, matching the default
+  `threading.excepthook`.
+- **`ExceptionGroup` chains defer to the previous hook** (complete, unremapped
+  rendering) rather than losing nested tracebacks.
+- **The re-entrancy guard is thread-local.**
+- **`CRIBO_SOURCE_MAPS=<path>` works in every mode** and is the supported way to
+  remap a bundle executed via `python -` (stdin), whose own file cannot be
+  re-read; without it, inline mode deactivates gracefully for `<stdin>` bundles.
+- **Environment configuration:** `CRIBO_SOURCEMAP=linked|inline|external` and
+  `CRIBO_SOURCES_CONTENT=<bool>` participate in the standard `CRIBO_*` layering.
+- **The template's docstring is stripped at injection** so enabling source maps
+  does not change the bundle's `__doc__`.
+- **`elif` headers get their own mappings** (Python reports the header line when
+  a condition raises), using the condition expression's provenance.
+- **Linked/external maps are written only after the bundle write succeeds**, so
+  a failed run cannot leave a stale map next to an older bundle.
+- `relative_path` refuses lexically non-invertible bases (`..` components) and
+  falls back to the absolute source path.

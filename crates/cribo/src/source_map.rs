@@ -331,6 +331,22 @@ impl ParallelWalker<'_> {
                     for (gen_clause, orig_clause) in
                         g.elif_else_clauses.iter().zip(&o.elif_else_clauses)
                     {
+                        // An exception raised while evaluating an `elif`
+                        // condition reports the clause header line, so the
+                        // header needs its own mapping (provenance comes from
+                        // the condition expression, which carries a node index).
+                        if let (Some(_gen_test), Some(orig_test)) =
+                            (&gen_clause.test, &orig_clause.test)
+                            && let Some((module_ordinal, original_line)) = self
+                                .provenance
+                                .resolve(orig_test.node_index().load(), orig_clause.range().start())
+                        {
+                            self.records.push(MappingRecord {
+                                generated_line: self.line_index.line_of(gen_clause.range().start()),
+                                module_ordinal,
+                                original_line,
+                            });
+                        }
                         self.walk_body(&gen_clause.body, &orig_clause.body);
                     }
                 }
@@ -404,9 +420,12 @@ fn relative_path(base: &std::path::Path, target: &std::path::Path) -> std::path:
         match component {
             Component::Normal(_) => result.push(".."),
             // A remaining root/prefix component means the paths have no common
-            // ancestor expressible relatively; keep the target as-is.
-            Component::RootDir | Component::Prefix(_) => return target.to_path_buf(),
-            _ => {}
+            // ancestor expressible relatively; a `..` component cannot be
+            // inverted lexically. In both cases keep the target as-is.
+            Component::RootDir | Component::Prefix(_) | Component::ParentDir => {
+                return target.to_path_buf();
+            }
+            Component::CurDir => {}
         }
     }
     result.extend(target_components);
@@ -458,14 +477,24 @@ pub(crate) fn inject_runtime_prologue(
     let source = RUNTIME_TEMPLATE.cow_replace(RUNTIME_MODE_PLACEHOLDER, mode_str);
     match ruff_python_parser::parse_module(&source) {
         Ok(parsed) => {
+            let mut statements = parsed.into_syntax().body;
+            // Drop the template's leading docstring: injected at position zero
+            // it would otherwise become the bundle's module docstring and
+            // change the program's observable `__doc__`.
+            if statements.first().is_some_and(|stmt| {
+                matches!(
+                    stmt,
+                    Stmt::Expr(expr) if expr.value.is_string_literal_expr()
+                )
+            }) {
+                statements.remove(0);
+            }
             let insert_at = bundled_ast
                 .body
                 .iter()
                 .take_while(|stmt| is_future_import(stmt))
                 .count();
-            bundled_ast
-                .body
-                .splice(insert_at..insert_at, parsed.into_syntax().body);
+            bundled_ast.body.splice(insert_at..insert_at, statements);
         }
         Err(err) => log::warn!(
             "source map runtime template failed to parse; traceback remapping disabled: {err}"
