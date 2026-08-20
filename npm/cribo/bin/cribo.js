@@ -84,7 +84,7 @@ function getPlatformPackageName() {
 }
 
 /**
- * Find and execute the platform-specific Serpen binary
+ * Find and execute the platform-specific Cribo binary
  */
 function main() {
   try {

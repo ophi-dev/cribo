@@ -1,6 +1,6 @@
-# Serpen npm Publishing Setup
+# Cribo npm Publishing Setup
 
-This directory contains the npm publishing infrastructure for Serpen, allowing distribution of the Rust CLI binary via npm packages.
+This directory contains the npm publishing infrastructure for Cribo, allowing distribution of the Rust CLI binary via npm packages.
 
 ## Architecture Overview
 
@@ -135,26 +135,22 @@ The npm publishing is integrated into `.github/workflows/release.yml`:
    node scripts/test-npm-package.js
    ```
 
-### Manual Publishing
+### Publishing
 
-1. Set npm token:
-   ```bash
-   export NPM_TOKEN="your-npm-token"
-   ```
-
-2. Publish with dry run:
+1. Validate packages locally with a dry run:
    ```bash
    node scripts/publish-npm.js "0.3.0" ./npm-dist --dry-run
    ```
 
-3. Publish for real:
-   ```bash
-   node scripts/publish-npm.js "0.3.0" ./npm-dist
-   ```
+2. Publish production releases through `.github/workflows/release.yml`.
+
+Production publishing uses npm trusted publishing with GitHub Actions OIDC. Each
+package must authorize repository `ophi-dev/cribo`, workflow `release.yml`, and
+environment `npm`. No npm access token is used by the release workflow.
 
 ## User Experience
 
-Users can install and use Serpen via npm:
+Users can install and use Cribo via npm:
 
 ```bash
 # Global installation
@@ -187,7 +183,7 @@ The launcher script (`npm/cribo/bin/cribo.js`) detects:
 
 ### Binary Not Found
 
-If users see "Could not find Serpen binary", they should:
+If users see "Could not find Cribo binary", they should:
 
 1. Reinstall with optional dependencies:
    ```bash
@@ -219,7 +215,8 @@ If cross-compilation fails:
 Common issues:
 
 - **Version already exists**: Use `--dry-run` first, or increment version
-- **Authentication**: Set `NPM_TOKEN` environment variable
+- **Authentication**: Verify the npm trusted publisher matches repository
+  `ophi-dev/cribo`, workflow `release.yml`, and environment `npm`
 - **Platform mismatch**: Ensure all platform packages publish before base package
 
 ## Version Management
