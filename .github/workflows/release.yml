@@ -87,10 +87,26 @@ jobs:
 
       - name: Install musl toolchain
         if: startsWith(matrix.platform.os, 'ubuntu') && contains(matrix.platform.rust_target, 'musl')
+        timeout-minutes: 10
         shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y musl-tools
+          if command -v musl-gcc >/dev/null 2>&1; then
+            exit 0
+          fi
+
+          # The Azure mirror intermittently stalls on hosted x64 runners.
+          if [[ "$RUNNER_ARCH" == "X64" && -f /etc/apt/apt-mirrors.txt ]]; then
+            sudo sed -i '/azure\.archive\.ubuntu\.com/d' /etc/apt/apt-mirrors.txt
+          fi
+
+          apt_options=(
+            -o Acquire::Retries=1
+            -o Acquire::http::Timeout=15
+            -o Acquire::https::Timeout=15
+            -o Acquire::ForceIPv4=true
+          )
+          sudo apt-get "${apt_options[@]}" update
+          sudo apt-get "${apt_options[@]}" install -y --no-install-recommends musl-tools
 
       - name: Cache Rust dependencies
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
