@@ -319,6 +319,33 @@ impl ParallelWalker<'_> {
             });
         }
 
+        // Evaluating a decorator can raise on its own `@...` line; give every
+        // decorator its own mapping (the statement mapping above only covers
+        // the `def`/`class` header).
+        let decorator_pairs = match (generated, original) {
+            (Stmt::FunctionDef(g), Stmt::FunctionDef(o)) => {
+                Some((&g.decorator_list, &o.decorator_list))
+            }
+            (Stmt::ClassDef(g), Stmt::ClassDef(o)) => Some((&g.decorator_list, &o.decorator_list)),
+            _ => None,
+        };
+        if let Some((gen_decorators, orig_decorators)) = decorator_pairs
+            && gen_decorators.len() == orig_decorators.len()
+        {
+            for (gen_decorator, orig_decorator) in gen_decorators.iter().zip(orig_decorators) {
+                if let Some((module_ordinal, original_line)) = self.provenance.resolve(
+                    orig_decorator.node_index.load(),
+                    orig_decorator.range().start(),
+                ) {
+                    self.records.push(MappingRecord {
+                        generated_line: self.line_index.line_of(gen_decorator.range().start()),
+                        module_ordinal,
+                        original_line,
+                    });
+                }
+            }
+        }
+
         // Recurse into nested statement bodies even when the statement itself is
         // synthesized: wrapper-module init functions are synthesized `def`s whose
         // bodies contain original module statements.
@@ -395,6 +422,18 @@ impl ParallelWalker<'_> {
             }
             (Stmt::Match(g), Stmt::Match(o)) if g.cases.len() == o.cases.len() => {
                 for (gen_case, orig_case) in g.cases.iter().zip(&o.cases) {
+                    // A raising pattern operation or guard is attributed to the
+                    // `case` header line; map it via the case's provenance.
+                    if let Some((module_ordinal, original_line)) = self
+                        .provenance
+                        .resolve(orig_case.node_index.load(), orig_case.range().start())
+                    {
+                        self.records.push(MappingRecord {
+                            generated_line: self.line_index.line_of(gen_case.range().start()),
+                            module_ordinal,
+                            original_line,
+                        });
+                    }
                     self.walk_body(&gen_case.body, &orig_case.body);
                 }
             }

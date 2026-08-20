@@ -307,8 +307,9 @@ class _CriboSourceMapRuntime(object):
 
         Constant state: line/segment counters plus running deltas. Records the
         first segment per needed generated line; exits as soon as every needed
-        line is resolved or the max needed line is passed. Consumes up to and
-        including the closing quote (or stops early).
+        line is resolved or the max needed line is passed. Returns
+        ``(table, terminated)`` where ``terminated`` says whether the closing
+        quote was consumed (early exits leave the stream inside the string).
         """
         lut = {}
         for index in range(64):
@@ -329,13 +330,13 @@ class _CriboSourceMapRuntime(object):
             byte = stream.read_byte()
             if byte < 0 or byte == 34:  # EOF or closing '"'
                 end_segment()
-                return result
+                return result, True
             if byte == 59:  # ';'
                 end_segment()
                 gen_line += 1
                 field = 0
                 if gen_line > max_needed or len(result) == len(needed):
-                    return result
+                    return result, False
                 continue
             if byte == 44:  # ','
                 end_segment()
@@ -378,10 +379,21 @@ class _CriboSourceMapRuntime(object):
             elif key == "mappings":
                 if byte != 34:
                     raise ValueError("mappings is not a string")
-                table = self._decode_vlq(stream, needed, max_needed)
+                table, terminated = self._decode_vlq(stream, needed, max_needed)
                 saw_mappings = True
                 if sources:
-                    break  # both fields consumed; ignore the rest of the map
+                    # Both fields consumed; stop without reading further (the
+                    # early exit inside the VLQ machine is preserved).
+                    break
+                if not terminated:
+                    # Early exit left the stream inside the mappings string;
+                    # skim to its closing quote so a `sources` field that
+                    # follows `mappings` still parses correctly. VLQ data
+                    # contains no escapes, so a bare '"' terminates.
+                    while True:
+                        byte = stream.read_byte()
+                        if byte < 0 or byte == 34:
+                            break
                 byte = stream.read_byte()
             else:
                 byte = self._skip_value(stream, byte)
@@ -438,7 +450,7 @@ class _CriboSourceMapRuntime(object):
         mappings = data.get("mappings") or ""
         needed0 = set(line - 1 for line in needed_lines)
         stream = self._stream_cls([mappings.encode("ascii"), b'"'])
-        table0 = self._decode_vlq(stream, needed0, max(needed0))
+        table0, _terminated = self._decode_vlq(stream, needed0, max(needed0))
         table = {}
         for line0, (src_idx, src_line0) in table0.items():
             table[line0 + 1] = (src_idx, src_line0 + 1)
@@ -459,10 +471,8 @@ class _CriboSourceMapRuntime(object):
         add(traceback_obj)
         exc = exc_value
         seen = set()
-        depth = 0
-        while exc is not None and id(exc) not in seen and depth < 16:
+        while exc is not None and id(exc) not in seen:
             seen.add(id(exc))
-            depth += 1
             add(getattr(exc, "__traceback__", None))
             cause = getattr(exc, "__cause__", None)
             context = getattr(exc, "__context__", None)
@@ -480,7 +490,7 @@ class _CriboSourceMapRuntime(object):
             return False
         exc = exc_value
         seen = set()
-        while exc is not None and id(exc) not in seen and len(seen) < 16:
+        while exc is not None and id(exc) not in seen:
             seen.add(id(exc))
             if isinstance(exc, self._group_type):
                 return True
@@ -576,6 +586,7 @@ class _CriboSourceMapRuntime(object):
             write("  [Previous line repeated %d more times]\n" % (repeats - 3))
 
     def _exception_line(self, exc_value):
+        """Minimal `Type: message` line, the fallback formatter."""
         exc_type = type(exc_value)
         name = getattr(exc_type, "__qualname__", exc_type.__name__)
         module = getattr(exc_type, "__module__", None)
@@ -587,12 +598,43 @@ class _CriboSourceMapRuntime(object):
             text = "<exception str() failed>"
         return "%s: %s\n" % (name, text) if text else "%s\n" % name
 
+    def _write_exception_only(self, exc, write):
+        """Write the exception line(s) with full standard-library fidelity.
+
+        `traceback.format_exception_only` supplies the interpreter's
+        specialized rendering — SyntaxError source line and caret, NameError /
+        AttributeError "Did you mean" suggestions, and `__notes__` — so the
+        remapped output matches the default hook. Falls back to the minimal
+        line (plus notes) when the traceback module is unavailable.
+        """
+        try:
+            traceback_mod = _cribo_sm_import("traceback")
+            te = traceback_mod.TracebackException(
+                type(exc),
+                exc,
+                getattr(exc, "__traceback__", None),
+                lookup_lines=False,
+            )
+            for line in te.format_exception_only():
+                write(line)
+            return
+        except BaseException:
+            pass
+        write(self._exception_line(exc))
+        notes = getattr(exc, "__notes__", None)
+        if notes:
+            try:
+                for note in notes:
+                    write("%s\n" % (note,))
+            except BaseException:
+                pass
+
     def _render(self, exc_value, table, sources, map_dir, write):
         """Render the exception (with its cause/context chain) like CPython."""
         chain = []
         exc = exc_value
         seen = set()
-        while exc is not None and id(exc) not in seen and len(chain) < 16:
+        while exc is not None and id(exc) not in seen:
             seen.add(id(exc))
             cause = getattr(exc, "__cause__", None)
             context = getattr(exc, "__context__", None)
@@ -627,14 +669,7 @@ class _CriboSourceMapRuntime(object):
             if tb is not None and (limit is None or limit > 0):
                 write("Traceback (most recent call last):\n")
                 self._write_frames(tb, table, sources, map_dir, write, limit)
-            write(self._exception_line(exc))
-            notes = getattr(exc, "__notes__", None)
-            if notes:
-                try:
-                    for note in notes:
-                        write("%s\n" % (note,))
-                except BaseException:
-                    pass
+            self._write_exception_only(exc, write)
 
     def _try_render(self, exc_value, traceback_obj, prefix):
         """Attempt a remapped rendering to stderr; True on success.

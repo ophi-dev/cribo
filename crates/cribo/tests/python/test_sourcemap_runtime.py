@@ -117,6 +117,15 @@ def test_vlq_rejects_escapes_in_mappings(rt):
         raise AssertionError("escape inside mappings must raise")
 
 
+def test_scan_handles_mappings_before_sources(rt):
+    # A spec-valid map may order keys arbitrarily. Early exit inside the
+    # mappings string must not derail parsing of a later sources field.
+    json_text = '{"mappings":"AAAA;AACA;AACA","sources":["a.py","b.py"]}'
+    sources, table = _scan(rt, json_text, {0}, 0)  # early exit after line 0
+    assert sources == ["a.py", "b.py"], sources
+    assert table == {0: (0, 0)}, table
+
+
 def make_inline_bundle(payload_json):
     """Create a temp file shaped like an inline-mode bundle; return its path."""
     import base64

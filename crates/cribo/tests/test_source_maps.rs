@@ -1005,3 +1005,105 @@ fn map_covers_elif_and_except_headers() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Third review round: specialized formatting, long chains, header coverage
+// ---------------------------------------------------------------------------
+
+#[test]
+fn runtime_keeps_name_error_suggestions() {
+    let dir = make_project(&[
+        ("main.py", "from helper import go\n\ngo()\n"),
+        (
+            "helper.py",
+            "def go():\n    valuable = 1\n    return valuabl\n",
+        ),
+    ]);
+    let bundle = bundle_crash_project(&dir, "--sourcemap=linked");
+    let (ok, _, stderr) = run_python(&bundle, &[]);
+    assert!(!ok);
+    assert!(
+        stderr.contains("helper.py\", line 3, in go"),
+        "traceback must be remapped: {stderr}"
+    );
+    assert!(stderr.contains("NameError"), "{stderr}");
+    assert!(
+        stderr.contains("Did you mean"),
+        "interpreter suggestions must survive remapped rendering: {stderr}"
+    );
+}
+
+#[test]
+fn runtime_renders_long_exception_chains_fully() {
+    // 20 chained causes exceed the previous traversal cap; the innermost
+    // (root) exception and its traceback must still be rendered.
+    let dir = make_project(&[
+        ("main.py", "from helper import cascade\n\ncascade()\n"),
+        (
+            "helper.py",
+            "def cascade():\n    try:\n        raise ValueError(\"root kaboom\")\n    except \
+             ValueError as error:\n        current = error\n        for depth in range(20):\n            \
+             try:\n                raise RuntimeError(\"layer %d\" % depth) from \
+             current\n            except RuntimeError as next_error:\n                current = \
+             next_error\n        raise current\n",
+        ),
+    ]);
+    let bundle = bundle_crash_project(&dir, "--sourcemap=linked");
+    let (ok, _, stderr) = run_python(&bundle, &[]);
+    assert!(!ok);
+    assert!(
+        stderr.contains("ValueError: root kaboom"),
+        "the root cause of a 20-deep chain must be rendered: {stderr}"
+    );
+    assert!(stderr.contains("layer 19"), "{stderr}");
+    assert!(
+        stderr.contains("helper.py\", line 3"),
+        "the root cause frame must be remapped: {stderr}"
+    );
+}
+
+#[test]
+fn map_covers_match_case_headers_and_decorators() {
+    let dir = make_project(&[
+        ("main.py", "from helper import run\n\nprint(run(1))\n"),
+        (
+            "helper.py",
+            "def trace(func):\n    return func\n\n\n@trace\n@trace\ndef run(value):\n    match \
+             value:\n        case 0:\n            return \"zero\"\n        case _ if value > \
+             0:\n            return \"positive\"\n        case _:\n            return \
+             \"negative\"\n",
+        ),
+    ]);
+    let out = dir.path().join("bundle.py");
+    let (ok, _, stderr) = run_cribo(&[
+        "--entry",
+        &entry_arg(&dir),
+        "--output",
+        &out.to_string_lossy(),
+        "--sourcemap=linked",
+    ]);
+    assert!(ok, "bundling must succeed: {stderr}");
+    let map_json = fs::read_to_string(dir.path().join("bundle.py.map")).expect("read map");
+    let map = parse_map(&map_json);
+
+    let helper_id = (0..map.get_sources().count() as u32)
+        .find(|id| {
+            map.get_source(*id)
+                .is_some_and(|s| s.ends_with("helper.py"))
+        })
+        .expect("helper.py in sources");
+    let mapped_helper_lines: Vec<u32> = map
+        .get_tokens()
+        .filter(|token| token.get_source_id() == Some(helper_id))
+        .map(|token| token.get_src_line())
+        .collect();
+    // 0-based original lines: 4 and 5 are the two decorators; 8, 10, and 12
+    // are the `case` headers.
+    for header_line in [4, 5, 8, 10, 12] {
+        assert!(
+            mapped_helper_lines.contains(&header_line),
+            "helper.py 0-based line {header_line} (decorator or case header) must be mapped; \
+             mapped lines: {mapped_helper_lines:?}"
+        );
+    }
+}

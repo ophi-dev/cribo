@@ -737,15 +737,43 @@ impl BundleOrchestrator {
             self.write_requirements_file(&sorted_module_ids, &resolver, &graph, output_path)?;
         }
 
+        // Publish the bundle and map as close to atomically as possible: the
+        // map content is staged to a temp file *before* the bundle is written
+        // (a staging failure aborts with the old pair intact) and renamed over
+        // the final map path *after* (rename is atomic and replaces a stale
+        // map even when the file itself is read-only). The only remaining
+        // mismatch window is a rename failure, which requires directory-level
+        // problems that would have failed the bundle write too.
+        let staged_map = if let Some((map_path, map_json)) = pending_map {
+            let mut tmp_name = map_path.file_name().map_or_else(
+                || std::ffi::OsString::from("bundle.py.map"),
+                std::ffi::OsStr::to_os_string,
+            );
+            tmp_name.push(".tmp");
+            let tmp_path = map_path.with_file_name(tmp_name);
+            fs::write(&tmp_path, map_json).with_context(|| {
+                format!("Failed to stage source map file: {}", tmp_path.display())
+            })?;
+            Some((tmp_path, map_path))
+        } else {
+            None
+        };
+
         // Write output file
-        fs::write(output_path, bundled_code)
-            .with_context(|| format!("Failed to write output file: {}", output_path.display()))?;
+        let bundle_write = fs::write(output_path, bundled_code)
+            .with_context(|| format!("Failed to write output file: {}", output_path.display()));
+        if let Err(err) = bundle_write {
+            if let Some((tmp_path, _)) = staged_map {
+                let _ = fs::remove_file(tmp_path);
+            }
+            return Err(err);
+        }
 
         info!("Bundle written to: {}", output_path.display());
 
-        if let Some((map_path, map_json)) = pending_map {
-            fs::write(&map_path, map_json).with_context(|| {
-                format!("Failed to write source map file: {}", map_path.display())
+        if let Some((tmp_path, map_path)) = staged_map {
+            fs::rename(&tmp_path, &map_path).with_context(|| {
+                format!("Failed to publish source map file: {}", map_path.display())
             })?;
             info!("Source map written to: {}", map_path.display());
         }
