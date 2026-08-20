@@ -1107,3 +1107,32 @@ fn map_covers_match_case_headers_and_decorators() {
         );
     }
 }
+
+#[test]
+fn runtime_survives_shadowed_builtins() {
+    // Entry code that rebinds common builtins at module level must not break
+    // the runtime: every method snapshots its builtins at definition time.
+    let dir = make_project(&[
+        (
+            "main.py",
+            "from helper import boom\n\nopen = None\nlen = None\nmax = None\nset = \
+             None\ngetattr = None\nboom()\n",
+        ),
+        (
+            "helper.py",
+            "def boom():\n    inner()\n\ndef inner():\n    raise ValueError(\"kaboom\")\n",
+        ),
+    ]);
+    let bundle = bundle_crash_project(&dir, "--sourcemap=linked");
+    let (ok, _, stderr) = run_python(&bundle, &[]);
+    assert!(!ok);
+    assert!(
+        stderr.contains("helper.py\", line 5, in inner"),
+        "traceback must be remapped despite shadowed builtins: {stderr}"
+    );
+    assert!(
+        stderr.contains("main.py\", line 8, in <module>"),
+        "entry frame must be remapped despite shadowed builtins: {stderr}"
+    );
+    assert!(!stderr.contains("bundle.py\", line"), "{stderr}");
+}

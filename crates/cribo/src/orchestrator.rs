@@ -772,9 +772,19 @@ impl BundleOrchestrator {
         info!("Bundle written to: {}", output_path.display());
 
         if let Some((tmp_path, map_path)) = staged_map {
-            fs::rename(&tmp_path, &map_path).with_context(|| {
-                format!("Failed to publish source map file: {}", map_path.display())
-            })?;
+            // std's rename replaces an existing destination on every platform
+            // (MoveFileExW with MOVEFILE_REPLACE_EXISTING on Windows). The one
+            // residual case is a read-only destination on Windows, so fall
+            // back to remove-then-rename before giving up.
+            let publish = fs::rename(&tmp_path, &map_path).or_else(|_| {
+                fs::remove_file(&map_path).and_then(|()| fs::rename(&tmp_path, &map_path))
+            });
+            if let Err(err) = publish {
+                let _ = fs::remove_file(&tmp_path);
+                return Err(err).with_context(|| {
+                    format!("Failed to publish source map file: {}", map_path.display())
+                });
+            }
             info!("Source map written to: {}", map_path.display());
         }
 

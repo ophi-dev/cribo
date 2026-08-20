@@ -14,7 +14,7 @@ Note: this leading docstring is stripped at injection time so the bundle's
 import sys as _cribo_sys
 
 
-def _cribo_sm_import(name):
+def _cribo_sm_import(name, *, _list=list, _import=__import__):
     """Import a stdlib module immune to script-directory shadowing.
 
     The bundle's own directory is `sys.path[0]` (or `''` for `-c`/stdin), so a
@@ -27,27 +27,32 @@ def _cribo_sm_import(name):
     if module is not None:
         return module
     saved_path = _cribo_sys.path
-    _cribo_sys.path = list(saved_path[1:])
+    _cribo_sys.path = _list(saved_path[1:])
     try:
-        return __import__(name)
+        return _import(name)
     finally:
         _cribo_sys.path = saved_path
 
 
 class _CriboSmStream(object):
-    """Byte-at-a-time reader over an iterator of byte chunks."""
+    """Byte-at-a-time reader over an iterator of byte chunks.
+
+    Keyword-only defaults snapshot the builtins at definition time (before any
+    bundled user code runs), so later shadowing of e.g. `len` cannot break the
+    reader — the same idiom cribo's generated module proxies use.
+    """
 
     __slots__ = ("_chunks", "_buf", "_pos")
 
-    def __init__(self, chunks):
-        self._chunks = iter(chunks)
+    def __init__(self, chunks, *, _iter=iter):
+        self._chunks = _iter(chunks)
         self._buf = b""
         self._pos = 0
 
-    def read_byte(self):
-        while self._pos >= len(self._buf):
+    def read_byte(self, *, _len=len, _next=next):
+        while self._pos >= _len(self._buf):
             try:
-                self._buf = next(self._chunks)
+                self._buf = _next(self._chunks)
             except StopIteration:
                 return -1
             self._pos = 0
@@ -60,9 +65,11 @@ class _CriboSourceMapRuntime(object):
     """Traceback-remapping runtime.
 
     All collaborators (modules, the stream class, previous hooks) are bound to
-    the instance at construction time, so the installed hooks keep working even
-    if bundled user code later rebinds any module-level name this template
-    introduced.
+    the instance at construction time, and every method snapshots the builtins
+    it needs via keyword-only defaults evaluated at class-definition time — so
+    the installed hooks keep working even if bundled user code later rebinds
+    any module-level name this template introduced, or common builtins such as
+    `open`, `len`, or `max`.
     """
 
     _B64 = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
@@ -76,6 +83,7 @@ class _CriboSourceMapRuntime(object):
         self._binascii = binascii_mod
         self._threading = threading_mod
         self._stream_cls = _CriboSmStream
+        self._import = _cribo_sm_import
         # Re-entrancy guard; thread-local so a hook firing on one thread never
         # disables remapping on another.
         self._local = threading_mod.local()
@@ -151,9 +159,9 @@ class _CriboSourceMapRuntime(object):
             )
         return None
 
-    def _file_chunks(self, path):
+    def _file_chunks(self, path, *, _open=open):
         """Yield fixed-size chunks of a file (constant memory)."""
-        handle = open(path, "rb")
+        handle = _open(path, "rb")
         try:
             while True:
                 chunk = handle.read(self._CHUNK)
@@ -163,7 +171,7 @@ class _CriboSourceMapRuntime(object):
         finally:
             handle.close()
 
-    def _find_inline_payload(self, handle):
+    def _find_inline_payload(self, handle, *, _len=len):
         """Backward-scan the bundle for the last inline map marker.
 
         Returns the byte offset of the base64 payload, or -1. Only the tail of
@@ -183,7 +191,7 @@ class _CriboSourceMapRuntime(object):
             if index >= 0:
                 found = position + index
                 break
-            overlap = data[: len(marker) - 1]
+            overlap = data[: _len(marker) - 1]
         if found < 0:
             return -1
         handle.seek(found)
@@ -191,11 +199,11 @@ class _CriboSourceMapRuntime(object):
         base64_at = head.find(b"base64,")
         if base64_at < 0:
             return -1
-        return found + base64_at + len(b"base64,")
+        return found + base64_at + _len(b"base64,")
 
-    def _inline_chunks(self, path):
+    def _inline_chunks(self, path, *, _open=open, _len=len):
         """Yield decoded chunks of an inline (base64 data URL) source map."""
-        handle = open(path, "rb")
+        handle = _open(path, "rb")
         try:
             start = self._find_inline_payload(handle)
             if start < 0:
@@ -207,12 +215,12 @@ class _CriboSourceMapRuntime(object):
                 if not raw:
                     break
                 data = pending + raw.translate(None, b"\r\n")
-                usable = len(data) - (len(data) % 4)
+                usable = _len(data) - (_len(data) % 4)
                 pending = data[usable:]
                 if usable:
                     yield self._binascii.a2b_base64(data[:usable])
             if pending:
-                yield self._binascii.a2b_base64(pending + b"=" * (-len(pending) % 4))
+                yield self._binascii.a2b_base64(pending + b"=" * (-_len(pending) % 4))
         finally:
             handle.close()
 
@@ -223,7 +231,9 @@ class _CriboSourceMapRuntime(object):
             byte = stream.read_byte()
         return byte
 
-    def _read_string(self, stream, collect):
+    def _read_string(
+        self, stream, collect, *, _bytearray=bytearray, _int=int, _chr=chr, _range=range
+    ):
         """Consume a JSON string whose opening quote was already read.
 
         Returns the decoded text when collect is true, else None (contents are
@@ -231,7 +241,7 @@ class _CriboSourceMapRuntime(object):
         handled, so string *values* containing text like '"mappings":' cannot
         confuse the key scanner.
         """
-        buf = bytearray() if collect else None
+        buf = _bytearray() if collect else None
         while True:
             byte = stream.read_byte()
             if byte < 0:
@@ -247,13 +257,13 @@ class _CriboSourceMapRuntime(object):
                 raise ValueError("unterminated JSON escape")
             if escape == 117:  # 'u'
                 code = 0
-                for _ in range(4):
+                for _ in _range(4):
                     digit = stream.read_byte()
                     if digit < 0:
                         raise ValueError("unterminated unicode escape")
-                    code = code * 16 + int(chr(digit), 16)
+                    code = code * 16 + _int(_chr(digit), 16)
                 if buf is not None:
-                    buf.extend(chr(code).encode("utf-8", "surrogatepass"))
+                    buf.extend(_chr(code).encode("utf-8", "surrogatepass"))
             elif buf is not None:
                 table = {98: 8, 102: 12, 110: 10, 114: 13, 116: 9}
                 buf.append(table.get(escape, escape))
@@ -302,7 +312,7 @@ class _CriboSourceMapRuntime(object):
                 raise ValueError("malformed array")
             byte = self._skip_ws(stream, stream.read_byte())
 
-    def _decode_vlq(self, stream, needed, max_needed):
+    def _decode_vlq(self, stream, needed, max_needed, *, _range=range, _len=len):
         """Streaming VLQ state machine over the raw bytes of the mappings string.
 
         Constant state: line/segment counters plus running deltas. Records the
@@ -312,7 +322,7 @@ class _CriboSourceMapRuntime(object):
         quote was consumed (early exits leave the stream inside the string).
         """
         lut = {}
-        for index in range(64):
+        for index in _range(64):
             lut[self._B64[index]] = index
         result = {}
         gen_line = 0
@@ -335,7 +345,7 @@ class _CriboSourceMapRuntime(object):
                 end_segment()
                 gen_line += 1
                 field = 0
-                if gen_line > max_needed or len(result) == len(needed):
+                if gen_line > max_needed or _len(result) == _len(needed):
                     return result, False
                 continue
             if byte == 44:  # ','
@@ -406,7 +416,7 @@ class _CriboSourceMapRuntime(object):
 
     # -- loading -------------------------------------------------------------
 
-    def _load(self, needed_lines):
+    def _load(self, needed_lines, *, _set=set, _max=max):
         """Load (table, sources, map_dir) for 1-based bundle line numbers.
 
         Returns None when the runtime is inactive for the current mode. The
@@ -417,8 +427,8 @@ class _CriboSourceMapRuntime(object):
         if location is None:
             return None
         map_path, map_dir = location
-        needed0 = set(line - 1 for line in needed_lines)
-        max_needed = max(needed0)
+        needed0 = _set(line - 1 for line in needed_lines)
+        max_needed = _max(needed0)
         if map_path is None:
             chunks = self._inline_chunks(self._bundle)
         else:
@@ -429,18 +439,18 @@ class _CriboSourceMapRuntime(object):
             table[line0 + 1] = (src_idx, src_line0 + 1)
         return (table, sources, map_dir)
 
-    def _load_json_fallback(self, needed_lines):
+    def _load_json_fallback(self, needed_lines, *, _open=open, _set=set, _max=max):
         """Fallback: full json.loads parse, reusing the VLQ machine on the result."""
         location = self._map_location()
         if location is None:
             return None
         map_path, map_dir = location
-        import json
+        json = self._import("json")
 
         if map_path is None:
             raw = b"".join(self._inline_chunks(self._bundle))
         else:
-            handle = open(map_path, "rb")
+            handle = _open(map_path, "rb")
             try:
                 raw = handle.read()
             finally:
@@ -448,9 +458,9 @@ class _CriboSourceMapRuntime(object):
         data = json.loads(raw.decode("utf-8"))
         sources = data.get("sources") or []
         mappings = data.get("mappings") or ""
-        needed0 = set(line - 1 for line in needed_lines)
+        needed0 = _set(line - 1 for line in needed_lines)
         stream = self._stream_cls([mappings.encode("ascii"), b'"'])
-        table0, _terminated = self._decode_vlq(stream, needed0, max(needed0))
+        table0, _terminated = self._decode_vlq(stream, needed0, _max(needed0))
         table = {}
         for line0, (src_idx, src_line0) in table0.items():
             table[line0 + 1] = (src_idx, src_line0 + 1)
@@ -458,9 +468,11 @@ class _CriboSourceMapRuntime(object):
 
     # -- traceback collection and rendering ----------------------------------
 
-    def _collect_needed(self, exc_value, traceback_obj):
+    def _collect_needed(
+        self, exc_value, traceback_obj, *, _set=set, _id=id, _getattr=getattr
+    ):
         """1-based bundle lines referenced by the traceback (and its chain)."""
-        needed = set()
+        needed = _set()
 
         def add(tb):
             while tb is not None:
@@ -470,16 +482,18 @@ class _CriboSourceMapRuntime(object):
 
         add(traceback_obj)
         exc = exc_value
-        seen = set()
-        while exc is not None and id(exc) not in seen:
-            seen.add(id(exc))
-            add(getattr(exc, "__traceback__", None))
-            cause = getattr(exc, "__cause__", None)
-            context = getattr(exc, "__context__", None)
+        seen = _set()
+        while exc is not None and _id(exc) not in seen:
+            seen.add(_id(exc))
+            add(_getattr(exc, "__traceback__", None))
+            cause = _getattr(exc, "__cause__", None)
+            context = _getattr(exc, "__context__", None)
             exc = cause if cause is not None else context
         return needed
 
-    def _chain_has_group(self, exc_value):
+    def _chain_has_group(
+        self, exc_value, *, _set=set, _id=id, _getattr=getattr, _isinstance=isinstance
+    ):
         """Whether the exception chain contains a BaseExceptionGroup.
 
         CPython renders groups with a dedicated nested layout; rather than
@@ -489,20 +503,20 @@ class _CriboSourceMapRuntime(object):
         if self._group_type is None:
             return False
         exc = exc_value
-        seen = set()
-        while exc is not None and id(exc) not in seen:
-            seen.add(id(exc))
-            if isinstance(exc, self._group_type):
+        seen = _set()
+        while exc is not None and _id(exc) not in seen:
+            seen.add(_id(exc))
+            if _isinstance(exc, self._group_type):
                 return True
-            cause = getattr(exc, "__cause__", None)
-            context = getattr(exc, "__context__", None)
+            cause = _getattr(exc, "__cause__", None)
+            context = _getattr(exc, "__context__", None)
             exc = cause if cause is not None else context
         return False
 
-    def _source_line(self, path, lineno):
+    def _source_line(self, path, lineno, *, _open=open):
         """Read a single 1-based line from a file without caching it."""
         try:
-            handle = open(path, "rb")
+            handle = _open(path, "rb")
         except OSError:
             return None
         try:
@@ -519,12 +533,14 @@ class _CriboSourceMapRuntime(object):
             handle.close()
         return None
 
-    def _effective_tb_limit(self):
+    def _effective_tb_limit(self, *, _getattr=getattr, _isinstance=isinstance):
         """The application's `sys.tracebacklimit`, or None when unset/invalid."""
-        limit = getattr(self._sys, "tracebacklimit", None)
-        return limit if isinstance(limit, int) else None
+        limit = _getattr(self._sys, "tracebacklimit", None)
+        return limit if _isinstance(limit, int) else None
 
-    def _write_frames(self, traceback_obj, table, sources, map_dir, write, limit):
+    def _write_frames(
+        self, traceback_obj, table, sources, map_dir, write, limit, *, _len=len
+    ):
         """Write remapped frame lines, collapsing repeated frames like CPython.
 
         Consecutive identical frames (recursion) print at most 3 times followed
@@ -563,7 +579,7 @@ class _CriboSourceMapRuntime(object):
             name = frame.f_code.co_name
             if filename == self._bundle:
                 mapped = table.get(lineno)
-                if mapped is not None and 0 <= mapped[0] < len(sources) and sources[mapped[0]]:
+                if mapped is not None and 0 <= mapped[0] < _len(sources) and sources[mapped[0]]:
                     source = sources[mapped[0]]
                     if not self._os.path.isabs(source):
                         source = self._os.path.normpath(
@@ -585,20 +601,20 @@ class _CriboSourceMapRuntime(object):
         if repeats > 3:
             write("  [Previous line repeated %d more times]\n" % (repeats - 3))
 
-    def _exception_line(self, exc_value):
+    def _exception_line(self, exc_value, *, _type=type, _getattr=getattr, _str=str):
         """Minimal `Type: message` line, the fallback formatter."""
-        exc_type = type(exc_value)
-        name = getattr(exc_type, "__qualname__", exc_type.__name__)
-        module = getattr(exc_type, "__module__", None)
+        exc_type = _type(exc_value)
+        name = _getattr(exc_type, "__qualname__", exc_type.__name__)
+        module = _getattr(exc_type, "__module__", None)
         if module not in (None, "builtins", "__main__"):
             name = "%s.%s" % (module, name)
         try:
-            text = str(exc_value)
+            text = _str(exc_value)
         except BaseException:
             text = "<exception str() failed>"
         return "%s: %s\n" % (name, text) if text else "%s\n" % name
 
-    def _write_exception_only(self, exc, write):
+    def _write_exception_only(self, exc, write, *, _type=type, _getattr=getattr):
         """Write the exception line(s) with full standard-library fidelity.
 
         `traceback.format_exception_only` supplies the interpreter's
@@ -608,11 +624,11 @@ class _CriboSourceMapRuntime(object):
         line (plus notes) when the traceback module is unavailable.
         """
         try:
-            traceback_mod = _cribo_sm_import("traceback")
+            traceback_mod = self._import("traceback")
             te = traceback_mod.TracebackException(
-                type(exc),
+                _type(exc),
                 exc,
-                getattr(exc, "__traceback__", None),
+                _getattr(exc, "__traceback__", None),
                 lookup_lines=False,
             )
             for line in te.format_exception_only():
@@ -621,7 +637,7 @@ class _CriboSourceMapRuntime(object):
         except BaseException:
             pass
         write(self._exception_line(exc))
-        notes = getattr(exc, "__notes__", None)
+        notes = _getattr(exc, "__notes__", None)
         if notes:
             try:
                 for note in notes:
@@ -629,16 +645,30 @@ class _CriboSourceMapRuntime(object):
             except BaseException:
                 pass
 
-    def _render(self, exc_value, table, sources, map_dir, write):
+    def _render(
+        self,
+        exc_value,
+        table,
+        sources,
+        map_dir,
+        write,
+        *,
+        _getattr=getattr,
+        _set=set,
+        _id=id,
+        _list=list,
+        _reversed=reversed,
+        _enumerate=enumerate,
+    ):
         """Render the exception (with its cause/context chain) like CPython."""
         chain = []
         exc = exc_value
-        seen = set()
-        while exc is not None and id(exc) not in seen:
-            seen.add(id(exc))
-            cause = getattr(exc, "__cause__", None)
-            context = getattr(exc, "__context__", None)
-            suppress = getattr(exc, "__suppress_context__", False)
+        seen = _set()
+        while exc is not None and _id(exc) not in seen:
+            seen.add(_id(exc))
+            cause = _getattr(exc, "__cause__", None)
+            context = _getattr(exc, "__context__", None)
+            suppress = _getattr(exc, "__suppress_context__", False)
             if cause is not None:
                 chain.append((exc, "cause"))
                 exc = cause
@@ -651,8 +681,8 @@ class _CriboSourceMapRuntime(object):
         # Print innermost first, like CPython. The link stored on an exception
         # describes its relation to its own inner exception — which is exactly
         # the one printed immediately before it.
-        ordered = list(reversed(chain))
-        for index, (exc, link) in enumerate(ordered):
+        ordered = _list(_reversed(chain))
+        for index, (exc, link) in _enumerate(ordered):
             if index > 0:
                 if link == "cause":
                     write(
@@ -664,21 +694,21 @@ class _CriboSourceMapRuntime(object):
                         "\nDuring handling of the above exception, another exception "
                         "occurred:\n\n"
                     )
-            tb = getattr(exc, "__traceback__", None)
+            tb = _getattr(exc, "__traceback__", None)
             limit = self._effective_tb_limit()
             if tb is not None and (limit is None or limit > 0):
                 write("Traceback (most recent call last):\n")
                 self._write_frames(tb, table, sources, map_dir, write, limit)
             self._write_exception_only(exc, write)
 
-    def _try_render(self, exc_value, traceback_obj, prefix):
+    def _try_render(self, exc_value, traceback_obj, prefix, *, _getattr=getattr):
         """Attempt a remapped rendering to stderr; True on success.
 
         Never raises and never masks the original exception: any failure in
         this runtime returns False so callers can delegate to the previous
         hook.
         """
-        if getattr(self._local, "in_hook", False) or exc_value is None:
+        if _getattr(self._local, "in_hook", False) or exc_value is None:
             return False
         self._local.in_hook = True
         old_limit = None
@@ -757,26 +787,26 @@ class _CriboSourceMapRuntime(object):
             return
         self._prev_excepthook(exc_type, exc_value, traceback_obj)
 
-    def threading_hook(self, args):
+    def threading_hook(self, args, *, _getattr=getattr, _issubclass=issubclass):
         # The default threading hook deliberately ignores SystemExit (normal
         # sys.exit() in a worker thread); preserve that by delegating.
-        if args.exc_type is not None and issubclass(args.exc_type, SystemExit):
+        if args.exc_type is not None and _issubclass(args.exc_type, SystemExit):
             self._prev_threading_hook(args)
             return
-        thread = getattr(args, "thread", None)
-        name = getattr(thread, "name", None) or "Thread"
+        thread = _getattr(args, "thread", None)
+        name = _getattr(thread, "name", None) or "Thread"
         prefix = "Exception in thread %s:\n" % name
         if self._try_render(args.exc_value, args.exc_traceback, prefix):
             self._notify_custom_hook(
                 self._prev_threading_hook,
-                getattr(self._threading, "__excepthook__", None),
+                _getattr(self._threading, "__excepthook__", None),
                 lambda hook: hook(args),
             )
             return
         self._prev_threading_hook(args)
 
-    def unraisablehook(self, unraisable):
-        message = getattr(unraisable, "err_msg", None) or "Exception ignored in"
+    def unraisablehook(self, unraisable, *, _getattr=getattr):
+        message = _getattr(unraisable, "err_msg", None) or "Exception ignored in"
         try:
             prefix = "%s: %r\n" % (message, unraisable.object)
         except BaseException:
