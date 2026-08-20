@@ -49,6 +49,57 @@ fn source_map_path_for(output_path: &Path) -> PathBuf {
     output_path.with_file_name(file_name)
 }
 
+/// Stage the source map into a collision-resistant temp file next to `map_path`.
+///
+/// The file is opened with `create_new` (`O_EXCL` semantics), which neither
+/// follows a pre-planted symlink nor truncates an existing file — a requirement
+/// for outputs in shared sticky directories, where a temp name could otherwise
+/// be predicted and pointed elsewhere. Name collisions retry with a new suffix,
+/// which also keeps concurrent builds from stomping each other's staged map.
+/// When a previous map exists, its permissions are copied onto the staged file
+/// before any content is written, so a restricted map (e.g. 0600 protecting
+/// `sourcesContent`) stays restricted across rebuilds.
+fn stage_map_file(map_path: &Path, map_json: &str) -> std::io::Result<PathBuf> {
+    use std::io::Write as _;
+
+    let pid = std::process::id();
+    let base_name = map_path.file_name().map_or_else(
+        || std::ffi::OsString::from("bundle.py.map"),
+        std::ffi::OsStr::to_os_string,
+    );
+    let mut attempt = 0_u32;
+    loop {
+        let mut tmp_name = base_name.clone();
+        tmp_name.push(format!(".{pid}.{attempt}.tmp"));
+        let tmp_path = map_path.with_file_name(tmp_name);
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp_path)
+        {
+            Ok(mut file) => {
+                let write_result = fs::metadata(map_path)
+                    .ok()
+                    .map_or(Ok(()), |metadata| {
+                        file.set_permissions(metadata.permissions())
+                    })
+                    .and_then(|()| file.write_all(map_json.as_bytes()))
+                    .and_then(|()| file.flush());
+                if let Err(err) = write_result {
+                    drop(file);
+                    let _ = fs::remove_file(&tmp_path);
+                    return Err(err);
+                }
+                return Ok(tmp_path);
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && attempt < 32 => {
+                attempt += 1;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
 /// Type alias for module processing queue
 type ModuleQueue = Vec<(ModuleId, PathBuf)>;
 /// Type alias for processed modules set
@@ -745,18 +796,11 @@ impl BundleOrchestrator {
         // mismatch window is a rename failure, which requires directory-level
         // problems that would have failed the bundle write too.
         let staged_map = if let Some((map_path, map_json)) = pending_map {
-            let mut tmp_name = map_path.file_name().map_or_else(
-                || std::ffi::OsString::from("bundle.py.map"),
-                std::ffi::OsStr::to_os_string,
-            );
-            // Process-unique staging name: concurrent builds targeting the same
-            // output must not stomp each other's staged map (concurrent writers
-            // to one output path remain externally undefined, as for the bundle
-            // file itself, but each publish stays internally consistent).
-            tmp_name.push(format!(".{}.tmp", std::process::id()));
-            let tmp_path = map_path.with_file_name(tmp_name);
-            fs::write(&tmp_path, map_json).with_context(|| {
-                format!("Failed to stage source map file: {}", tmp_path.display())
+            let tmp_path = stage_map_file(&map_path, map_json).with_context(|| {
+                format!(
+                    "Failed to stage source map file next to: {}",
+                    map_path.display()
+                )
             })?;
             Some((tmp_path, map_path))
         } else {

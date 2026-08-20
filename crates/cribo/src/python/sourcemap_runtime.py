@@ -17,17 +17,28 @@ import sys as _cribo_sys
 def _cribo_sm_import(name, *, _list=list, _import=__import__):
     """Import a stdlib module immune to script-directory shadowing.
 
-    The bundle's own directory is `sys.path[0]` (or `''` for `-c`/stdin), so a
+    The bundle's own directory is `sys.path[0]` (or `''` for `-c`/stdin), and
+    `PYTHONPATH=.` can expose the same directory again at later indices — so a
     project file named e.g. `threading.py` sitting next to the bundle would
     otherwise shadow the stdlib for this runtime. Already-imported modules are
-    taken from `sys.modules`; otherwise the import runs with that first path
-    entry dropped. (`sys` itself is a builtin and can never be shadowed.)
+    taken from `sys.modules`; otherwise the import runs with every path entry
+    resolving to the script directory removed. (`sys` itself is a builtin and
+    can never be shadowed.)
     """
     module = _cribo_sys.modules.get(name)
     if module is not None:
         return module
     saved_path = _cribo_sys.path
-    _cribo_sys.path = _list(saved_path[1:])
+    filtered = _list(saved_path[1:])
+    os_mod = _cribo_sys.modules.get("os")
+    if os_mod is not None and saved_path:
+        script_dir = os_mod.path.normcase(os_mod.path.abspath(saved_path[0] or "."))
+        filtered = [
+            entry
+            for entry in filtered
+            if not os_mod.path.normcase(os_mod.path.abspath(entry or ".")) == script_dir
+        ]
+    _cribo_sys.path = filtered
     try:
         return _import(name)
     finally:
@@ -88,6 +99,12 @@ class _CriboSourceMapRuntime(object):
         # Marks this instance so another cribo runtime chained behind it can
         # recognize it (see _notify_custom_hook).
         self._cribo_sm_runtime_marker = True
+        # Startup working directory, for anchoring a relative
+        # CRIBO_SOURCE_MAPS override before user code can chdir away.
+        try:
+            self._startup_cwd = os_mod.getcwd()
+        except OSError:
+            self._startup_cwd = "."
         self._os = os_mod
         self._sys = _cribo_sys
         self._binascii = binascii_mod
@@ -104,6 +121,12 @@ class _CriboSourceMapRuntime(object):
         self._prev_excepthook = _cribo_sys.excepthook
         self._prev_unraisablehook = _cribo_sys.unraisablehook
         self._prev_threading_hook = threading_mod.excepthook
+        # Interpreter defaults, snapshotted now so user code rebinding e.g.
+        # sys.__excepthook__ later cannot make the captured previous hook look
+        # custom (which would double-print) or raise from the hook.
+        self._default_excepthook = _cribo_sys.__excepthook__
+        self._default_unraisablehook = _cribo_sys.__unraisablehook__
+        self._default_threading_hook = getattr(threading_mod, "__excepthook__", None)
         try:
             self._group_type = BaseExceptionGroup
         except NameError:  # Python < 3.11
@@ -149,9 +172,12 @@ class _CriboSourceMapRuntime(object):
             return None
         # An explicit path wins for every mode. This is also the only way to
         # supply a map to a bundle executed via `python -` (stdin), whose
-        # source cannot be re-read at hook time.
+        # source cannot be re-read at hook time. A relative override is
+        # anchored to the startup working directory, immune to later chdir.
         if env not in ("", "1", "true", "yes", "on"):
             path = env
+            if not self._os.path.isabs(path):
+                path = self._os.path.join(self._startup_cwd, path)
             return (path, self._os.path.dirname(self._os.path.abspath(path)))
         bundle = self._bundle_anchor
         if self._mode == "inline":
@@ -341,27 +367,6 @@ class _CriboSourceMapRuntime(object):
             byte = stream.read_byte()
         return byte
 
-    def _read_string_array(self, stream, byte, *, _error=ValueError):
-        """Read a JSON array of strings/nulls; return (list, byte after array)."""
-        if not byte == 91:  # '['
-            raise _error("expected array")
-        items = []
-        byte = self._skip_ws(stream, stream.read_byte())
-        if byte == 93:  # ']'
-            return items, stream.read_byte()
-        while True:
-            if byte == 34:
-                items.append(self._read_string(stream, True))
-                byte = self._skip_ws(stream, stream.read_byte())
-            else:
-                items.append(None)
-                byte = self._skip_ws(stream, self._skip_value(stream, byte))
-            if byte == 93:
-                return items, stream.read_byte()
-            if not byte == 44:  # ','
-                raise _error("malformed array")
-            byte = self._skip_ws(stream, stream.read_byte())
-
     def _decode_vlq(
         self, stream, needed, max_needed, *, _range=range, _len=len, _error=ValueError
     ):
@@ -420,15 +425,50 @@ class _CriboSourceMapRuntime(object):
             vlq_value = 0
             vlq_shift = 0
 
-    def _scan(self, chunks, needed, max_needed, *, _error=ValueError):
-        """Scan the map's top-level object; return (sources, line table)."""
-        stream = self._stream_cls(chunks)
+    def _scan(self, chunks_factory, needed, max_needed, *, _set=set, _error=ValueError):
+        """Two-pass scan of the map; return (sources dict, line table).
+
+        Pass 1 decodes only `mappings` (skipping the sources array entirely);
+        pass 2 re-streams the map and collects only the source paths actually
+        referenced by the decoded lines. Memory therefore scales with the
+        traceback's needed frames, not with the bundle's full source table —
+        the property the whole streaming decoder exists for. `chunks_factory`
+        is a zero-argument callable producing a fresh chunk iterator per pass.
+        """
+        table = self._scan_mappings(self._stream_cls(chunks_factory()), needed, max_needed)
+        wanted = _set(src_idx for (src_idx, _line) in table.values())
+        sources = {}
+        if wanted:
+            sources = self._scan_sources(self._stream_cls(chunks_factory()), wanted)
+        return sources, table
+
+    def _scan_mappings(self, stream, needed, max_needed, *, _error=ValueError):
+        """Pass 1: decode the `mappings` field; every other value is skipped."""
         byte = self._skip_ws(stream, stream.read_byte())
         if not byte == 123:  # '{'
             raise _error("not a JSON object")
-        sources = []
-        table = {}
-        saw_mappings = False
+        byte = self._skip_ws(stream, stream.read_byte())
+        while byte == 34:  # '"' starting a key
+            key = self._read_string(stream, True)
+            byte = self._skip_ws(stream, stream.read_byte())
+            if not byte == 58:  # ':'
+                raise _error("malformed object")
+            byte = self._skip_ws(stream, stream.read_byte())
+            if key == "mappings":
+                if not byte == 34:
+                    raise _error("mappings is not a string")
+                table, _terminated = self._decode_vlq(stream, needed, max_needed)
+                return table
+            byte = self._skip_ws(stream, self._skip_value(stream, byte))
+            if byte == 44:  # ','
+                byte = self._skip_ws(stream, stream.read_byte())
+        raise _error("no mappings field")
+
+    def _scan_sources(self, stream, wanted, *, _error=ValueError):
+        """Pass 2: collect only the `sources` entries whose index is wanted."""
+        byte = self._skip_ws(stream, stream.read_byte())
+        if not byte == 123:  # '{'
+            raise _error("not a JSON object")
         byte = self._skip_ws(stream, stream.read_byte())
         while byte == 34:  # '"' starting a key
             key = self._read_string(stream, True)
@@ -437,34 +477,33 @@ class _CriboSourceMapRuntime(object):
                 raise _error("malformed object")
             byte = self._skip_ws(stream, stream.read_byte())
             if key == "sources":
-                sources, byte = self._read_string_array(stream, byte)
-            elif key == "mappings":
-                if not byte == 34:
-                    raise _error("mappings is not a string")
-                table, terminated = self._decode_vlq(stream, needed, max_needed)
-                saw_mappings = True
-                if sources:
-                    # Both fields consumed; stop without reading further (the
-                    # early exit inside the VLQ machine is preserved).
-                    break
-                if not terminated:
-                    # Early exit left the stream inside the mappings string;
-                    # skim to its closing quote so a `sources` field that
-                    # follows `mappings` still parses correctly. VLQ data
-                    # contains no escapes, so a bare '"' terminates.
-                    while True:
-                        byte = stream.read_byte()
-                        if byte < 0 or byte == 34:
-                            break
-                byte = stream.read_byte()
-            else:
-                byte = self._skip_value(stream, byte)
-            byte = self._skip_ws(stream, byte)
+                if not byte == 91:  # '['
+                    raise _error("sources is not an array")
+                return self._read_wanted_array_items(stream, wanted)
+            byte = self._skip_ws(stream, self._skip_value(stream, byte))
             if byte == 44:  # ','
                 byte = self._skip_ws(stream, stream.read_byte())
-        if not saw_mappings:
-            raise _error("no mappings field")
-        return sources, table
+        return {}
+
+    def _read_wanted_array_items(self, stream, wanted, *, _len=len, _error=ValueError):
+        """Read a JSON array, collecting only string items at wanted indices."""
+        items = {}
+        index = 0
+        byte = self._skip_ws(stream, stream.read_byte())
+        if byte == 93:  # ']'
+            return items
+        while True:
+            if byte == 34 and index in wanted:
+                items[index] = self._read_string(stream, True)
+                byte = self._skip_ws(stream, stream.read_byte())
+            else:
+                byte = self._skip_ws(stream, self._skip_value(stream, byte))
+            index += 1
+            if byte == 93 or _len(items) == _len(wanted):
+                return items
+            if not byte == 44:  # ','
+                raise _error("malformed array")
+            byte = self._skip_ws(stream, stream.read_byte())
 
     # -- loading -------------------------------------------------------------
 
@@ -482,16 +521,24 @@ class _CriboSourceMapRuntime(object):
         needed0 = _set(line - 1 for line in needed_lines)
         max_needed = _max(needed0)
         if map_path is None:
-            chunks = self._inline_chunks(self._bundle_anchor)
+
+            def chunks_factory():
+                return self._inline_chunks(self._bundle_anchor)
+
         else:
-            chunks = self._file_chunks(map_path)
-        sources, table0 = self._scan(chunks, needed0, max_needed)
+
+            def chunks_factory():
+                return self._file_chunks(map_path)
+
+        sources, table0 = self._scan(chunks_factory, needed0, max_needed)
         table = {}
         for line0, (src_idx, src_line0) in table0.items():
             table[line0 + 1] = (src_idx, src_line0 + 1)
         return (table, sources, map_dir)
 
-    def _load_json_fallback(self, needed_lines, *, _open=open, _set=set, _max=max):
+    def _load_json_fallback(
+        self, needed_lines, *, _open=open, _set=set, _max=max, _enumerate=enumerate
+    ):
         """Fallback: full json.loads parse, reusing the VLQ machine on the result."""
         location = self._map_location()
         if location is None:
@@ -508,7 +555,9 @@ class _CriboSourceMapRuntime(object):
             finally:
                 handle.close()
         data = json.loads(raw.decode("utf-8"))
-        sources = data.get("sources") or []
+        sources = {}
+        for index, source in _enumerate(data.get("sources") or []):
+            sources[index] = source
         mappings = data.get("mappings") or ""
         needed0 = _set(line - 1 for line in needed_lines)
         stream = self._stream_cls([mappings.encode("ascii"), b'"'])
@@ -590,9 +639,7 @@ class _CriboSourceMapRuntime(object):
         limit = _getattr(self._sys, "tracebacklimit", None)
         return limit if _isinstance(limit, _int) else None
 
-    def _write_frames(
-        self, traceback_obj, table, sources, map_dir, write, limit, *, _len=len
-    ):
+    def _write_frames(self, traceback_obj, table, sources, map_dir, write, limit):
         """Write remapped frame lines, collapsing repeated frames like CPython.
 
         Consecutive identical frames (recursion) print at most 3 times followed
@@ -631,13 +678,14 @@ class _CriboSourceMapRuntime(object):
             name = frame.f_code.co_name
             if filename == self._bundle:
                 mapped = table.get(lineno)
-                if mapped is not None and 0 <= mapped[0] < _len(sources) and sources[mapped[0]]:
-                    source = sources[mapped[0]]
-                    if not self._os.path.isabs(source):
-                        source = self._os.path.normpath(
-                            self._os.path.join(map_dir, source)
-                        )
-                    filename, lineno = source, mapped[1]
+                if mapped is not None:
+                    source = sources.get(mapped[0])
+                    if source:
+                        if not self._os.path.isabs(source):
+                            source = self._os.path.normpath(
+                                self._os.path.join(map_dir, source)
+                            )
+                        filename, lineno = source, mapped[1]
             entry = (filename, lineno, name)
             if entry == last:
                 repeats += 1
@@ -845,7 +893,7 @@ class _CriboSourceMapRuntime(object):
         if self._try_render(exc_value, traceback_obj, None):
             self._notify_custom_hook(
                 self._prev_excepthook,
-                self._sys.__excepthook__,
+                self._default_excepthook,
                 lambda hook: hook(exc_type, exc_value, traceback_obj),
             )
             return
@@ -865,7 +913,7 @@ class _CriboSourceMapRuntime(object):
         if self._try_render(args.exc_value, args.exc_traceback, prefix):
             self._notify_custom_hook(
                 self._prev_threading_hook,
-                _getattr(self._threading, "__excepthook__", None),
+                self._default_threading_hook,
                 lambda hook: hook(args),
             )
             return
@@ -880,7 +928,7 @@ class _CriboSourceMapRuntime(object):
         if self._try_render(unraisable.exc_value, unraisable.exc_traceback, prefix):
             self._notify_custom_hook(
                 self._prev_unraisablehook,
-                self._sys.__unraisablehook__,
+                self._default_unraisablehook,
                 lambda hook: hook(unraisable),
             )
             return

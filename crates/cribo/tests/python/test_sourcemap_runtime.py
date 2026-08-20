@@ -49,14 +49,14 @@ def test_stream_reads_across_chunk_boundaries(rt):
 
 
 def _scan(rt, json_text, needed, max_needed):
-    return rt._scan([json_text.encode("utf-8")], needed, max_needed)
+    return rt._scan(lambda: [json_text.encode("utf-8")], needed, max_needed)
 
 
 def test_scan_extracts_sources_and_mappings(rt):
     # AAAA;AACA;AACA: one segment per line, source line advancing by one.
     json_text = '{"version":3,"sources":["a.py","b.py"],"mappings":"AAAA;AACA;AACA"}'
     sources, table = _scan(rt, json_text, {0, 2}, 2)
-    assert sources == ["a.py", "b.py"], sources
+    assert sources == {0: "a.py"}, sources  # only referenced indices collected
     assert table == {0: (0, 0), 2: (0, 2)}, table
 
 
@@ -82,20 +82,20 @@ def test_scan_ignores_adversarial_sources_content(rt):
         '{"sources":["a.py"],"sourcesContent":["' + evil + '"],"mappings":"AAAA"}'
     )
     sources, table = _scan(rt, json_text, {0}, 0)
-    assert sources == ["a.py"], sources
+    assert sources == {0: "a.py"}, sources
     assert table == {0: (0, 0)}, table
 
 
 def test_scan_handles_unicode_escapes_in_sources(rt):
     json_text = '{"sources":["\\u00e9t\\u00e9.py"],"mappings":"AAAA"}'
     sources, _table = _scan(rt, json_text, {0}, 0)
-    assert sources == ["\u00e9t\u00e9.py"], sources
+    assert sources == {0: "\u00e9t\u00e9.py"}, sources
 
 
 def test_scan_null_in_sources_array(rt):
-    json_text = '{"sources":["a.py",null,"c.py"],"mappings":"AAAA"}'
+    json_text = '{"sources":["a.py",null,"c.py"],"mappings":"ACAA"}'
     sources, _table = _scan(rt, json_text, {0}, 0)
-    assert sources == ["a.py", None, "c.py"], sources
+    assert sources == {}, sources  # a null entry is simply not collected
 
 
 def test_vlq_early_exit_stops_reading(rt):
@@ -104,11 +104,11 @@ def test_vlq_early_exit_stops_reading(rt):
     class Boom(Exception):
         pass
 
-    def chunks():
+    def chunks_factory():
         yield b'{"sources":["a.py"],"mappings":"AAAA;AACA;'
         raise Boom("decoder read past its early-exit point")
 
-    _sources, table = rt._scan(chunks(), {0}, 0)
+    _sources, table = rt._scan(chunks_factory, {0}, 0)
     assert table == {0: (0, 0)}, table
 
 
@@ -127,7 +127,7 @@ def test_scan_handles_mappings_before_sources(rt):
     # mappings string must not derail parsing of a later sources field.
     json_text = '{"mappings":"AAAA;AACA;AACA","sources":["a.py","b.py"]}'
     sources, table = _scan(rt, json_text, {0}, 0)  # early exit after line 0
-    assert sources == ["a.py", "b.py"], sources
+    assert sources == {0: "a.py"}, sources
     assert table == {0: (0, 0)}, table
 
 
@@ -136,7 +136,7 @@ def test_scan_combines_surrogate_pairs(rt):
     # one code point, not two replacement characters.
     json_text = '{"sources":["\\ud83d\\ude00.py"],"mappings":"AAAA"}'
     sources, _table = _scan(rt, json_text, {0}, 0)
-    assert sources == ["\U0001f600.py"], sources
+    assert sources == {0: "\U0001f600.py"}, sources
     # A lone high surrogate followed by a plain character stays recoverable
     # (replacement character), and the rest of the string is intact.
     json_text = '{"sources":["\\ud83dx.py"],"mappings":"AAAA"}'
@@ -168,8 +168,8 @@ def test_inline_payload_scan_and_chunked_base64(rt):
         decoded = b"".join(rt._inline_chunks(path))
         assert decoded.decode("utf-8") == json_text
         # And end-to-end through the scanner:
-        sources, table = rt._scan(rt._inline_chunks(path), {0}, 0)
-        assert sources == ["a.py"], sources
+        sources, table = rt._scan(lambda: rt._inline_chunks(path), {0}, 0)
+        assert sources == {0: "a.py"}, sources
         assert table == {0: (0, 0)}, table
     finally:
         os.unlink(path)
@@ -241,7 +241,7 @@ def test_env_path_wins_for_every_mode(rt):
         loaded = inline_stdin._load({1})
         assert loaded is not None, "env path must activate a <stdin> inline bundle"
         table, sources, _map_dir = loaded
-        assert sources == ["a.py"]
+        assert sources == {0: "a.py"}, sources
         assert table == {1: (0, 1)}, table
         # Without the env override, a <stdin> inline bundle stays inactive.
         os.environ.pop("CRIBO_SOURCE_MAPS", None)
