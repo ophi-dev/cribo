@@ -13,13 +13,13 @@
     "cdk",
     "terraform"
   ],
-  "homepage": "https://github.com/ophidiarium/cribo",
+  "homepage": "https://github.com/ophi-dev/cribo",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ophidiarium/cribo.git"
+    "url": "https://github.com/ophi-dev/cribo.git"
   },
   "bugs": {
-    "url": "https://github.com/ophidiarium/cribo/issues"
+    "url": "https://github.com/ophi-dev/cribo/issues"
   },
   "license": "MIT",
   "author": {

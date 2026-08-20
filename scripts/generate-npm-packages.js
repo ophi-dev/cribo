@@ -152,7 +152,7 @@ This package contains the Cribo binary for ${nodeOs}-${nodeArch}.
 
 This package is automatically installed as an optional dependency when you install the main \`cribo\` package.
 
-For more information, visit: https://github.com/ophidiarium/cribo
+For more information, visit: https://github.com/ophi-dev/cribo
 `;
 
     fs.writeFileSync(path.join(pkgDir, 'README.md'), readmeContent);

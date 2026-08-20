@@ -31,4 +31,4 @@ This package automatically installs the correct binary for your platform:
 
 ## More Information
 
-For detailed documentation, visit: [Cribo GitHub repository](https://github.com/ophidiarium/cribo)
+For detailed documentation, visit: [Cribo GitHub repository](https://github.com/ophi-dev/cribo)
