@@ -131,6 +131,19 @@ def test_scan_handles_mappings_before_sources(rt):
     assert table == {0: (0, 0)}, table
 
 
+def test_scan_combines_surrogate_pairs(rt):
+    # Non-BMP characters arrive as JSON surrogate pairs; they must decode to
+    # one code point, not two replacement characters.
+    json_text = '{"sources":["\\ud83d\\ude00.py"],"mappings":"AAAA"}'
+    sources, _table = _scan(rt, json_text, {0}, 0)
+    assert sources == ["\U0001f600.py"], sources
+    # A lone high surrogate followed by a plain character stays recoverable
+    # (replacement character), and the rest of the string is intact.
+    json_text = '{"sources":["\\ud83dx.py"],"mappings":"AAAA"}'
+    sources, _table = _scan(rt, json_text, {0}, 0)
+    assert sources[0].endswith("x.py"), sources
+
+
 def make_inline_bundle(payload_json):
     """Create a temp file shaped like an inline-mode bundle; return its path."""
     import base64

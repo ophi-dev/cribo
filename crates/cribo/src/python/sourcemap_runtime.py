@@ -77,7 +77,17 @@ class _CriboSourceMapRuntime(object):
 
     def __init__(self, mode, bundle_file, os_mod, binascii_mod, threading_mod, traceback_mod):
         self._mode = mode
+        # As-given path for frame matching (co_filename uses the invocation
+        # spelling), plus a startup-anchored absolute path for file I/O so a
+        # later os.chdir() in bundled code cannot orphan a relative path.
         self._bundle = bundle_file
+        if bundle_file == "<stdin>":
+            self._bundle_anchor = bundle_file
+        else:
+            self._bundle_anchor = os_mod.path.abspath(bundle_file)
+        # Marks this instance so another cribo runtime chained behind it can
+        # recognize it (see _notify_custom_hook).
+        self._cribo_sm_runtime_marker = True
         self._os = os_mod
         self._sys = _cribo_sys
         self._binascii = binascii_mod
@@ -143,25 +153,19 @@ class _CriboSourceMapRuntime(object):
         if env not in ("", "1", "true", "yes", "on"):
             path = env
             return (path, self._os.path.dirname(self._os.path.abspath(path)))
-        bundle = self._bundle
+        bundle = self._bundle_anchor
         if self._mode == "inline":
             if bundle == "<stdin>":
                 return None  # stdin cannot be re-opened; use CRIBO_SOURCE_MAPS=<path>
-            return (None, self._os.path.dirname(self._os.path.abspath(bundle)))
+            return (None, self._os.path.dirname(bundle))
         sibling = bundle + ".map"
         if self._mode == "linked":
             if self._os.path.exists(sibling):
-                return (
-                    sibling,
-                    self._os.path.dirname(self._os.path.abspath(sibling)),
-                )
+                return (sibling, self._os.path.dirname(sibling))
             return None
         # external: opt in via CRIBO_SOURCE_MAPS=1 (a path was handled above)
         if env in ("1", "true", "yes", "on"):
-            return (
-                sibling,
-                self._os.path.dirname(self._os.path.abspath(sibling)),
-            )
+            return (sibling, self._os.path.dirname(sibling))
         return None
 
     def _file_chunks(self, path, *, _open=open):
@@ -236,27 +240,41 @@ class _CriboSourceMapRuntime(object):
             byte = stream.read_byte()
         return byte
 
+    def _read_hex4(self, stream, *, _int=int, _chr=chr, _range=range, _error=ValueError):
+        """Read the four hex digits of a \\uXXXX escape; return the code unit."""
+        code = 0
+        for _ in _range(4):
+            digit = stream.read_byte()
+            if digit < 0:
+                raise _error("unterminated unicode escape")
+            code = code * 16 + _int(_chr(digit), 16)
+        return code
+
     def _read_string(
         self,
         stream,
         collect,
         *,
         _bytearray=bytearray,
-        _int=int,
         _chr=chr,
-        _range=range,
         _error=ValueError,
     ):
         """Consume a JSON string whose opening quote was already read.
 
         Returns the decoded text when collect is true, else None (contents are
-        discarded byte-by-byte). Escaped quotes and \\uXXXX sequences are
-        handled, so string *values* containing text like '"mappings":' cannot
-        confuse the key scanner.
+        discarded byte-by-byte). Escaped quotes, \\uXXXX sequences, and UTF-16
+        surrogate pairs (non-BMP characters) are handled, so string *values*
+        containing text like '"mappings":' cannot confuse the key scanner and
+        emoji-bearing paths survive intact.
         """
+        table = {98: 8, 102: 12, 110: 10, 114: 13, 116: 9}
         buf = _bytearray() if collect else None
+        pending = None  # one byte of lookahead pushed back by surrogate handling
         while True:
-            byte = stream.read_byte()
+            if pending is None:
+                byte = stream.read_byte()
+            else:
+                byte, pending = pending, None
             if byte < 0:
                 raise _error("unterminated JSON string")
             if byte == 34:  # '"'
@@ -268,18 +286,37 @@ class _CriboSourceMapRuntime(object):
             escape = stream.read_byte()
             if escape < 0:
                 raise _error("unterminated JSON escape")
-            if escape == 117:  # 'u'
-                code = 0
-                for _ in _range(4):
-                    digit = stream.read_byte()
-                    if digit < 0:
-                        raise _error("unterminated unicode escape")
-                    code = code * 16 + _int(_chr(digit), 16)
+            if not escape == 117:  # 'u'
                 if buf is not None:
+                    buf.append(table.get(escape, escape))
+                continue
+            code = self._read_hex4(stream)
+            if buf is None:
+                continue
+            if 0xD800 <= code <= 0xDBFF:
+                # High surrogate: a following \uXXXX low surrogate combines
+                # into one non-BMP code point.
+                nxt = stream.read_byte()
+                if nxt == 92:
+                    escape2 = stream.read_byte()
+                    if escape2 == 117:
+                        low = self._read_hex4(stream)
+                        if 0xDC00 <= low <= 0xDFFF:
+                            code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00)
+                            buf.extend(_chr(code).encode("utf-8"))
+                        else:
+                            buf.extend(_chr(code).encode("utf-8", "surrogatepass"))
+                            buf.extend(_chr(low).encode("utf-8", "surrogatepass"))
+                        continue
+                    if escape2 < 0:
+                        raise _error("unterminated JSON escape")
                     buf.extend(_chr(code).encode("utf-8", "surrogatepass"))
-            elif buf is not None:
-                table = {98: 8, 102: 12, 110: 10, 114: 13, 116: 9}
-                buf.append(table.get(escape, escape))
+                    buf.append(table.get(escape2, escape2))
+                    continue
+                buf.extend(_chr(code).encode("utf-8", "surrogatepass"))
+                pending = nxt  # includes EOF/quote; the main loop handles both
+                continue
+            buf.extend(_chr(code).encode("utf-8", "surrogatepass"))
 
     def _skip_value(self, stream, byte, *, _error=ValueError):
         """Skip one JSON value; return the first byte after it (or -1)."""
@@ -445,7 +482,7 @@ class _CriboSourceMapRuntime(object):
         needed0 = _set(line - 1 for line in needed_lines)
         max_needed = _max(needed0)
         if map_path is None:
-            chunks = self._inline_chunks(self._bundle)
+            chunks = self._inline_chunks(self._bundle_anchor)
         else:
             chunks = self._file_chunks(map_path)
         sources, table0 = self._scan(chunks, needed0, max_needed)
@@ -463,7 +500,7 @@ class _CriboSourceMapRuntime(object):
         json = self._import("json")
 
         if map_path is None:
-            raw = b"".join(self._inline_chunks(self._bundle))
+            raw = b"".join(self._inline_chunks(self._bundle_anchor))
         else:
             handle = _open(map_path, "rb")
             try:
@@ -779,21 +816,28 @@ class _CriboSourceMapRuntime(object):
                     pass
             self._local.in_hook = False
 
-    def _notify_custom_hook(self, prev, default, call, *, _bex=BaseException):
+    def _notify_custom_hook(self, prev, default, call, *, _bex=BaseException, _getattr=getattr):
         """Invoke a chained hook after a successful remap when it is custom.
 
         A successful remap replaces the *default* printer, but preinstalled
         custom hooks (error reporters, sitecustomize) must still observe the
-        exception; their own output is theirs to manage. When the interpreter
-        default is unavailable for comparison (e.g. `threading.__excepthook__`
-        before Python 3.10), no notification happens — better to skip a custom
-        hook than to double-print via the default one.
+        exception; their own output is theirs to manage. Two exclusions: when
+        the interpreter default is unavailable for comparison (e.g.
+        `threading.__excepthook__` before Python 3.10) no notification happens
+        — better to skip a custom hook than to double-print via the default
+        one; and an earlier cribo runtime's hook is skipped, since it would
+        find no frames for its own bundle and delegate to the default printer,
+        duplicating the traceback.
         """
-        if default is not None and prev is not None and prev is not default:
-            try:
-                call(prev)
-            except _bex:
-                pass
+        if default is None or prev is None or prev is default:
+            return
+        bound_to = _getattr(prev, "__self__", None)
+        if bound_to is not None and _getattr(bound_to, "_cribo_sm_runtime_marker", False):
+            return
+        try:
+            call(prev)
+        except _bex:
+            pass
 
     # -- installed hooks ------------------------------------------------------
 

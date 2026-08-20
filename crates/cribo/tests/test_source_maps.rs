@@ -1136,3 +1136,83 @@ fn runtime_survives_shadowed_builtins() {
     );
     assert!(!stderr.contains("bundle.py\", line"), "{stderr}");
 }
+
+#[test]
+fn runtime_survives_chdir_before_crash() {
+    // A bundle launched via a relative path that chdirs away before crashing
+    // must still locate itself and its sibling map (paths are anchored at
+    // startup).
+    let dir = make_project(&[
+        (
+            "main.py",
+            "import os\nfrom helper import boom\n\nos.chdir(\"/\")\nboom()\n",
+        ),
+        (
+            "helper.py",
+            "def boom():\n    raise ValueError(\"kaboom after chdir\")\n",
+        ),
+    ]);
+    let bundle = bundle_crash_project(&dir, "--sourcemap=linked");
+
+    let mut command = Command::new(common::get_python_executable());
+    // Invoke through the relative file name, from the bundle's directory.
+    command.arg(bundle.file_name().expect("bundle name"));
+    command.current_dir(dir.path());
+    command.env_remove("CRIBO_SOURCE_MAPS");
+    let output = command.output().expect("run python");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(
+        stderr.contains("helper.py\", line 2, in boom"),
+        "remapping must survive os.chdir before the crash: {stderr}"
+    );
+    assert!(stderr.contains("kaboom after chdir"));
+}
+
+#[test]
+fn stacked_runtimes_do_not_duplicate_tracebacks() {
+    // Two source-mapped bundles executed in one interpreter stack their hooks;
+    // the outer runtime must recognize the inner one and not chain into it
+    // (which would fall through to the default printer and duplicate output).
+    let quiet = fixture_project();
+    let quiet_bundle = quiet.path().join("bundle.py");
+    let (ok, _, stderr) = run_cribo(&[
+        "--entry",
+        &entry_arg(&quiet),
+        "--output",
+        &quiet_bundle.to_string_lossy(),
+        "--sourcemap=linked",
+    ]);
+    assert!(ok, "bundling must succeed: {stderr}");
+
+    let crash = crash_project();
+    let crash_bundle = bundle_crash_project(&crash, "--sourcemap=linked");
+
+    let driver = crash.path().join("driver.py");
+    fs::write(
+        &driver,
+        format!(
+            "import runpy\nrunpy.run_path({quiet:?})\nrunpy.run_path({crash:?})\n",
+            quiet = quiet_bundle.to_string_lossy(),
+            crash = crash_bundle.to_string_lossy(),
+        ),
+    )
+    .expect("write driver");
+
+    let (ok, _, stderr) = run_python(&driver, &[]);
+    assert!(!ok);
+    assert_eq!(
+        stderr.matches("Traceback (most recent call last):").count(),
+        1,
+        "stacked runtimes must render exactly one traceback: {stderr}"
+    );
+    assert_eq!(
+        stderr.matches("ValueError: kaboom").count(),
+        1,
+        "the exception line must print exactly once: {stderr}"
+    );
+    assert!(
+        stderr.contains("helper.py\", line 5, in inner"),
+        "the crashing bundle's frames must be remapped: {stderr}"
+    );
+}
