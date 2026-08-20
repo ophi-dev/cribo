@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.2](https://github.com/ophi-dev/cribo/compare/v0.9.1...v0.9.2) (2026-08-20)
+
+
+### Bug Fixes
+
+* **ci:** avoid flaky apt mirror in releases ([97c3115](https://github.com/ophi-dev/cribo/commit/97c31152ac7185ecd223d2d75350fa407c4c10b1))
+
 ## [0.9.1](https://github.com/ophi-dev/cribo/compare/v0.9.0...v0.9.1) (2026-08-19)
 
 
