@@ -16,12 +16,13 @@ use crate::{
         ResolutionStrategy,
     },
     code_generator::{Bundler, phases::orchestrator::PhaseOrchestrator},
-    config::Config,
+    config::{Config, SourceMapMode},
     dependency_graph::DependencyGraph,
     import_rewriter::{ImportDeduplicationStrategy, ImportRewriter},
     module_facts::ModuleFacts,
     requirement_resolver::RequirementResolver,
     resolver::{ImportOrigin, ModuleId, ModuleResolver},
+    source_map::{ProvenanceResolver, SourceMapOptions, build_source_map},
     symbol_conflict_resolver::SymbolConflictResolver,
     tree_shaking::TreeShaker,
     types::FxIndexMap,
@@ -36,6 +37,16 @@ static EMPTY_PARSED_MODULE: OnceLock<ruff_python_parser::Parsed<ModModule>> = On
 fn get_empty_parsed_module() -> &'static ruff_python_parser::Parsed<ModModule> {
     EMPTY_PARSED_MODULE
         .get_or_init(|| ruff_python_parser::parse_module("").expect("Failed to parse empty module"))
+}
+
+/// Path of the source map file for a bundle output path (`bundle.py` → `bundle.py.map`).
+fn source_map_path_for(output_path: &Path) -> PathBuf {
+    let mut file_name = output_path.file_name().map_or_else(
+        || std::ffi::OsString::from("bundle.py"),
+        std::ffi::OsStr::to_os_string,
+    );
+    file_name.push(".map");
+    output_path.with_file_name(file_name)
 }
 
 /// Type alias for module processing queue
@@ -70,6 +81,16 @@ struct StaticBundleParams<'a> {
     graph: &'a DependencyGraph,
     circular_dep_analysis: Option<&'a CircularDependencyAnalysis>,
     tree_shaker: Option<&'a TreeShaker<'a>>,
+    /// Output file path when writing to disk; `None` for stdout output.
+    /// Used for the source map `file` field and source path relativization.
+    output_path: Option<&'a Path>,
+}
+
+/// Result of static bundle emission: the code plus an optional source map JSON.
+struct EmittedBundle {
+    code: String,
+    /// Source Map v3 JSON, present when `Config::sourcemap` is enabled.
+    source_map: Option<String>,
 }
 
 /// Context for dependency building operations
@@ -601,14 +622,25 @@ impl BundleOrchestrator {
 
         // Generate bundled code
         info!("Using hybrid static bundler");
-        let bundled_code = self.emit_static_bundle(&StaticBundleParams {
+        let emitted = self.emit_static_bundle(&StaticBundleParams {
             sorted_module_ids: &sorted_module_ids,
             parsed_modules: Some(&parsed_modules),
             resolver: &resolver,
             graph: &graph,
             circular_dep_analysis: circular_dep_analysis.as_ref(),
             tree_shaker: tree_shaker.as_ref(),
+            output_path: None,
         })?;
+        let mut bundled_code = emitted.code;
+
+        // Stdout output can only carry an inline map; other modes are rejected
+        // at CLI validation time.
+        if self.config.sourcemap == Some(SourceMapMode::Inline)
+            && let Some(map_json) = emitted.source_map.as_deref()
+        {
+            bundled_code.push('\n');
+            bundled_code.push_str(&crate::source_map::inline_source_mapping_comment(map_json));
+        }
 
         // Generate requirements.txt if requested
         if emit_requirements {
@@ -660,14 +692,45 @@ impl BundleOrchestrator {
 
         // Generate bundled code
         info!("Using hybrid static bundler");
-        let bundled_code = self.emit_static_bundle(&StaticBundleParams {
+        let emitted = self.emit_static_bundle(&StaticBundleParams {
             sorted_module_ids: &sorted_module_ids,
             parsed_modules: Some(&parsed_modules), // Use pre-parsed modules to avoid double parsing
             resolver: &resolver,
             graph: &graph,
             circular_dep_analysis: circular_dep_analysis.as_ref(),
             tree_shaker: tree_shaker.as_ref(),
+            output_path: Some(output_path),
         })?;
+        let mut bundled_code = emitted.code;
+
+        // Apply the configured source map delivery mode.
+        if let (Some(mode), Some(map_json)) = (self.config.sourcemap, emitted.source_map.as_deref())
+        {
+            match mode {
+                SourceMapMode::Linked | SourceMapMode::External => {
+                    let map_path = source_map_path_for(output_path);
+                    fs::write(&map_path, map_json).with_context(|| {
+                        format!("Failed to write source map file: {}", map_path.display())
+                    })?;
+                    info!("Source map written to: {}", map_path.display());
+                    if mode == SourceMapMode::Linked {
+                        let map_file_name = map_path.file_name().map_or_else(
+                            || map_path.to_string_lossy().into_owned(),
+                            |name| name.to_string_lossy().into_owned(),
+                        );
+                        bundled_code.push('\n');
+                        bundled_code.push_str(&crate::source_map::linked_source_mapping_comment(
+                            &map_file_name,
+                        ));
+                    }
+                }
+                SourceMapMode::Inline => {
+                    bundled_code.push('\n');
+                    bundled_code
+                        .push_str(&crate::source_map::inline_source_mapping_comment(map_json));
+                }
+            }
+        }
 
         // Generate requirements.txt if requested
         if emit_requirements {
@@ -1955,7 +2018,7 @@ impl BundleOrchestrator {
     }
 
     /// Emit bundle using static bundler (no exec calls)
-    fn emit_static_bundle(&mut self, params: &StaticBundleParams<'_>) -> Result<String> {
+    fn emit_static_bundle(&mut self, params: &StaticBundleParams<'_>) -> Result<EmittedBundle> {
         // First, detect and resolve conflicts after all modules have been analyzed
         let conflicts = self.conflict_resolver.detect_and_resolve_conflicts();
         if !conflicts.is_empty() {
@@ -2034,7 +2097,7 @@ impl BundleOrchestrator {
         }
 
         // Bundle all modules using the phase-based orchestrator
-        let bundled_ast = PhaseOrchestrator::bundle(
+        let mut bundled_ast = PhaseOrchestrator::bundle(
             &mut static_bundler,
             &crate::code_generator::BundleParams {
                 modules: &module_asts,
@@ -2047,6 +2110,14 @@ impl BundleOrchestrator {
                 python_version: self.config.python_version().unwrap_or(10),
             },
         );
+
+        // Inject the traceback-remapping runtime before code generation so the
+        // emitted text and the bundled AST stay structurally aligned for the
+        // source map extraction walk.
+        if let Some(mode) = self.config.sourcemap {
+            crate::source_map::inject_runtime_prologue(&mut bundled_ast, mode);
+        }
+        let bundled_ast = bundled_ast;
 
         // Generate Python code from AST
         let empty_parsed = get_empty_parsed_module();
@@ -2082,8 +2153,72 @@ impl BundleOrchestrator {
             String::new(), // Empty line
         ];
         final_output.extend(code_parts);
+        let code = final_output.join("\n");
 
-        Ok(final_output.join("\n"))
+        // Extract source map when enabled: re-parse the emitted code and walk it
+        // in parallel with the bundled AST (which carries node provenance).
+        let source_map = if self.config.sourcemap.is_some() {
+            self.extract_source_map(&code, &bundled_ast, params)
+        } else {
+            None
+        };
+
+        Ok(EmittedBundle { code, source_map })
+    }
+
+    /// Build the Source Map v3 JSON for an emitted bundle.
+    ///
+    /// Never fails the bundle: extraction errors are logged and yield `None`.
+    fn extract_source_map(
+        &self,
+        code: &str,
+        bundled_ast: &ModModule,
+        params: &StaticBundleParams<'_>,
+    ) -> Option<String> {
+        let parsed_modules = params.parsed_modules?;
+
+        // Module ordinals were assigned by the bundler's AST indexing pass in
+        // the order of `parsed_modules`; register provenance in the same order.
+        let mut provenance = ProvenanceResolver::default();
+        for (module_id, _imports, _ast, source) in parsed_modules {
+            let path = params
+                .resolver
+                .get_module_path(*module_id)
+                .unwrap_or_else(|| {
+                    let name = params
+                        .resolver
+                        .get_module_name(*module_id)
+                        .unwrap_or_else(|| format!("module_{}", module_id.as_u32()));
+                    PathBuf::from(&name)
+                });
+            let path = std::path::absolute(&path).unwrap_or(path);
+            provenance.push_module(path, source.clone());
+        }
+
+        let file_name = params.output_path.and_then(Path::file_name).map_or_else(
+            || "<stdout>".to_owned(),
+            |name| name.to_string_lossy().into_owned(),
+        );
+        // Source paths are relative to the directory the map lives in (the
+        // output directory), or the current directory for stdout output.
+        let base_dir = params
+            .output_path
+            .and_then(Path::parent)
+            .map(|dir| std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf()))
+            .or_else(|| std::env::current_dir().ok());
+
+        let options = SourceMapOptions {
+            file: &file_name,
+            include_contents: self.config.include_sources_content(),
+            base_dir: base_dir.as_deref(),
+        };
+        match build_source_map(code, bundled_ast, &provenance, &options) {
+            Ok(json) => Some(json),
+            Err(err) => {
+                warn!("Source map generation failed; bundling continues without a map: {err:#}");
+                None
+            }
+        }
     }
 
     /// Generate requirements.txt content from third-party imports
@@ -2311,6 +2446,92 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    /// End-to-end source map extraction: bundle a three-module project (inlined
+    /// module, wrapper module with side effects, entry) with an inline map and
+    /// verify statement mappings point back at the original files and lines.
+    #[test]
+    fn test_source_map_extraction_end_to_end() -> Result<()> {
+        let temp_dir = TempDir::new()?;
+        fs::write(
+            temp_dir.path().join("main.py"),
+            "from utils import add\nimport effects\n\nresult = add(1, 2)\nprint(result, \
+             effects.X)\n",
+        )?;
+        fs::write(
+            temp_dir.path().join("utils.py"),
+            "def add(a, b):\n    total = a + b\n    return total\n",
+        )?;
+        // The print side effect forces this module onto the wrapper path.
+        fs::write(
+            temp_dir.path().join("effects.py"),
+            "print(\"side effect\")\nX = 42\n",
+        )?;
+
+        let config = Config {
+            sourcemap: Some(SourceMapMode::Inline),
+            ..Config::default()
+        };
+        let mut orchestrator = BundleOrchestrator::new(config);
+        let code = orchestrator.bundle_to_string(&temp_dir.path().join("main.py"), false)?;
+
+        // The bundle must end with an inline sourceMappingURL comment.
+        let marker = "# sourceMappingURL=data:application/json;base64,";
+        let marker_pos = code
+            .rfind(marker)
+            .expect("inline source map comment present");
+        let payload = code[marker_pos + marker.len()..].trim_end();
+        let map_bytes = base64_simd::STANDARD
+            .decode_to_vec(payload.as_bytes())
+            .expect("valid base64 payload");
+        let map_json = String::from_utf8(map_bytes).expect("valid UTF-8 source map");
+
+        let map = oxc_sourcemap::SourceMap::from_json_string(&map_json)
+            .expect("valid Source Map v3 JSON");
+        assert_eq!(map.get_file(), Some("<stdout>"));
+        // Inline mode omits sourcesContent by default.
+        assert!(!map_json.contains("sourcesContent"));
+
+        let lookup = map.generate_lookup_table();
+        let find_generated_line = |needle: &str| -> u32 {
+            code.lines()
+                .position(|line| line.trim() == needle)
+                .unwrap_or_else(|| panic!("bundle must contain a line matching `{needle}`"))
+                as u32
+        };
+        let assert_maps_to = |needle: &str, source_suffix: &str, original_line: u32| {
+            let generated_line = find_generated_line(needle);
+            let token = map
+                .lookup_token(&lookup, generated_line, 0)
+                .unwrap_or_else(|| panic!("mapping for `{needle}` on line {generated_line}"));
+            assert_eq!(
+                token.get_dst_line(),
+                generated_line,
+                "`{needle}` must have a mapping on its own line, not inherit an earlier one"
+            );
+            let source = map
+                .get_source(token.get_source_id().expect("source id"))
+                .expect("source path");
+            assert!(
+                source.ends_with(source_suffix),
+                "`{needle}` should map into {source_suffix}, got {source}"
+            );
+            assert_eq!(
+                token.get_src_line(),
+                original_line,
+                "`{needle}` should map to 0-based line {original_line} of {source_suffix}"
+            );
+        };
+
+        // Inlined module: statement nested in a function body.
+        assert_maps_to("return total", "utils.py", 2);
+        // Wrapper module: statement inside the synthesized init function.
+        assert_maps_to("X = 42", "effects.py", 1);
+        // Entry module statement.
+        assert_maps_to("result = add(1, 2)", "main.py", 3);
+
+        Ok(())
+    }
 
     /// External importlib targets recorded during one bundle run must not leak into a
     /// later run on the same orchestrator instance.

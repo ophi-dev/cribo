@@ -1,0 +1,11 @@
+---
+source: crates/cribo/tests/test_bundling_snapshots.rs
+input_file: crates/cribo/tests/fixtures/sourcemap_wrapper/main.py
+---
+bundle:634  `print("effects module loading")` -> effects.py:1
+bundle:635  `COUNTER = 1` -> effects.py:3
+bundle:638  `def boost(value):` -> effects.py:6
+bundle:639  `boosted = value * 2 + COUNTER` -> effects.py:7
+bundle:640  `return boosted` -> effects.py:8
+bundle:652  `print("counter:", effects.COUNTER)` -> main.py:3
+bundle:653  `print("boosted:", effects.boost(10))` -> main.py:4

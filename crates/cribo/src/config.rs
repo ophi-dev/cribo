@@ -47,8 +47,45 @@ pub struct Config {
     #[serde(rename = "bundle-third-party", alias = "bundle_third_party")]
     pub bundle_third_party: Option<bool>,
 
+    /// Source map delivery mode. `None` disables source map generation (default).
+    /// See `docs/source-maps.md`.
+    pub sourcemap: Option<SourceMapMode>,
+
+    /// Whether to embed original source text in the map as `sourcesContent`.
+    /// `None` selects the mode-dependent default (omitted for `inline`,
+    /// included for `linked`/`external`).
+    #[serde(rename = "sources-content", alias = "sources_content")]
+    pub sources_content: Option<bool>,
+
     /// Configuration for mapping imports to installable requirements
     pub requirements: RequirementsConfig,
+}
+
+/// Source map delivery mode, mirroring esbuild's `--sourcemap` values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum SourceMapMode {
+    /// Write `<output>.map` next to the bundle and append a
+    /// `# sourceMappingURL=<basename>.map` comment (the default for a bare flag).
+    Linked,
+    /// Embed the map as a base64 data-URL comment at the end of the bundle.
+    Inline,
+    /// Write `<output>.map` with no comment in the bundle.
+    External,
+}
+
+impl Config {
+    /// Effective `sourcesContent` policy for source map generation.
+    ///
+    /// An explicit `sources-content` setting wins; otherwise the mode default
+    /// applies — omitted for `inline` (keeps the bundle small), included for
+    /// `linked`/`external` (self-contained maps).
+    pub fn include_sources_content(&self) -> bool {
+        self.sources_content.unwrap_or(match self.sourcemap {
+            Some(SourceMapMode::Linked | SourceMapMode::External) => true,
+            Some(SourceMapMode::Inline) | None => false,
+        })
+    }
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -91,6 +128,8 @@ impl Default for Config {
             target_version: "py310".to_owned(),
             tree_shake: true,         // Tree-shaking enabled by default
             bundle_third_party: None, // Opt-in: third-party deps stay external by default
+            sourcemap: None,          // Opt-in: no source map by default
+            sources_content: None,    // Mode-dependent default; see docs/source-maps.md
             requirements: RequirementsConfig::default(),
         }
     }
@@ -123,6 +162,8 @@ impl Combine for Config {
             tree_shake: self.tree_shake,
             // Option scalar: absent keys in higher-precedence layers preserve lower layers
             bundle_third_party: self.bundle_third_party.or(other.bundle_third_party),
+            sourcemap: self.sourcemap.or(other.sourcemap),
+            sources_content: self.sources_content.or(other.sources_content),
             requirements: RequirementsConfig {
                 python: self.requirements.python.or(other.requirements.python),
                 module_map: if self.requirements.module_map.is_empty() {
