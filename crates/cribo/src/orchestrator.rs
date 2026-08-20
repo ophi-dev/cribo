@@ -2293,12 +2293,12 @@ impl BundleOrchestrator {
             |name| name.to_string_lossy().into_owned(),
         );
         // Source paths are relative to the directory the map lives in (the
-        // output directory), or the current directory for stdout output.
+        // output directory). For stdout output the bundle's eventual location
+        // is unknown, so paths stay absolute.
         let base_dir = params
             .output_path
             .and_then(Path::parent)
-            .map(|dir| std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf()))
-            .or_else(|| std::env::current_dir().ok());
+            .map(|dir| std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf()));
 
         let options = SourceMapOptions {
             file: &file_name,

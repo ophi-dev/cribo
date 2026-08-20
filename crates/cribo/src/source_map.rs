@@ -344,6 +344,39 @@ impl ParallelWalker<'_> {
                     });
                 }
             }
+            // With decorators present, the statement range starts at the first
+            // `@...` line, so the mapping recorded above covers that decorator
+            // — the actual `def`/`class` header still needs its own record.
+            // The name identifier sits on the header line on both sides, but
+            // symbol renaming can regenerate the original identifier with a
+            // synthetic (default) range; only ranges inside the statement are
+            // trusted, with the parameter list as a fallback anchor.
+            let header_anchor = match (generated, original) {
+                (Stmt::FunctionDef(g), Stmt::FunctionDef(o)) => {
+                    let orig_anchor = Some(o.name.range())
+                        .filter(|range| o.range().contains(range.start()))
+                        .or_else(|| {
+                            Some(o.parameters.range())
+                                .filter(|range| o.range().contains(range.start()))
+                        });
+                    orig_anchor.map(|range| (g.name.range(), range, o.node_index().load()))
+                }
+                (Stmt::ClassDef(g), Stmt::ClassDef(o)) => Some(o.name.range())
+                    .filter(|range| o.range().contains(range.start()))
+                    .map(|range| (g.name.range(), range, o.node_index().load())),
+                _ => None,
+            };
+            if !gen_decorators.is_empty()
+                && let Some((gen_anchor, orig_anchor, orig_index)) = header_anchor
+                && let Some((module_ordinal, original_line)) =
+                    self.provenance.resolve(orig_index, orig_anchor.start())
+            {
+                self.records.push(MappingRecord {
+                    generated_line: self.line_index.line_of(gen_anchor.start()),
+                    module_ordinal,
+                    original_line,
+                });
+            }
         }
 
         // Recurse into nested statement bodies even when the statement itself is

@@ -170,6 +170,15 @@ fn stdout_with_bare_sourcemap_selects_inline() {
     assert!(ok, "bundling must succeed: {stderr}");
     let map_json = decode_inline_map(&stdout);
     assert_map_covers_helper(&map_json, "<stdout>");
+    // A stdout bundle can be redirected anywhere, so its map has no anchor
+    // directory: source paths must stay absolute.
+    let map = parse_map(&map_json);
+    assert!(
+        map.get_sources()
+            .all(|source| Path::new(source).is_absolute()),
+        "stdout maps must carry absolute source paths: {:?}",
+        map.get_sources().collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -1097,9 +1106,10 @@ fn map_covers_match_case_headers_and_decorators() {
         .filter(|token| token.get_source_id() == Some(helper_id))
         .map(|token| token.get_src_line())
         .collect();
-    // 0-based original lines: 4 and 5 are the two decorators; 8, 10, and 12
-    // are the `case` headers.
-    for header_line in [4, 5, 8, 10, 12] {
+    // 0-based original lines: 4 and 5 are the two decorators; 6 is the
+    // decorated `def run(value):` header itself; 8, 10, and 12 are the `case`
+    // headers.
+    for header_line in [4, 5, 6, 8, 10, 12] {
         assert!(
             mapped_helper_lines.contains(&header_line),
             "helper.py 0-based line {header_line} (decorator or case header) must be mapped; \
@@ -1214,5 +1224,36 @@ fn stacked_runtimes_do_not_duplicate_tracebacks() {
     assert!(
         stderr.contains("helper.py\", line 5, in inner"),
         "the crashing bundle's frames must be remapped: {stderr}"
+    );
+}
+
+#[test]
+fn runtime_remaps_when_group_is_suppressed() {
+    // A caught ExceptionGroup replaced via `raise ... from None` never
+    // renders; its hidden presence in __context__ must not force the
+    // unremapped fallback for the visible ordinary exception.
+    let dir = make_project(&[
+        ("main.py", "from helper import convert\n\nconvert()\n"),
+        (
+            "helper.py",
+            "def convert():\n    try:\n        raise ExceptionGroup(\"grp\", \
+             [ValueError(\"inner\")])\n    except ExceptionGroup:\n        raise \
+             RuntimeError(\"converted kaboom\") from None\n",
+        ),
+    ]);
+    let bundle = bundle_crash_project(&dir, "--sourcemap=linked");
+    let (ok, _, stderr) = run_python(&bundle, &[]);
+    assert!(!ok);
+    assert!(
+        stderr.contains("RuntimeError: converted kaboom"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("helper.py\", line 5, in convert"),
+        "a suppressed group in __context__ must not disable remapping: {stderr}"
+    );
+    assert!(
+        !stderr.contains("ExceptionGroup"),
+        "the suppressed group must not be rendered: {stderr}"
     );
 }

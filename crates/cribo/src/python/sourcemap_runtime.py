@@ -610,8 +610,14 @@ class _CriboSourceMapRuntime(object):
             if _isinstance(exc, self._group_type):
                 return True
             cause = _getattr(exc, "__cause__", None)
-            context = _getattr(exc, "__context__", None)
-            exc = cause if cause is not None else context
+            if cause is not None:
+                exc = cause
+                continue
+            # A suppressed context (`raise ... from None`) is never rendered,
+            # so a group hidden there must not force the unremapped fallback.
+            if _getattr(exc, "__suppress_context__", False):
+                return False
+            exc = _getattr(exc, "__context__", None)
         return False
 
     def _source_line(self, path, lineno, *, _open=open, _os_error=OSError):
