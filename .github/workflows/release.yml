@@ -950,8 +950,8 @@ jobs:
           echo ""
 
       - name: Publish to npm
-        # env:
-        #   NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           VERSION=$(cat version.txt)
           node scripts/publish-npm.js "${VERSION}" ./npm-dist
