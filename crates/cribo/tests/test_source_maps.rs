@@ -1453,3 +1453,197 @@ fn stacked_runtimes_merge_maps_across_bundles() {
     );
     assert!(stderr.contains("cross-bundle kaboom"));
 }
+
+#[test]
+fn runtime_refuses_map_after_bundle_replacement() {
+    // A bundle rebuilt at the same path while an old instance is running must
+    // not have its (new) map applied to the old in-memory code. The fixture
+    // simulates the replacement by touching its own file before crashing.
+    let dir = make_project(&[
+        (
+            "main.py",
+            "from helper import boom\n\nwith open(__file__, \"a\") as handle:\n    \
+             handle.write(\"# rebuilt\\n\")\nboom()\n",
+        ),
+        (
+            "helper.py",
+            "def boom():\n    raise ValueError(\"kaboom\")\n",
+        ),
+    ]);
+    let bundle = bundle_crash_project(&dir, "--sourcemap=linked");
+    let (ok, _, stderr) = run_python(&bundle, &[]);
+    assert!(!ok);
+    assert_standard_traceback(&stderr);
+}
+
+#[test]
+fn runtime_survives_shadowed_threading_under_runpy() {
+    // Under runpy, sys.path[0] is the DRIVER's directory; the bundle's own
+    // directory (reached via PYTHONPATH here) must still be filtered when the
+    // runtime imports its stdlib dependencies.
+    let dir = crash_project();
+    let bundle = bundle_crash_project(&dir, "--sourcemap=linked");
+    fs::write(
+        dir.path().join("threading.py"),
+        "raise RuntimeError(\"shadow module imported\")\n",
+    )
+    .expect("write shadowing module");
+
+    let driver_dir = TempDir::new().expect("create driver dir");
+    let driver = driver_dir.path().join("driver.py");
+    fs::write(
+        &driver,
+        format!(
+            "import runpy\nrunpy.run_path({bundle:?}, run_name=\"__main__\")\n",
+            bundle = bundle.to_string_lossy(),
+        ),
+    )
+    .expect("write driver");
+
+    let mut command = Command::new(common::get_python_executable());
+    command.arg(&driver);
+    command.env_remove("CRIBO_SOURCE_MAPS");
+    command.env("PYTHONPATH", dir.path());
+    let output = command.output().expect("run python");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(
+        !stderr.contains("shadow module imported"),
+        "the runtime must not import the bundle-adjacent threading.py: {stderr}"
+    );
+    assert!(
+        stderr.contains("helper.py\", line 5, in inner"),
+        "remapping must work under runpy: {stderr}"
+    );
+}
+
+#[test]
+fn stacked_runtimes_still_notify_preinstalled_custom_hook() {
+    // A custom hook installed before ANY bundle must still observe exceptions
+    // when several cribo runtimes have stacked on top of it: the notifier
+    // traverses through earlier cribo hooks to the original custom one.
+    let quiet = fixture_project();
+    let quiet_bundle = quiet.path().join("bundle.py");
+    let (ok, _, stderr) = run_cribo(&[
+        "--entry",
+        &entry_arg(&quiet),
+        "--output",
+        &quiet_bundle.to_string_lossy(),
+        "--sourcemap=linked",
+    ]);
+    assert!(ok, "bundling must succeed: {stderr}");
+    let crash = crash_project();
+    let crash_bundle = bundle_crash_project(&crash, "--sourcemap=linked");
+
+    let driver_dir = TempDir::new().expect("create driver dir");
+    fs::write(
+        driver_dir.path().join("sitecustomize.py"),
+        "import sys\n\n\ndef reporting_hook(exc_type, exc_value, tb):\n    print(\"REPORTER \
+         SAW:\", exc_type.__name__, file=sys.stderr)\n\n\nsys.excepthook = reporting_hook\n",
+    )
+    .expect("write sitecustomize");
+    let driver = driver_dir.path().join("driver.py");
+    fs::write(
+        &driver,
+        format!(
+            "import runpy\nrunpy.run_path({quiet:?})\nrunpy.run_path({crash:?})\n",
+            quiet = quiet_bundle.to_string_lossy(),
+            crash = crash_bundle.to_string_lossy(),
+        ),
+    )
+    .expect("write driver");
+
+    let mut command = Command::new(common::get_python_executable());
+    command.arg(&driver);
+    command.env_remove("CRIBO_SOURCE_MAPS");
+    command.env("PYTHONPATH", driver_dir.path());
+    let output = command.output().expect("run python");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success());
+    assert!(
+        stderr.contains("helper.py\", line 5, in inner"),
+        "remapping must work: {stderr}"
+    );
+    assert!(
+        stderr.contains("REPORTER SAW: ValueError"),
+        "the custom hook below two stacked runtimes must still be notified: {stderr}"
+    );
+    assert_eq!(
+        stderr.matches("Traceback (most recent call last):").count(),
+        1,
+        "no duplicate rendering through the default printer: {stderr}"
+    );
+}
+
+#[test]
+fn runtime_remaps_raise_inside_multiline_fstring() {
+    // ruff's generator emits multiline f-strings on a single physical line
+    // (`\n` escapes), so a replacement expression raising on what was an
+    // interior line in the ORIGINAL source is attributed to the statement's
+    // single generated line — which must remap to the statement's original
+    // starting line.
+    let dir = make_project(&[
+        ("main.py", "from helper import render\n\nprint(render(0))\n"),
+        (
+            "helper.py",
+            "def render(value):\n    banner = f\"\"\"first {value}\nsecond {1 // value}\nthird \
+             {value}\"\"\"\n    return banner\n",
+        ),
+    ]);
+    let bundle = bundle_crash_project(&dir, "--sourcemap=linked");
+    let (ok, _, stderr) = run_python(&bundle, &[]);
+    assert!(!ok);
+    assert!(stderr.contains("ZeroDivisionError"), "{stderr}");
+    assert!(
+        stderr.contains("helper.py\", line 2, in render"),
+        "a raise inside a multiline f-string must map to the statement's original start line: \
+         {stderr}"
+    );
+}
+
+#[test]
+fn sources_with_url_delimiters_are_encoded_and_decoded() {
+    // '#' in a directory name would be read as a URL fragment by map
+    // consumers; the map must percent-encode it and the runtime must decode
+    // it back before touching the filesystem.
+    let dir = TempDir::new().expect("create temp dir");
+    let src_dir = dir.path().join("we#ird");
+    fs::create_dir_all(&src_dir).expect("create source dir");
+    fs::write(
+        src_dir.join("main.py"),
+        "from helper import boom\n\nboom()\n",
+    )
+    .expect("write main.py");
+    fs::write(
+        src_dir.join("helper.py"),
+        "def boom():\n    raise ValueError(\"kaboom\")\n",
+    )
+    .expect("write helper.py");
+
+    let out = dir.path().join("bundle.py");
+    let (ok, _, stderr) = run_cribo(&[
+        "--entry",
+        &src_dir.join("main.py").to_string_lossy(),
+        "--output",
+        &out.to_string_lossy(),
+        "--sourcemap=linked",
+    ]);
+    assert!(ok, "bundling must succeed: {stderr}");
+    let map_json = fs::read_to_string(dir.path().join("bundle.py.map")).expect("read map");
+    assert!(
+        map_json.contains("we%23ird"),
+        "URL delimiters in source paths must be percent-encoded: {map_json}"
+    );
+
+    let (ok, _, stderr) = run_python(&out, &[]);
+    assert!(!ok);
+    assert!(
+        stderr.contains("we#ird/helper.py\", line 2, in boom")
+            || stderr.contains("we#ird\\helper.py\", line 2, in boom"),
+        "the runtime must decode the path before display and file access: {stderr}"
+    );
+    assert!(
+        stderr.contains("raise ValueError(\"kaboom\")"),
+        "the original source line must load from the decoded path: {stderr}"
+    );
+}

@@ -14,43 +14,71 @@ Note: this leading docstring is stripped at injection time so the bundle's
 import sys as _cribo_sys
 
 
-def _cribo_sm_import(name, *, _list=list, _import=__import__):
+def _cribo_sm_import(
+    name,
+    script_path=None,
+    *,
+    _list=list,
+    _import=__import__,
+    _isinstance=isinstance,
+    _str=str,
+    _bex=BaseException,
+):
     """Import a stdlib module immune to script-directory shadowing.
 
-    The bundle's own directory is `sys.path[0]` (or `''` for `-c`/stdin), and
-    `PYTHONPATH=.` can expose the same directory again at later indices — so a
-    project file named e.g. `threading.py` sitting next to the bundle would
-    otherwise shadow the stdlib for this runtime. Already-imported modules are
-    taken from `sys.modules`; otherwise the import runs with every path entry
-    resolving to the script directory removed. Lexical de-duplication (exact
-    spelling, trailing separators, cwd aliases) works even before `os` itself
-    is importable (`python -S`); once `os` is available, entries are also
-    compared by absolute path. (`sys` is a builtin and can never be shadowed.)
+    The bundle's directory can reach `sys.path` several ways: as `sys.path[0]`
+    (direct execution), via `PYTHONPATH`, or not at all under `runpy` (where
+    `sys.path[0]` is the *driver's* directory) — so the bundle's own path is
+    passed in explicitly and every equivalent entry is removed. Lexical
+    de-duplication (exact spelling, trailing separators, cwd aliases) works
+    even before `os` itself is importable (`python -S`); once `os` is
+    available, entries are also compared by absolute path. Non-string path
+    entries (embedded hosts) are kept untouched, as the importer itself would
+    do. (`sys` is a builtin and can never be shadowed.)
     """
     module = _cribo_sys.modules.get(name)
     if module is not None:
         return module
     saved_path = _cribo_sys.path
-    first = saved_path[0] if saved_path else None
-    first_trimmed = first.rstrip("/\\") if first else first
+    candidates = []
+    if saved_path and _isinstance(saved_path[0], _str):
+        candidates.append(saved_path[0])
+    if script_path and _isinstance(script_path, _str):
+        cut = script_path.rfind("/")
+        cut_windows = script_path.rfind("\\")
+        if cut_windows > cut:
+            cut = cut_windows
+        candidates.append(script_path[:cut] if cut >= 0 else ".")
+    trimmed = []
+    for candidate in candidates:
+        trimmed.append(candidate.rstrip("/\\") or candidate)
     filtered = []
     for entry in saved_path[1:]:
-        try:
-            if entry in ("", ".", "./", first) or (
-                first_trimmed and entry.rstrip("/\\") == first_trimmed
-            ):
+        if _isinstance(entry, _str):
+            if entry in ("", ".", "./"):
                 continue
-        except (TypeError, AttributeError):
-            pass  # exotic non-str path entry: keep it
+            stripped = entry.rstrip("/\\") or entry
+            if stripped in trimmed:
+                continue
         filtered.append(entry)
     os_mod = _cribo_sys.modules.get("os")
-    if os_mod is not None and first is not None:
-        script_dir = os_mod.path.normcase(os_mod.path.abspath(first or "."))
-        filtered = [
-            entry
-            for entry in filtered
-            if not os_mod.path.normcase(os_mod.path.abspath(entry or ".")) == script_dir
-        ]
+    if os_mod is not None and trimmed:
+        resolved = []
+        for candidate in trimmed:
+            try:
+                resolved.append(os_mod.path.normcase(os_mod.path.abspath(candidate or ".")))
+            except _bex:
+                pass
+        kept = []
+        for entry in filtered:
+            if _isinstance(entry, _str):
+                try:
+                    if os_mod.path.normcase(os_mod.path.abspath(entry or ".")) in resolved:
+                        continue
+                except _bex:
+                    pass
+            kept.append(entry)
+        filtered = kept
     _cribo_sys.path = _list(filtered)
     try:
         return _import(name)
@@ -127,6 +155,16 @@ class _CriboSourceMapRuntime(object):
             self._startup_cwd = os_mod.getcwd()
         except OSError:
             self._startup_cwd = "."
+        # Identity of the on-disk bundle at startup: a rebuild/redeploy at the
+        # same path must not have its (new) map applied to this (old) running
+        # code. None when unknowable (stdin); verified lazily at hook time.
+        self._bundle_stat = None
+        if not bundle_file == "<stdin>":
+            try:
+                stat = os_mod.stat(self._bundle_anchor)
+                self._bundle_stat = (stat.st_ino, stat.st_size, stat.st_mtime_ns)
+            except (OSError, AttributeError):
+                self._bundle_stat = None
         self._os = os_mod
         self._sys = _cribo_sys
         self._binascii = binascii_mod
@@ -179,14 +217,15 @@ class _CriboSourceMapRuntime(object):
         running without remapping instead of aborting it at startup.
         """
         try:
+            script = None if bundle_file == "<stdin>" else bundle_file
             runtime = cls(
                 mode,
                 bundle_file,
-                _cribo_sm_import("os"),
-                _cribo_sm_import("binascii"),
-                _cribo_sm_import("threading"),
-                _cribo_sm_import("traceback"),
-                _cribo_sm_import("hashlib"),
+                _cribo_sm_import("os", script),
+                _cribo_sm_import("binascii", script),
+                _cribo_sm_import("threading", script),
+                _cribo_sm_import("traceback", script),
+                _cribo_sm_import("hashlib", script),
             )
             runtime.install()
         except BaseException:
@@ -206,6 +245,19 @@ class _CriboSourceMapRuntime(object):
         env = self._os.environ.get("CRIBO_SOURCE_MAPS", "")
         if env == "0":
             return None
+        # A rebuilt/redeployed bundle at the same path carries a NEW map that
+        # cannot describe the OLD in-memory code objects; refuse remapping
+        # rather than mapping through a foreign table. (Explicit env-path
+        # overrides below are the user's deliberate choice and stay untouched.)
+        stale = False
+        if self._bundle_stat is not None:
+            try:
+                stat = self._os.stat(self._bundle_anchor)
+                stale = not (
+                    (stat.st_ino, stat.st_size, stat.st_mtime_ns) == self._bundle_stat
+                )
+            except (OSError, AttributeError):
+                stale = True
         # An explicit path wins for every mode (and skips digest verification —
         # it is the user's explicit choice). This is also the only way to
         # supply a map to a bundle executed via `python -` (stdin), whose
@@ -218,9 +270,11 @@ class _CriboSourceMapRuntime(object):
             return (path, self._os.path.dirname(self._os.path.abspath(path)), False)
         bundle = self._bundle_anchor
         if self._mode == "inline":
-            if bundle == "<stdin>":
-                return None  # stdin cannot be re-opened; use CRIBO_SOURCE_MAPS=<path>
+            if bundle == "<stdin>" or stale:
+                return None  # stdin/replaced bundles cannot be re-read reliably
             return (None, self._os.path.dirname(bundle), False)
+        if stale:
+            return None
         sibling = bundle + ".map"
         if self._mode == "linked":
             if self._os.path.exists(sibling):
@@ -727,6 +781,26 @@ class _CriboSourceMapRuntime(object):
             exc = _getattr(exc, "__context__", None)
         return False
 
+    def _percent_decode(self, text, *, _int=int, _chr=chr, _len=len, _bex=BaseException):
+        """Inverse of the build-time percent-encoding of `sources` entries."""
+        if "%" not in text:
+            return text
+        out = []
+        position = 0
+        length = _len(text)
+        while position < length:
+            character = text[position]
+            if character == "%" and position + 2 < length:
+                try:
+                    out.append(_chr(_int(text[position + 1 : position + 3], 16)))
+                    position += 3
+                    continue
+                except _bex:
+                    pass
+            out.append(character)
+            position += 1
+        return "".join(out)
+
     def _source_line(self, path, lineno, *, _open=open, _os_error=OSError):
         """Read a single 1-based line from a file without caching it."""
         try:
@@ -816,6 +890,7 @@ class _CriboSourceMapRuntime(object):
                 if mapped is not None:
                     source = sources.get(mapped[0])
                     if source:
+                        source = self._percent_decode(source)
                         if not self._os.path.isabs(source):
                             source = self._os.path.normpath(
                                 self._os.path.join(map_dir, source)
@@ -1034,23 +1109,32 @@ class _CriboSourceMapRuntime(object):
             runtimes.append(self)
         return runtimes
 
-    def _notify_custom_hook(self, prev, default, call, *, _bex=BaseException, _getattr=getattr):
+    def _notify_custom_hook(
+        self, prev, default, call, prev_attr, *, _bex=BaseException, _getattr=getattr
+    ):
         """Invoke a chained hook after a successful remap when it is custom.
 
         A successful remap replaces the *default* printer, but preinstalled
         custom hooks (error reporters, sitecustomize) must still observe the
-        exception; their own output is theirs to manage. Two exclusions: when
+        exception; their own output is theirs to manage. Earlier cribo
+        runtimes in the chain are traversed (via their own captured
+        predecessor, named by `prev_attr`) rather than invoked, so a custom
+        hook installed before any bundle still gets notified while the default
+        printer is never reached (which would duplicate the traceback). When
         the interpreter default is unavailable for comparison (e.g.
         `threading.__excepthook__` before Python 3.10) no notification happens
         — better to skip a custom hook than to double-print via the default
-        one; and an earlier cribo runtime's hook is skipped, since it would
-        find no frames for its own bundle and delegate to the default printer,
-        duplicating the traceback.
+        one.
         """
+        hops = 0
+        while prev is not None and hops < 32:
+            bound_to = _getattr(prev, "__self__", None)
+            if bound_to is not None and _getattr(bound_to, "_cribo_sm_runtime_marker", False):
+                prev = _getattr(bound_to, prev_attr, None)
+                hops += 1
+                continue
+            break
         if default is None or prev is None or prev is default:
-            return
-        bound_to = _getattr(prev, "__self__", None)
-        if bound_to is not None and _getattr(bound_to, "_cribo_sm_runtime_marker", False):
             return
         try:
             call(prev)
@@ -1065,6 +1149,7 @@ class _CriboSourceMapRuntime(object):
                 self._prev_excepthook,
                 self._default_excepthook,
                 lambda hook: hook(exc_type, exc_value, traceback_obj),
+                "_prev_excepthook",
             )
             return
         self._prev_excepthook(exc_type, exc_value, traceback_obj)
@@ -1085,6 +1170,7 @@ class _CriboSourceMapRuntime(object):
                 self._prev_threading_hook,
                 self._default_threading_hook,
                 lambda hook: hook(args),
+                "_prev_threading_hook",
             )
             return
         self._prev_threading_hook(args)
@@ -1100,6 +1186,7 @@ class _CriboSourceMapRuntime(object):
                 self._prev_unraisablehook,
                 self._default_unraisablehook,
                 lambda hook: hook(unraisable),
+                "_prev_unraisablehook",
             )
             return
         self._prev_unraisablehook(unraisable)

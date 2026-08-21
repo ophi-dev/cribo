@@ -308,51 +308,22 @@ impl ParallelWalker<'_> {
             return;
         }
 
-        if let Some((module_ordinal, original_line)) = self
+        let stmt_provenance = self
             .provenance
-            .resolve(original.node_index().load(), original.range().start())
-        {
-            let generated_start = self.line_index.line_of(generated.range().start());
+            .resolve(original.node_index().load(), original.range().start());
+        if let Some((module_ordinal, original_line)) = stmt_provenance {
             self.records.push(MappingRecord {
-                generated_line: generated_start,
+                generated_line: self.line_index.line_of(generated.range().start()),
                 module_ordinal,
                 original_line,
             });
-            // Simple (body-less) statements can still span several physical
-            // lines — ruff's generator emits one line per statement except for
-            // multiline string/f-string literals, whose content is preserved
-            // verbatim. A raising expression inside such a literal is
-            // attributed to its own physical line, so fill the span with
-            // offset-aligned mappings. Compound statements are excluded: their
-            // interiors get precise mappings from the recursion below, which
-            // must not be shadowed (first mapping per line wins).
-            let has_nested_body = matches!(
-                generated,
-                Stmt::FunctionDef(_)
-                    | Stmt::ClassDef(_)
-                    | Stmt::If(_)
-                    | Stmt::While(_)
-                    | Stmt::For(_)
-                    | Stmt::With(_)
-                    | Stmt::Try(_)
-                    | Stmt::Match(_)
-            );
-            if !has_nested_body {
-                let generated_span =
-                    self.line_index.line_of(generated.range().end()) - generated_start;
-                let original_span = self
-                    .provenance
-                    .resolve(original.node_index().load(), original.range().end())
-                    .map_or(0, |(_, end_line)| end_line.saturating_sub(original_line));
-                for offset in 1..=generated_span.min(original_span) {
-                    self.records.push(MappingRecord {
-                        generated_line: generated_start + offset,
-                        module_ordinal,
-                        original_line: original_line + offset,
-                    });
-                }
-            }
         }
+        // Note on multiline statements: ruff's generator emits every statement
+        // on a single physical line — multiline string/f-string literals are
+        // rendered with `\n` escapes, and docstrings likewise. There are
+        // therefore no interior physical lines to map; a raising expression
+        // inside such a literal is attributed to the statement's single
+        // generated line, which the record above already covers.
 
         // Evaluating a decorator can raise on its own `@...` line; give every
         // decorator its own mapping (the statement mapping above only covers
@@ -690,6 +661,26 @@ fn is_docstring(stmt: &Stmt) -> bool {
     matches!(stmt, Stmt::Expr(expr) if expr.value.is_string_literal_expr())
 }
 
+/// Percent-encode a source path for the `sources` array.
+///
+/// Source Map v3 consumers resolve `sources` entries as URL references, so a
+/// raw `#` or `?` in a filesystem name would be read as fragment/query
+/// delimiters and point at the wrong resource. Only URL-breaking characters
+/// are escaped; everything else (including non-ASCII) passes through. The
+/// injected runtime applies the inverse decoding before filesystem access.
+fn percent_encode_source(path: &str) -> String {
+    let mut encoded = String::with_capacity(path.len());
+    for character in path.chars() {
+        if character < '\u{20}' || matches!(character, '\u{7F}' | '%' | '#' | '?') {
+            let _ =
+                std::fmt::Write::write_fmt(&mut encoded, format_args!("%{:02X}", character as u32));
+        } else {
+            encoded.push(character);
+        }
+    }
+    encoded
+}
+
 /// Build the complete Source Map v3 JSON for an emitted bundle.
 ///
 /// Re-parses `bundle_text`, extracts statement mappings against `bundled_ast`,
@@ -731,7 +722,7 @@ pub(crate) fn build_source_map(
                 },
                 |display| {
                     let content = options.include_contents.then(|| module.source.clone());
-                    Some(generator.add_source(display, content))
+                    Some(generator.add_source(&percent_encode_source(display), content))
                 },
             );
             ordinal_to_source[record.module_ordinal] = Some(resolved);

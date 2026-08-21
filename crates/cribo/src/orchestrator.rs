@@ -106,8 +106,11 @@ fn stage_map_file(map_path: &Path, map_json: &str) -> std::io::Result<PathBuf> {
             .open(&tmp_path)
         {
             Ok(mut file) => {
-                let write_result = fs::metadata(map_path)
+                // symlink_metadata: an attacker-planted symlink at the map
+                // path must not decide the staged file's permissions.
+                let write_result = fs::symlink_metadata(map_path)
                     .ok()
+                    .filter(fs::Metadata::is_file)
                     .map_or(Ok(()), |metadata| {
                         file.set_permissions(metadata.permissions())
                     })
