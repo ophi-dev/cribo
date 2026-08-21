@@ -22,23 +22,36 @@ def _cribo_sm_import(name, *, _list=list, _import=__import__):
     project file named e.g. `threading.py` sitting next to the bundle would
     otherwise shadow the stdlib for this runtime. Already-imported modules are
     taken from `sys.modules`; otherwise the import runs with every path entry
-    resolving to the script directory removed. (`sys` itself is a builtin and
-    can never be shadowed.)
+    resolving to the script directory removed. Lexical de-duplication (exact
+    spelling, trailing separators, cwd aliases) works even before `os` itself
+    is importable (`python -S`); once `os` is available, entries are also
+    compared by absolute path. (`sys` is a builtin and can never be shadowed.)
     """
     module = _cribo_sys.modules.get(name)
     if module is not None:
         return module
     saved_path = _cribo_sys.path
-    filtered = _list(saved_path[1:])
+    first = saved_path[0] if saved_path else None
+    first_trimmed = first.rstrip("/\\") if first else first
+    filtered = []
+    for entry in saved_path[1:]:
+        try:
+            if entry in ("", ".", "./", first) or (
+                first_trimmed and entry.rstrip("/\\") == first_trimmed
+            ):
+                continue
+        except (TypeError, AttributeError):
+            pass  # exotic non-str path entry: keep it
+        filtered.append(entry)
     os_mod = _cribo_sys.modules.get("os")
-    if os_mod is not None and saved_path:
-        script_dir = os_mod.path.normcase(os_mod.path.abspath(saved_path[0] or "."))
+    if os_mod is not None and first is not None:
+        script_dir = os_mod.path.normcase(os_mod.path.abspath(first or "."))
         filtered = [
             entry
             for entry in filtered
             if not os_mod.path.normcase(os_mod.path.abspath(entry or ".")) == script_dir
         ]
-    _cribo_sys.path = filtered
+    _cribo_sys.path = _list(filtered)
     try:
         return _import(name)
     finally:

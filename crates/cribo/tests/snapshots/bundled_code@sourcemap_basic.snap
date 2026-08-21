@@ -8,17 +8,26 @@ input_file: crates/cribo/tests/fixtures/sourcemap_basic/main.py
 
 import sys as _cribo_sys
 def _cribo_sm_import(name, *, _list=list, _import=__import__):
-    """Import a stdlib module immune to script-directory shadowing.\n\n    The bundle's own directory is `sys.path[0]` (or `''` for `-c`/stdin), and\n    `PYTHONPATH=.` can expose the same directory again at later indices — so a\n    project file named e.g. `threading.py` sitting next to the bundle would\n    otherwise shadow the stdlib for this runtime. Already-imported modules are\n    taken from `sys.modules`; otherwise the import runs with every path entry\n    resolving to the script directory removed. (`sys` itself is a builtin and\n    can never be shadowed.)\n    """
+    """Import a stdlib module immune to script-directory shadowing.\n\n    The bundle's own directory is `sys.path[0]` (or `''` for `-c`/stdin), and\n    `PYTHONPATH=.` can expose the same directory again at later indices — so a\n    project file named e.g. `threading.py` sitting next to the bundle would\n    otherwise shadow the stdlib for this runtime. Already-imported modules are\n    taken from `sys.modules`; otherwise the import runs with every path entry\n    resolving to the script directory removed. Lexical de-duplication (exact\n    spelling, trailing separators, cwd aliases) works even before `os` itself\n    is importable (`python -S`); once `os` is available, entries are also\n    compared by absolute path. (`sys` is a builtin and can never be shadowed.)\n    """
     module = _cribo_sys.modules.get(name)
     if module is not None:
         return module
     saved_path = _cribo_sys.path
-    filtered = _list(saved_path[1:])
+    first = saved_path[0] if saved_path else None
+    first_trimmed = first.rstrip("/\\") if first else first
+    filtered = []
+    for entry in saved_path[1:]:
+        try:
+            if entry in ("", ".", "./", first) or first_trimmed and entry.rstrip("/\\") == first_trimmed:
+                continue
+        except (TypeError, AttributeError):
+            pass
+        filtered.append(entry)
     os_mod = _cribo_sys.modules.get("os")
-    if os_mod is not None and saved_path:
-        script_dir = os_mod.path.normcase(os_mod.path.abspath(saved_path[0] or "."))
+    if os_mod is not None and first is not None:
+        script_dir = os_mod.path.normcase(os_mod.path.abspath(first or "."))
         filtered = [entry for entry in filtered if not os_mod.path.normcase(os_mod.path.abspath(entry or ".")) == script_dir]
-    _cribo_sys.path = filtered
+    _cribo_sys.path = _list(filtered)
     try:
         return _import(name)
     finally:
@@ -892,5 +901,5 @@ total = add(2, 3)
 product = multiply(total, 4)
 print(describe("total", total))
 print(describe("product", product))
-# cribo-sourcemap-sha256=e62b7c23f3a0b0127209f929705d9e5e0dbb57a5a8582a707bb0ac7933284d4c
+# cribo-sourcemap-sha256=c0fd18c37fc76a6f88625c54619e79a1f7d76a09a174871699fb835cfedaeb35
 # sourceMappingURL=bundled.py.map

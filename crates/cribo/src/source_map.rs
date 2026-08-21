@@ -645,7 +645,9 @@ pub(crate) fn build_source_map(
     let records = extract_statement_mappings(bundle_text, bundled_ast, provenance)?;
 
     let mut generator = SourceMapGenerator::new(options.file);
-    let mut ordinal_to_source: Vec<Option<SourceId>> = vec![None; provenance.modules().len()];
+    // None = not yet seen; Some(None) = seen but unmappable (non-UTF-8 path).
+    let mut ordinal_to_source: Vec<Option<Option<SourceId>>> =
+        vec![None; provenance.modules().len()];
 
     for record in records {
         let module = &provenance.modules()[record.module_ordinal];
@@ -654,12 +656,31 @@ pub(crate) fn build_source_map(
                 || module.path.clone(),
                 |base| relative_path(base, &module.path),
             );
-            let content = options.include_contents.then(|| module.source.clone());
-            let id = generator.add_source(&display_path.to_string_lossy(), content);
-            ordinal_to_source[record.module_ordinal] = Some(id);
-            id
+            // Source Map v3 is JSON: a path that is not valid UTF-8 has no
+            // lossless representation. A lossy rendering would display a
+            // nonexistent replacement-character path and could collide with a
+            // *different* non-UTF-8 path, mispairing mappings and
+            // sourcesContent — skip such modules instead (their frames stay on
+            // bundle coordinates).
+            let resolved = display_path.to_str().map_or_else(
+                || {
+                    log::debug!(
+                        "source map: skipping module with non-UTF-8 path: {}",
+                        display_path.display()
+                    );
+                    None
+                },
+                |display| {
+                    let content = options.include_contents.then(|| module.source.clone());
+                    Some(generator.add_source(display, content))
+                },
+            );
+            ordinal_to_source[record.module_ordinal] = Some(resolved);
+            resolved
         });
-        generator.add_mapping(record.generated_line, source_id, record.original_line);
+        if let Some(source_id) = source_id {
+            generator.add_mapping(record.generated_line, source_id, record.original_line);
+        }
     }
 
     Ok(generator.into_json())
