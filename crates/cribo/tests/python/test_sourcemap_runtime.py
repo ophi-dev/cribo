@@ -33,6 +33,7 @@ def load_runtime(path):
         __import__("binascii"),
         threading,
         __import__("traceback"),
+        __import__("hashlib"),
     )
 
 
@@ -237,6 +238,7 @@ def test_env_path_wins_for_every_mode(rt):
             __import__("binascii"),
             threading,
             __import__("traceback"),
+            __import__("hashlib"),
         )
         loaded = inline_stdin._load({1})
         assert loaded is not None, "env path must activate a <stdin> inline bundle"

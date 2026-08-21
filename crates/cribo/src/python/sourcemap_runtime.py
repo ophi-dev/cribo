@@ -86,7 +86,16 @@ class _CriboSourceMapRuntime(object):
     _B64 = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
     _CHUNK = 8192
 
-    def __init__(self, mode, bundle_file, os_mod, binascii_mod, threading_mod, traceback_mod):
+    def __init__(
+        self,
+        mode,
+        bundle_file,
+        os_mod,
+        binascii_mod,
+        threading_mod,
+        traceback_mod,
+        hashlib_mod,
+    ):
         self._mode = mode
         # As-given path for frame matching (co_filename uses the invocation
         # spelling), plus a startup-anchored absolute path for file I/O so a
@@ -115,6 +124,7 @@ class _CriboSourceMapRuntime(object):
         # first-party module registering sys.modules["traceback"] later cannot
         # degrade exception formatting.
         self._traceback = traceback_mod
+        self._hashlib = hashlib_mod
         # Re-entrancy guard; thread-local so a hook firing on one thread never
         # disables remapping on another.
         self._local = threading_mod.local()
@@ -153,6 +163,7 @@ class _CriboSourceMapRuntime(object):
                 _cribo_sm_import("binascii"),
                 _cribo_sm_import("threading"),
                 _cribo_sm_import("traceback"),
+                _cribo_sm_import("hashlib"),
             )
             runtime.install()
         except BaseException:
@@ -186,7 +197,7 @@ class _CriboSourceMapRuntime(object):
             return (None, self._os.path.dirname(bundle))
         sibling = bundle + ".map"
         if self._mode == "linked":
-            if self._os.path.exists(sibling):
+            if self._os.path.exists(sibling) and self._map_matches_bundle(sibling):
                 return (sibling, self._os.path.dirname(sibling))
             return None
         # external: opt in via CRIBO_SOURCE_MAPS=1 (a path was handled above)
@@ -206,17 +217,15 @@ class _CriboSourceMapRuntime(object):
         finally:
             handle.close()
 
-    def _find_inline_payload(self, handle, *, _len=len):
-        """Backward-scan the bundle for the last inline map marker.
+    def _find_marker_tail(self, handle, marker, *, _len=len):
+        """Backward-scan a file for the last occurrence of `marker`.
 
-        Returns the byte offset of the base64 payload, or -1. Only the tail of
-        the file is examined; the bundle body is never read.
+        Returns the offset of the payload following the marker, or -1. Only the
+        tail of the file is examined; the body is never read.
         """
-        marker = b"# sourceMappingURL=data:"
         handle.seek(0, 2)
         position = handle.tell()
         overlap = b""
-        found = -1
         while position > 0:
             step = self._CHUNK if position >= self._CHUNK else position
             position -= step
@@ -224,9 +233,13 @@ class _CriboSourceMapRuntime(object):
             data = handle.read(step) + overlap
             index = data.rfind(marker)
             if index >= 0:
-                found = position + index
-                break
+                return position + index + _len(marker)
             overlap = data[: _len(marker) - 1]
+        return -1
+
+    def _find_inline_payload(self, handle):
+        """Offset of the inline map's base64 payload in the bundle, or -1."""
+        found = self._find_marker_tail(handle, b"# sourceMappingURL=data:")
         if found < 0:
             return -1
         handle.seek(found)
@@ -234,7 +247,49 @@ class _CriboSourceMapRuntime(object):
         base64_at = head.find(b"base64,")
         if base64_at < 0:
             return -1
-        return found + base64_at + _len(b"base64,")
+        return found + base64_at + 7
+
+    def _bundle_expected_digest(self, *, _open=open, _len=len, _int=int):
+        """SHA-256 hex the bundle records for its linked map, or None."""
+        try:
+            handle = _open(self._bundle_anchor, "rb")
+        except OSError:
+            return None
+        try:
+            found = self._find_marker_tail(handle, b"# cribo-sourcemap-sha256=")
+            if found < 0:
+                return None
+            handle.seek(found)
+            digest = handle.read(64)
+        finally:
+            handle.close()
+        if not _len(digest) == 64:
+            return None
+        try:
+            _int(digest, 16)
+        except ValueError:
+            return None
+        return digest.decode("ascii").lower()
+
+    def _map_matches_bundle(self, map_path, *, _bex=BaseException):
+        """False only when the bundle records a digest and the map disagrees.
+
+        This is what makes linked-mode publication safe against interleaved
+        concurrent builds and manual file shuffling: the digest travels inside
+        the bundle, which is always internally consistent, so a sibling map
+        from a different build is detected and ignored. Verification errors
+        fail open (the subsequent map read would surface them anyway).
+        """
+        try:
+            expected = self._bundle_expected_digest()
+            if expected is None:
+                return True
+            hasher = self._hashlib.sha256()
+            for chunk in self._file_chunks(map_path):
+                hasher.update(chunk)
+            return hasher.hexdigest() == expected
+        except _bex:
+            return True
 
     def _inline_chunks(self, path, *, _open=open, _len=len):
         """Yield decoded chunks of an inline (base64 data URL) source map."""

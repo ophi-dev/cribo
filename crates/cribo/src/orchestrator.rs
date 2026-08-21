@@ -49,20 +49,48 @@ fn source_map_path_for(output_path: &Path) -> PathBuf {
     output_path.with_file_name(file_name)
 }
 
+/// Collision-resistant, unpredictable suffix for a staged map file.
+///
+/// In a shared writable directory a predictable temp name (e.g. PID-derived)
+/// could be pre-created by another local user, turning every `create_new`
+/// attempt into a denial of service. The suffix hashes process identity, an
+/// ASLR-randomized stack address, wall-clock nanoseconds, and the attempt
+/// counter — not guessable ahead of time, and fresh entropy per retry. This
+/// names a transient file only; deterministic-output rules are unaffected.
+fn staging_suffix(attempt: u32) -> String {
+    use sha2::{Digest as _, Sha256};
+
+    let stack_probe = 0_u8;
+    let mut hasher = Sha256::new();
+    hasher.update(std::process::id().to_le_bytes());
+    hasher.update(attempt.to_le_bytes());
+    hasher.update((&raw const stack_probe as usize).to_le_bytes());
+    if let Ok(elapsed) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        hasher.update(elapsed.as_secs().to_le_bytes());
+        hasher.update(elapsed.subsec_nanos().to_le_bytes());
+    }
+    let digest = hasher.finalize();
+    let mut hex = String::with_capacity(16);
+    for byte in &digest[..8] {
+        write!(hex, "{byte:02x}").expect("Writing to String never fails");
+    }
+    hex
+}
+
 /// Stage the source map into a collision-resistant temp file next to `map_path`.
 ///
 /// The file is opened with `create_new` (`O_EXCL` semantics), which neither
 /// follows a pre-planted symlink nor truncates an existing file — a requirement
 /// for outputs in shared sticky directories, where a temp name could otherwise
-/// be predicted and pointed elsewhere. Name collisions retry with a new suffix,
-/// which also keeps concurrent builds from stomping each other's staged map.
+/// be predicted and pointed elsewhere. Names are unpredictable (see
+/// [`staging_suffix`]) and collisions retry with fresh entropy, which also
+/// keeps concurrent builds from stomping each other's staged map.
 /// When a previous map exists, its permissions are copied onto the staged file
 /// before any content is written, so a restricted map (e.g. 0600 protecting
 /// `sourcesContent`) stays restricted across rebuilds.
 fn stage_map_file(map_path: &Path, map_json: &str) -> std::io::Result<PathBuf> {
     use std::io::Write as _;
 
-    let pid = std::process::id();
     let base_name = map_path.file_name().map_or_else(
         || std::ffi::OsString::from("bundle.py.map"),
         std::ffi::OsStr::to_os_string,
@@ -70,7 +98,7 @@ fn stage_map_file(map_path: &Path, map_json: &str) -> std::io::Result<PathBuf> {
     let mut attempt = 0_u32;
     loop {
         let mut tmp_name = base_name.clone();
-        tmp_name.push(format!(".{pid}.{attempt}.tmp"));
+        tmp_name.push(format!(".{}.tmp", staging_suffix(attempt)));
         let tmp_path = map_path.with_file_name(tmp_name);
         match fs::OpenOptions::new()
             .write(true)
@@ -92,7 +120,7 @@ fn stage_map_file(map_path: &Path, map_json: &str) -> std::io::Result<PathBuf> {
                 }
                 return Ok(tmp_path);
             }
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && attempt < 32 => {
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists && attempt < 1024 => {
                 attempt += 1;
             }
             Err(err) => return Err(err),
@@ -769,6 +797,8 @@ impl BundleOrchestrator {
                             |name| name.to_string_lossy().into_owned(),
                         );
                         bundled_code.push('\n');
+                        bundled_code
+                            .push_str(&crate::source_map::linked_map_digest_comment(map_json));
                         bundled_code.push_str(&crate::source_map::linked_source_mapping_comment(
                             &map_file_name,
                         ));

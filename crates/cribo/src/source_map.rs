@@ -526,9 +526,35 @@ fn relative_path(base: &std::path::Path, target: &std::path::Path) -> std::path:
 /// Comment linking the bundle to an adjacent source map file.
 ///
 /// The `sourceMappingURL` convention is borrowed from the JS ecosystem; Python
-/// treats the line as a plain comment.
+/// treats the line as a plain comment. The file name is percent-encoded so a
+/// hostile or accidental control character (e.g. a newline in a Unix filename)
+/// cannot terminate the comment and inject executable text into the bundle.
 pub(crate) fn linked_source_mapping_comment(map_file_name: &str) -> String {
-    format!("# sourceMappingURL={map_file_name}\n")
+    let mut encoded = String::with_capacity(map_file_name.len());
+    for byte in map_file_name.bytes() {
+        if byte < 0x20 || byte == 0x7F || byte == b'%' {
+            encoded.push_str(&format!("%{byte:02X}"));
+        } else {
+            encoded.push(byte as char);
+        }
+    }
+    format!("# sourceMappingURL={encoded}\n")
+}
+
+/// Comment recording the SHA-256 of the linked map at build time.
+///
+/// The runtime refuses a sibling map whose digest does not match, so no
+/// interleaving of concurrent builds (or manual file shuffling) can pair a
+/// bundle with another build's mappings — the digest travels inside the bundle
+/// itself, which is always internally consistent.
+pub(crate) fn linked_map_digest_comment(map_json: &str) -> String {
+    use sha2::{Digest as _, Sha256};
+    let digest = Sha256::digest(map_json.as_bytes());
+    let mut hex = String::with_capacity(64);
+    for byte in digest {
+        hex.push_str(&format!("{byte:02x}"));
+    }
+    format!("# cribo-sourcemap-sha256={hex}\n")
 }
 
 /// Comment embedding the source map as a base64 data URL.

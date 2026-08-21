@@ -1257,3 +1257,62 @@ fn runtime_remaps_when_group_is_suppressed() {
         "the suppressed group must not be rendered: {stderr}"
     );
 }
+
+#[test]
+fn runtime_rejects_mismatched_sibling_map() {
+    // Linked bundles embed a SHA-256 of their map; a sibling map from a
+    // different build (concurrent-build interleaving, manual copying) must be
+    // ignored rather than silently applying wrong mappings.
+    let dir = crash_project();
+    let bundle = bundle_crash_project(&dir, "--sourcemap=linked");
+
+    // Build a different project and steal its map.
+    let other = make_project(&[
+        ("main.py", "from helper import other\n\nprint(other())\n"),
+        ("helper.py", "def other():\n    return 42\n"),
+    ]);
+    let other_bundle = other.path().join("bundle.py");
+    let (ok, _, stderr) = run_cribo(&[
+        "--entry",
+        &entry_arg(&other),
+        "--output",
+        &other_bundle.to_string_lossy(),
+        "--sourcemap=linked",
+    ]);
+    assert!(ok, "bundling must succeed: {stderr}");
+    fs::copy(
+        other.path().join("bundle.py.map"),
+        dir.path().join("bundle.py.map"),
+    )
+    .expect("swap in a foreign map");
+
+    let (ok, _, stderr) = run_python(&bundle, &[]);
+    assert!(!ok);
+    assert_standard_traceback(&stderr);
+}
+
+#[cfg(unix)]
+#[test]
+fn linked_comment_escapes_control_characters_in_names() {
+    // A newline inside the output file name must not break out of the
+    // sourceMappingURL comment (which would inject executable text).
+    let dir = fixture_project();
+    let out = dir.path().join("bun\ndle.py");
+    let (ok, _, stderr) = run_cribo(&[
+        "--entry",
+        &entry_arg(&dir),
+        "--output",
+        &out.to_string_lossy(),
+        "--sourcemap=linked",
+    ]);
+    assert!(ok, "bundling must succeed: {stderr}");
+    let bundle = fs::read_to_string(&out).expect("read bundle");
+    assert!(
+        bundle.contains("# sourceMappingURL=bun%0Adle.py.map"),
+        "control characters in the map name must be percent-encoded"
+    );
+    // The bundle must remain valid, runnable Python.
+    let (ok, stdout, stderr) = run_python(&out, &[]);
+    assert!(ok, "bundle must run: {stderr}");
+    assert!(stdout.contains("hello world"));
+}
