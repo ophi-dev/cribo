@@ -1074,13 +1074,16 @@ fn runtime_renders_long_exception_chains_fully() {
 #[test]
 fn map_covers_match_case_headers_and_decorators() {
     let dir = make_project(&[
-        ("main.py", "from helper import run\n\nprint(run(1))\n"),
+        (
+            "main.py",
+            "from helper import Widget, run\n\nprint(run(1))\nprint(Widget())\n",
+        ),
         (
             "helper.py",
             "def trace(func):\n    return func\n\n\n@trace\n@trace\ndef run(value):\n    match \
              value:\n        case 0:\n            return \"zero\"\n        case _ if value > \
              0:\n            return \"positive\"\n        case _:\n            return \
-             \"negative\"\n",
+             \"negative\"\n\n\n@trace\nclass Widget(dict):\n    pass\n",
         ),
     ]);
     let out = dir.path().join("bundle.py");
@@ -1106,10 +1109,12 @@ fn map_covers_match_case_headers_and_decorators() {
         .filter(|token| token.get_source_id() == Some(helper_id))
         .map(|token| token.get_src_line())
         .collect();
-    // 0-based original lines: 4 and 5 are the two decorators; 6 is the
+    // 0-based original lines: 4 and 5 are the def decorators; 6 is the
     // decorated `def run(value):` header itself; 8, 10, and 12 are the `case`
-    // headers.
-    for header_line in [4, 5, 6, 8, 10, 12] {
+    // headers; 16 and 17 are the decorated class's decorator and header (the
+    // inliner regenerates class names with synthetic ranges, so the header
+    // anchor falls back to the base-class list).
+    for header_line in [4, 5, 6, 8, 10, 12, 16, 17] {
         assert!(
             mapped_helper_lines.contains(&header_line),
             "helper.py 0-based line {header_line} (decorator or case header) must be mapped; \
@@ -1312,6 +1317,31 @@ fn linked_comment_escapes_control_characters_in_names() {
         "control characters in the map name must be percent-encoded"
     );
     // The bundle must remain valid, runnable Python.
+    let (ok, stdout, stderr) = run_python(&out, &[]);
+    assert!(ok, "bundle must run: {stderr}");
+    assert!(stdout.contains("hello world"));
+}
+
+#[test]
+fn linked_comment_preserves_unicode_names() {
+    // Non-ASCII characters in the output name must pass through verbatim
+    // (percent-encoding is reserved for control characters), so external map
+    // consumers following the comment can locate the sibling file.
+    let dir = fixture_project();
+    let out = dir.path().join("bündle.py");
+    let (ok, _, stderr) = run_cribo(&[
+        "--entry",
+        &entry_arg(&dir),
+        "--output",
+        &out.to_string_lossy(),
+        "--sourcemap=linked",
+    ]);
+    assert!(ok, "bundling must succeed: {stderr}");
+    let bundle = fs::read_to_string(&out).expect("read bundle");
+    assert!(
+        bundle.contains("# sourceMappingURL=bündle.py.map"),
+        "unicode map names must not be mangled"
+    );
     let (ok, stdout, stderr) = run_python(&out, &[]);
     assert!(ok, "bundle must run: {stderr}");
     assert!(stdout.contains("hello world"));

@@ -361,9 +361,20 @@ impl ParallelWalker<'_> {
                         });
                     orig_anchor.map(|range| (g.name.range(), range, o.node_index().load()))
                 }
-                (Stmt::ClassDef(g), Stmt::ClassDef(o)) => Some(o.name.range())
-                    .filter(|range| o.range().contains(range.start()))
-                    .map(|range| (g.name.range(), range, o.node_index().load())),
+                (Stmt::ClassDef(g), Stmt::ClassDef(o)) => {
+                    // The inliner regenerates inlined class names with a
+                    // default range, so fall back to the base-class /
+                    // metaclass argument list, which also sits on the header.
+                    let orig_anchor = Some(o.name.range())
+                        .filter(|range| o.range().contains(range.start()))
+                        .or_else(|| {
+                            o.arguments
+                                .as_deref()
+                                .map(ruff_text_size::Ranged::range)
+                                .filter(|range| o.range().contains(range.start()))
+                        });
+                    orig_anchor.map(|range| (g.name.range(), range, o.node_index().load()))
+                }
                 _ => None,
             };
             if !gen_decorators.is_empty()
@@ -531,11 +542,12 @@ fn relative_path(base: &std::path::Path, target: &std::path::Path) -> std::path:
 /// cannot terminate the comment and inject executable text into the bundle.
 pub(crate) fn linked_source_mapping_comment(map_file_name: &str) -> String {
     let mut encoded = String::with_capacity(map_file_name.len());
-    for byte in map_file_name.bytes() {
-        if byte < 0x20 || byte == 0x7F || byte == b'%' {
-            encoded.push_str(&format!("%{byte:02X}"));
+    for character in map_file_name.chars() {
+        if character < '\u{20}' || character == '\u{7F}' || character == '%' {
+            let _ =
+                std::fmt::Write::write_fmt(&mut encoded, format_args!("%{:02X}", character as u32));
         } else {
-            encoded.push(byte as char);
+            encoded.push(character);
         }
     }
     format!("# sourceMappingURL={encoded}\n")
