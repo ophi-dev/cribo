@@ -312,11 +312,46 @@ impl ParallelWalker<'_> {
             .provenance
             .resolve(original.node_index().load(), original.range().start())
         {
+            let generated_start = self.line_index.line_of(generated.range().start());
             self.records.push(MappingRecord {
-                generated_line: self.line_index.line_of(generated.range().start()),
+                generated_line: generated_start,
                 module_ordinal,
                 original_line,
             });
+            // Simple (body-less) statements can still span several physical
+            // lines — ruff's generator emits one line per statement except for
+            // multiline string/f-string literals, whose content is preserved
+            // verbatim. A raising expression inside such a literal is
+            // attributed to its own physical line, so fill the span with
+            // offset-aligned mappings. Compound statements are excluded: their
+            // interiors get precise mappings from the recursion below, which
+            // must not be shadowed (first mapping per line wins).
+            let has_nested_body = matches!(
+                generated,
+                Stmt::FunctionDef(_)
+                    | Stmt::ClassDef(_)
+                    | Stmt::If(_)
+                    | Stmt::While(_)
+                    | Stmt::For(_)
+                    | Stmt::With(_)
+                    | Stmt::Try(_)
+                    | Stmt::Match(_)
+            );
+            if !has_nested_body {
+                let generated_span =
+                    self.line_index.line_of(generated.range().end()) - generated_start;
+                let original_span = self
+                    .provenance
+                    .resolve(original.node_index().load(), original.range().end())
+                    .map_or(0, |(_, end_line)| end_line.saturating_sub(original_line));
+                for offset in 1..=generated_span.min(original_span) {
+                    self.records.push(MappingRecord {
+                        generated_line: generated_start + offset,
+                        module_ordinal,
+                        original_line: original_line + offset,
+                    });
+                }
+            }
         }
 
         // Evaluating a decorator can raise on its own `@...` line; give every
@@ -543,7 +578,17 @@ fn relative_path(base: &std::path::Path, target: &std::path::Path) -> std::path:
 pub(crate) fn linked_source_mapping_comment(map_file_name: &str) -> String {
     let mut encoded = String::with_capacity(map_file_name.len());
     for character in map_file_name.chars() {
-        if character < '\u{20}' || character == '\u{7F}' || character == '%' {
+        // Control characters would break out of the comment; '#', '?', and
+        // other URL delimiters would truncate the reference for
+        // standards-compliant URL consumers. Non-ASCII Unicode passes through
+        // verbatim.
+        if character < '\u{21}'
+            || character == '\u{7F}'
+            || matches!(
+                character,
+                '%' | '#' | '?' | '"' | '<' | '>' | '\\' | '^' | '`' | '|'
+            )
+        {
             let _ =
                 std::fmt::Write::write_fmt(&mut encoded, format_args!("%{:02X}", character as u32));
         } else {
@@ -553,12 +598,14 @@ pub(crate) fn linked_source_mapping_comment(map_file_name: &str) -> String {
     format!("# sourceMappingURL={encoded}\n")
 }
 
-/// Comment recording the SHA-256 of the linked map at build time.
+/// Comment recording the SHA-256 of the sibling map at build time.
 ///
 /// The runtime refuses a sibling map whose digest does not match, so no
 /// interleaving of concurrent builds (or manual file shuffling) can pair a
 /// bundle with another build's mappings — the digest travels inside the bundle
-/// itself, which is always internally consistent.
+/// itself, which is always internally consistent. Emitted for both linked and
+/// external modes (the sibling-map pairing problem is identical); an explicit
+/// `CRIBO_SOURCE_MAPS=<path>` override skips verification.
 pub(crate) fn linked_map_digest_comment(map_json: &str) -> String {
     use sha2::{Digest as _, Sha256};
     let digest = Sha256::digest(map_json.as_bytes());

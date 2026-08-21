@@ -166,10 +166,12 @@ def test_inline_payload_scan_and_chunked_base64(rt):
     json_text = '{"filler":"' + filler + '","sources":["a.py"],"mappings":"AAAA"}'
     path = make_inline_bundle(json_text)
     try:
-        decoded = b"".join(rt._inline_chunks(path))
+        with open(path, "rb") as handle:
+            decoded = b"".join(rt._inline_chunks(handle))
         assert decoded.decode("utf-8") == json_text
-        # And end-to-end through the scanner:
-        sources, table = rt._scan(lambda: rt._inline_chunks(path), {0}, 0)
+        # And end-to-end through the scanner (one pinned handle, two passes):
+        with open(path, "rb") as handle:
+            sources, table = rt._scan(lambda: rt._inline_chunks(handle), {0}, 0)
         assert sources == {0: "a.py"}, sources
         assert table == {0: (0, 0)}, table
     finally:
@@ -183,7 +185,8 @@ def test_inline_scan_without_marker_yields_nothing(rt):
     with handle as f:
         f.write("print('no map here')\n" * 50)
     try:
-        assert b"".join(rt._inline_chunks(handle.name)) == b""
+        with open(handle.name, "rb") as bundle:
+            assert b"".join(rt._inline_chunks(bundle)) == b""
     finally:
         os.unlink(handle.name)
 

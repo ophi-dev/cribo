@@ -791,14 +791,16 @@ impl BundleOrchestrator {
             match mode {
                 SourceMapMode::Linked | SourceMapMode::External => {
                     let map_path = source_map_path_for(output_path);
+                    // Both sibling-map modes embed the map digest so the
+                    // runtime can reject a mismatched pair; only linked mode
+                    // adds the sourceMappingURL reference.
+                    bundled_code.push('\n');
+                    bundled_code.push_str(&crate::source_map::linked_map_digest_comment(map_json));
                     if mode == SourceMapMode::Linked {
                         let map_file_name = map_path.file_name().map_or_else(
                             || map_path.to_string_lossy().into_owned(),
                             |name| name.to_string_lossy().into_owned(),
                         );
-                        bundled_code.push('\n');
-                        bundled_code
-                            .push_str(&crate::source_map::linked_map_digest_comment(map_json));
                         bundled_code.push_str(&crate::source_map::linked_source_mapping_comment(
                             &map_file_name,
                         ));

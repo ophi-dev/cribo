@@ -156,7 +156,17 @@ class _CriboSourceMapRuntime(object):
             self._group_type = None
 
     def install(self):
-        """Install the three hooks; the previous hooks stay chained."""
+        """Install the three hooks; the previous hooks stay chained.
+
+        Also joins the interpreter-wide runtime registry (stored on the
+        unshadowable `sys` module) so stacked bundles can merge each other's
+        mappings when a traceback crosses bundle boundaries.
+        """
+        registry = getattr(self._sys, "_cribo_sm_runtimes", None)
+        if not isinstance(registry, list):
+            registry = []
+            self._sys._cribo_sm_runtimes = registry
+        registry.append(self)
         self._sys.excepthook = self.excepthook
         self._sys.unraisablehook = self.unraisablehook
         self._threading.excepthook = self.threading_hook
@@ -187,14 +197,17 @@ class _CriboSourceMapRuntime(object):
     def _map_location(self):
         """Resolve the map location per delivery mode, or None when inactive.
 
-        Returns (map_path, map_dir); map_path is None for inline mode (the map
-        lives inside the bundle file itself). Called lazily at hook-fire time
-        so the happy path never touches the environment or the filesystem.
+        Returns (map_path, map_dir, verify); map_path is None for inline mode
+        (the map lives inside the bundle file itself) and `verify` says whether
+        the sibling map must match the digest recorded in the bundle. Called
+        lazily at hook-fire time so the happy path never touches the
+        environment or the filesystem.
         """
         env = self._os.environ.get("CRIBO_SOURCE_MAPS", "")
         if env == "0":
             return None
-        # An explicit path wins for every mode. This is also the only way to
+        # An explicit path wins for every mode (and skips digest verification —
+        # it is the user's explicit choice). This is also the only way to
         # supply a map to a bundle executed via `python -` (stdin), whose
         # source cannot be re-read at hook time. A relative override is
         # anchored to the startup working directory, immune to later chdir.
@@ -202,20 +215,20 @@ class _CriboSourceMapRuntime(object):
             path = env
             if not self._os.path.isabs(path):
                 path = self._os.path.join(self._startup_cwd, path)
-            return (path, self._os.path.dirname(self._os.path.abspath(path)))
+            return (path, self._os.path.dirname(self._os.path.abspath(path)), False)
         bundle = self._bundle_anchor
         if self._mode == "inline":
             if bundle == "<stdin>":
                 return None  # stdin cannot be re-opened; use CRIBO_SOURCE_MAPS=<path>
-            return (None, self._os.path.dirname(bundle))
+            return (None, self._os.path.dirname(bundle), False)
         sibling = bundle + ".map"
         if self._mode == "linked":
-            if self._os.path.exists(sibling) and self._map_matches_bundle(sibling):
-                return (sibling, self._os.path.dirname(sibling))
+            if self._os.path.exists(sibling):
+                return (sibling, self._os.path.dirname(sibling), True)
             return None
         # external: opt in via CRIBO_SOURCE_MAPS=1 (a path was handled above)
         if env in ("1", "true", "yes", "on"):
-            return (sibling, self._os.path.dirname(sibling))
+            return (sibling, self._os.path.dirname(sibling), True)
         return None
 
     def _file_chunks(self, path, *, _open=open):
@@ -229,6 +242,20 @@ class _CriboSourceMapRuntime(object):
                 yield chunk
         finally:
             handle.close()
+
+    def _handle_chunks(self, handle):
+        """Yield fixed-size chunks from an already-open handle, from offset 0.
+
+        Keeping one open handle across the verify/decode passes pins the inode:
+        a concurrent build renaming a new map into place cannot swap the bytes
+        between passes.
+        """
+        handle.seek(0)
+        while True:
+            chunk = handle.read(self._CHUNK)
+            if not chunk:
+                break
+            yield chunk
 
     def _find_marker_tail(self, handle, marker, *, _len=len):
         """Backward-scan a file for the last occurrence of `marker`.
@@ -284,48 +311,49 @@ class _CriboSourceMapRuntime(object):
             return None
         return digest.decode("ascii").lower()
 
-    def _map_matches_bundle(self, map_path, *, _bex=BaseException):
+    def _map_matches_bundle(self, handle, *, _bex=BaseException):
         """False only when the bundle records a digest and the map disagrees.
 
-        This is what makes linked-mode publication safe against interleaved
+        This is what makes sibling-map publication safe against interleaved
         concurrent builds and manual file shuffling: the digest travels inside
         the bundle, which is always internally consistent, so a sibling map
-        from a different build is detected and ignored. Verification errors
-        fail open (the subsequent map read would surface them anyway).
+        from a different build is detected and ignored. Hashing reads from the
+        same open handle later used for decoding, so the verified bytes are the
+        decoded bytes. Verification errors fail open (the subsequent map read
+        would surface them anyway).
         """
         try:
             expected = self._bundle_expected_digest()
             if expected is None:
                 return True
             hasher = self._hashlib.sha256()
-            for chunk in self._file_chunks(map_path):
+            for chunk in self._handle_chunks(handle):
                 hasher.update(chunk)
             return hasher.hexdigest() == expected
         except _bex:
             return True
 
-    def _inline_chunks(self, path, *, _open=open, _len=len):
-        """Yield decoded chunks of an inline (base64 data URL) source map."""
-        handle = _open(path, "rb")
-        try:
-            start = self._find_inline_payload(handle)
-            if start < 0:
-                return
-            handle.seek(start)
-            pending = b""
-            while True:
-                raw = handle.read(self._CHUNK)
-                if not raw:
-                    break
-                data = pending + raw.translate(None, b"\r\n")
-                usable = _len(data) - (_len(data) % 4)
-                pending = data[usable:]
-                if usable:
-                    yield self._binascii.a2b_base64(data[:usable])
-            if pending:
-                yield self._binascii.a2b_base64(pending + b"=" * (-_len(pending) % 4))
-        finally:
-            handle.close()
+    def _inline_chunks(self, handle, *, _len=len):
+        """Yield decoded chunks of an inline (base64 data URL) source map.
+
+        Reads from an already-open bundle handle so all passes see one inode.
+        """
+        start = self._find_inline_payload(handle)
+        if start < 0:
+            return
+        handle.seek(start)
+        pending = b""
+        while True:
+            raw = handle.read(self._CHUNK)
+            if not raw:
+                break
+            data = pending + raw.translate(None, b"\r\n")
+            usable = _len(data) - (_len(data) % 4)
+            pending = data[usable:]
+            if usable:
+                yield self._binascii.a2b_base64(data[:usable])
+        if pending:
+            yield self._binascii.a2b_base64(pending + b"=" * (-_len(pending) % 4))
 
     # -- streaming JSON field scanner ---------------------------------------
 
@@ -575,30 +603,39 @@ class _CriboSourceMapRuntime(object):
 
     # -- loading -------------------------------------------------------------
 
-    def _load(self, needed_lines, *, _set=set, _max=max):
+    def _load(self, needed_lines, *, _open=open, _set=set, _max=max):
         """Load (table, sources, map_dir) for 1-based bundle line numbers.
 
         Returns None when the runtime is inactive for the current mode. The
         returned table is keyed by 1-based bundle lines mapping to
-        (source_index, 1-based original line).
+        (source_index, 1-based original line). The map is opened exactly once:
+        digest verification and both decode passes read from the same pinned
+        handle, so the verified bytes are the decoded bytes even if a
+        concurrent build renames a new map into place mid-decode.
         """
         location = self._map_location()
         if location is None:
             return None
-        map_path, map_dir = location
+        map_path, map_dir, verify = location
         needed0 = _set(line - 1 for line in needed_lines)
         max_needed = _max(needed0)
-        if map_path is None:
+        handle = _open(self._bundle_anchor if map_path is None else map_path, "rb")
+        try:
+            if map_path is not None and verify and not self._map_matches_bundle(handle):
+                return None
+            if map_path is None:
 
-            def chunks_factory():
-                return self._inline_chunks(self._bundle_anchor)
+                def chunks_factory():
+                    return self._inline_chunks(handle)
 
-        else:
+            else:
 
-            def chunks_factory():
-                return self._file_chunks(map_path)
+                def chunks_factory():
+                    return self._handle_chunks(handle)
 
-        sources, table0 = self._scan(chunks_factory, needed0, max_needed)
+            sources, table0 = self._scan(chunks_factory, needed0, max_needed)
+        finally:
+            handle.close()
         table = {}
         for line0, (src_idx, src_line0) in table0.items():
             table[line0 + 1] = (src_idx, src_line0 + 1)
@@ -611,17 +648,19 @@ class _CriboSourceMapRuntime(object):
         location = self._map_location()
         if location is None:
             return None
-        map_path, map_dir = location
+        map_path, map_dir, verify = location
         json = self._import("json")
 
-        if map_path is None:
-            raw = b"".join(self._inline_chunks(self._bundle_anchor))
-        else:
-            handle = _open(map_path, "rb")
-            try:
-                raw = handle.read()
-            finally:
-                handle.close()
+        handle = _open(self._bundle_anchor if map_path is None else map_path, "rb")
+        try:
+            if map_path is not None and verify and not self._map_matches_bundle(handle):
+                return None
+            if map_path is None:
+                raw = b"".join(self._inline_chunks(handle))
+            else:
+                raw = b"".join(self._handle_chunks(handle))
+        finally:
+            handle.close()
         data = json.loads(raw.decode("utf-8"))
         sources = {}
         for index, source in _enumerate(data.get("sources") or []):
@@ -638,14 +677,14 @@ class _CriboSourceMapRuntime(object):
     # -- traceback collection and rendering ----------------------------------
 
     def _collect_needed(
-        self, exc_value, traceback_obj, *, _set=set, _id=id, _getattr=getattr
+        self, exc_value, traceback_obj, bundle_file, *, _set=set, _id=id, _getattr=getattr
     ):
-        """1-based bundle lines referenced by the traceback (and its chain)."""
+        """1-based lines of `bundle_file` referenced by the traceback chain."""
         needed = _set()
 
         def add(tb):
             while tb is not None:
-                if tb.tb_frame.f_code.co_filename == self._bundle:
+                if tb.tb_frame.f_code.co_filename == bundle_file:
                     needed.add(tb.tb_lineno)
                 tb = tb.tb_next
 
@@ -713,15 +752,20 @@ class _CriboSourceMapRuntime(object):
         limit = _getattr(self._sys, "tracebacklimit", None)
         return limit if _isinstance(limit, _int) else None
 
-    def _write_frames(self, traceback_obj, table, sources, map_dir, write, limit):
+    def _write_frames(self, traceback_obj, maps_by_file, write, limit, summaries, *, _bex=BaseException, _len=len):
         """Write remapped frame lines, collapsing repeated frames like CPython.
 
-        Consecutive identical frames (recursion) print at most 3 times followed
-        by a "[Previous line repeated N more times]" marker; source line text
-        is cached per (file, line) within one rendering to avoid re-reading
-        files. A positive `limit` keeps only the last `limit` frames, matching
-        the interpreter's `sys.tracebacklimit` handling in the default hook.
+        `maps_by_file` holds one (table, sources, map_dir) triple per known
+        bundle file, so a traceback crossing several stacked cribo bundles
+        remaps every frame. Frames that stay unmapped render through the
+        standard traceback machinery (`summaries`, when available) to preserve
+        PEP 657 position indicators. Consecutive identical frames (recursion)
+        print at most 3 times followed by a "[Previous line repeated N more
+        times]" marker; source line text is cached per (file, line) within one
+        rendering. A positive `limit` keeps only the last `limit` frames,
+        matching the interpreter's `sys.tracebacklimit` handling.
         """
+        index = 0
         if limit is not None:
             total = 0
             probe = traceback_obj
@@ -732,12 +776,26 @@ class _CriboSourceMapRuntime(object):
             while skip > 0 and traceback_obj is not None:
                 traceback_obj = traceback_obj.tb_next
                 skip -= 1
+                index += 1
 
         cache = {}
         last = None
         repeats = 0
 
-        def emit(entry):
+        def emit(entry, frame_index, mapped_frame):
+            if not mapped_frame and summaries is not None and frame_index < _len(summaries):
+                # Standard rendering for untouched frames keeps PEP 657
+                # carets and anchors intact.
+                try:
+                    rendered = self._traceback.StackSummary.from_list(
+                        [summaries[frame_index]]
+                    ).format()
+                except _bex:
+                    rendered = None
+                if rendered:
+                    for line in rendered:
+                        write(line)
+                    return
             write('  File "%s", line %d, in %s\n' % entry)
             key = (entry[0], entry[1])
             if key not in cache:
@@ -750,7 +808,10 @@ class _CriboSourceMapRuntime(object):
             filename = frame.f_code.co_filename
             lineno = traceback_obj.tb_lineno
             name = frame.f_code.co_name
-            if filename == self._bundle:
+            mapped_frame = False
+            bundle_map = maps_by_file.get(filename)
+            if bundle_map is not None:
+                table, sources, map_dir = bundle_map
                 mapped = table.get(lineno)
                 if mapped is not None:
                     source = sources.get(mapped[0])
@@ -760,18 +821,20 @@ class _CriboSourceMapRuntime(object):
                                 self._os.path.join(map_dir, source)
                             )
                         filename, lineno = source, mapped[1]
+                        mapped_frame = True
             entry = (filename, lineno, name)
             if entry == last:
                 repeats += 1
                 if repeats <= 3:
-                    emit(entry)
+                    emit(entry, index, mapped_frame)
             else:
                 if repeats > 3:
                     write("  [Previous line repeated %d more times]\n" % (repeats - 3))
                 last = entry
                 repeats = 1
-                emit(entry)
+                emit(entry, index, mapped_frame)
             traceback_obj = traceback_obj.tb_next
+            index += 1
         if repeats > 3:
             write("  [Previous line repeated %d more times]\n" % (repeats - 3))
 
@@ -825,9 +888,7 @@ class _CriboSourceMapRuntime(object):
     def _render(
         self,
         exc_value,
-        table,
-        sources,
-        map_dir,
+        maps_by_file,
         write,
         *,
         _getattr=getattr,
@@ -836,6 +897,8 @@ class _CriboSourceMapRuntime(object):
         _list=list,
         _reversed=reversed,
         _enumerate=enumerate,
+        _type=type,
+        _bex=BaseException,
     ):
         """Render the exception (with its cause/context chain) like CPython."""
         chain = []
@@ -874,8 +937,16 @@ class _CriboSourceMapRuntime(object):
             tb = _getattr(exc, "__traceback__", None)
             limit = self._effective_tb_limit()
             if tb is not None and (limit is None or limit > 0):
+                # Standard per-frame summaries (with PEP 657 positions on
+                # 3.11+) render the frames this runtime does not remap.
+                try:
+                    summaries = self._traceback.TracebackException(
+                        _type(exc), exc, tb, lookup_lines=False
+                    ).stack
+                except _bex:
+                    summaries = None
                 write("Traceback (most recent call last):\n")
-                self._write_frames(tb, table, sources, map_dir, write, limit)
+                self._write_frames(tb, maps_by_file, write, limit, summaries)
             self._write_exception_only(exc, write)
 
     def _try_render(
@@ -894,21 +965,30 @@ class _CriboSourceMapRuntime(object):
         try:
             if self._chain_has_group(exc_value):
                 return False
-            needed = self._collect_needed(exc_value, traceback_obj)
-            if not needed:
-                return False
-            loaded = None
-            try:
-                loaded = self._load(needed)
-            except _bex:
+            # Every stacked cribo runtime contributes mappings for its own
+            # bundle, so a traceback crossing several bundles remaps fully.
+            maps_by_file = {}
+            for runtime in self._registered_runtimes():
                 try:
-                    loaded = self._load_json_fallback(needed)
-                except _bex:
+                    bundle_file = runtime._bundle
+                    if bundle_file in maps_by_file:
+                        continue
+                    needed = self._collect_needed(exc_value, traceback_obj, bundle_file)
+                    if not needed:
+                        continue
                     loaded = None
-            if not loaded:
-                return False
-            table, sources, map_dir = loaded
-            if not table:
+                    try:
+                        loaded = runtime._load(needed)
+                    except _bex:
+                        try:
+                            loaded = runtime._load_json_fallback(needed)
+                        except _bex:
+                            loaded = None
+                    if loaded and loaded[0]:
+                        maps_by_file[bundle_file] = loaded
+                except _bex:
+                    continue
+            if not maps_by_file:
                 return False
             try:
                 old_limit = self._sys.getrecursionlimit()
@@ -920,7 +1000,7 @@ class _CriboSourceMapRuntime(object):
             parts = []
             if prefix:
                 parts.append(prefix)
-            self._render(exc_value, table, sources, map_dir, parts.append)
+            self._render(exc_value, maps_by_file, parts.append)
             stderr = self._sys.stderr
             stderr.write("".join(parts))
             try:
@@ -937,6 +1017,22 @@ class _CriboSourceMapRuntime(object):
                 except _bex:
                     pass
             self._local.in_hook = False
+
+    def _registered_runtimes(self, *, _getattr=getattr, _isinstance=isinstance, _list=list):
+        """All installed cribo runtimes in this interpreter, self included.
+
+        The registry lives on the (unshadowable) `sys` module so stacked
+        bundles can find each other's mappings.
+        """
+        registry = _getattr(self._sys, "_cribo_sm_runtimes", None)
+        runtimes = []
+        if _isinstance(registry, _list):
+            for runtime in registry:
+                if _getattr(runtime, "_cribo_sm_runtime_marker", False):
+                    runtimes.append(runtime)
+        if self not in runtimes:
+            runtimes.append(self)
+        return runtimes
 
     def _notify_custom_hook(self, prev, default, call, *, _bex=BaseException, _getattr=getattr):
         """Invoke a chained hook after a successful remap when it is custom.

@@ -1346,3 +1346,110 @@ fn linked_comment_preserves_unicode_names() {
     assert!(ok, "bundle must run: {stderr}");
     assert!(stdout.contains("hello world"));
 }
+
+#[test]
+fn external_mode_rejects_mismatched_sibling_map() {
+    // External mode embeds the same digest as linked mode; CRIBO_SOURCE_MAPS=1
+    // against a foreign sibling map must fall back to the standard traceback.
+    let dir = crash_project();
+    let bundle = bundle_crash_project(&dir, "--sourcemap=external");
+
+    let other = make_project(&[
+        ("main.py", "from helper import other\n\nprint(other())\n"),
+        ("helper.py", "def other():\n    return 42\n"),
+    ]);
+    let other_bundle = other.path().join("bundle.py");
+    let (ok, _, stderr) = run_cribo(&[
+        "--entry",
+        &entry_arg(&other),
+        "--output",
+        &other_bundle.to_string_lossy(),
+        "--sourcemap=external",
+    ]);
+    assert!(ok, "bundling must succeed: {stderr}");
+    fs::copy(
+        other.path().join("bundle.py.map"),
+        dir.path().join("bundle.py.map"),
+    )
+    .expect("swap in a foreign map");
+
+    let (ok, _, stderr) = run_python(&bundle, &[("CRIBO_SOURCE_MAPS", "1")]);
+    assert!(!ok);
+    assert_standard_traceback(&stderr);
+}
+
+#[test]
+fn stacked_runtimes_merge_maps_across_bundles() {
+    // A traceback crossing two source-mapped bundles (the crashing bundle
+    // calls a function retained from an earlier one) must remap the frames of
+    // BOTH bundles; unmapped driver frames keep standard rendering.
+    let provider = make_project(&[
+        (
+            "main.py",
+            // The real builtins module (bypassing the bundler's stdlib proxy,
+            // whose speculative import_module would add chained-context noise).
+            "from helper import provider_boom\n\n__import__(\"builtins\").provider_boom = \
+             provider_boom\nprint(\"provider ready\")\n",
+        ),
+        (
+            "helper.py",
+            "def provider_boom():\n    raise ValueError(\"cross-bundle kaboom\")\n",
+        ),
+    ]);
+    let provider_bundle = provider.path().join("bundle.py");
+    let (ok, _, stderr) = run_cribo(&[
+        "--entry",
+        &entry_arg(&provider),
+        "--output",
+        &provider_bundle.to_string_lossy(),
+        "--sourcemap=linked",
+    ]);
+    assert!(ok, "bundling must succeed: {stderr}");
+
+    let caller = make_project(&[
+        (
+            "main.py",
+            "print(\"calling provider\")\n__import__(\"builtins\").provider_boom()\n",
+        ),
+        ("helper.py", "unused = True\n"),
+    ]);
+    let caller_bundle = caller.path().join("bundle.py");
+    let (ok, _, stderr) = run_cribo(&[
+        "--entry",
+        &entry_arg(&caller),
+        "--output",
+        &caller_bundle.to_string_lossy(),
+        "--sourcemap=linked",
+    ]);
+    assert!(ok, "bundling must succeed: {stderr}");
+
+    let driver = caller.path().join("driver.py");
+    fs::write(
+        &driver,
+        format!(
+            "import runpy\nrunpy.run_path({provider:?})\nrunpy.run_path({caller:?})\n",
+            provider = provider_bundle.to_string_lossy(),
+            caller = caller_bundle.to_string_lossy(),
+        ),
+    )
+    .expect("write driver");
+
+    let (ok, _, stderr) = run_python(&driver, &[]);
+    assert!(!ok);
+    assert_eq!(
+        stderr.matches("Traceback (most recent call last):").count(),
+        1,
+        "exactly one traceback expected: {stderr}"
+    );
+    // The caller bundle's frame (installed second, renders) is remapped...
+    assert!(
+        stderr.contains("main.py\", line 2, in <module>"),
+        "the caller frame must be remapped: {stderr}"
+    );
+    // ...and so is the provider bundle's frame, via the runtime registry.
+    assert!(
+        stderr.contains("helper.py\", line 2, in provider_boom"),
+        "the earlier bundle's frame must be remapped through the shared registry: {stderr}"
+    );
+    assert!(stderr.contains("cross-bundle kaboom"));
+}
