@@ -1652,3 +1652,116 @@ fn sources_with_url_delimiters_are_encoded_and_decoded() {
         "the original source line must load from the decoded path: {stderr}"
     );
 }
+
+#[test]
+fn digest_placeholder_in_user_code_is_left_untouched() {
+    // Only the prologue's own placeholder receives the digest; a user string
+    // that happens to share the spelling must survive verbatim, and the
+    // runtime must still verify (i.e. the prologue occurrence was the one
+    // substituted).
+    let dir = make_project(&[
+        (
+            "main.py",
+            "from helper import boom\n\nprint(\"__CRIBO_SOURCEMAP_DIGEST__\")\nboom()\n",
+        ),
+        (
+            "helper.py",
+            "def boom():\n    raise ValueError(\"kaboom\")\n",
+        ),
+    ]);
+    let out = dir.path().join("bundle.py");
+    let (ok, _, stderr) = run_cribo(&[
+        "--entry",
+        &entry_arg(&dir),
+        "--output",
+        &out.to_string_lossy(),
+        "--sourcemap=linked",
+    ]);
+    assert!(ok, "bundling must succeed: {stderr}");
+    let bundle = fs::read_to_string(&out).expect("read bundle");
+    assert_eq!(
+        bundle.matches("__CRIBO_SOURCEMAP_DIGEST__").count(),
+        1,
+        "exactly the user occurrence must remain (prologue one substituted)"
+    );
+
+    let (ok, stdout, stderr) = run_python(&out, &[]);
+    assert!(!ok);
+    assert!(
+        stdout.contains("__CRIBO_SOURCEMAP_DIGEST__"),
+        "user string must print unchanged: {stdout}"
+    );
+    // Remapping proves the prologue digest matched the sibling map.
+    assert!(
+        stderr.contains("helper.py\", line 2, in boom"),
+        "traceback must remap, proving digest verification passed: {stderr}"
+    );
+    assert!(stderr.contains("raise ValueError(\"kaboom\")"), "{stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn linked_comment_encodes_non_utf8_names() {
+    // Unix filenames need not be UTF-8. A lossy conversion would bake U+FFFD
+    // into the sourceMappingURL comment — a name that does not exist on disk.
+    // The raw invalid byte must be percent-encoded instead.
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt as _;
+
+    let dir = fixture_project();
+    let mut name = b"bun".to_vec();
+    name.push(0xFF);
+    name.extend_from_slice(b"dle.py");
+    let out = dir.path().join(OsString::from_vec(name));
+    let output = Command::new(env!("CARGO_BIN_EXE_cribo"))
+        .arg("--entry")
+        .arg(dir.path().join("main.py"))
+        .arg("--output")
+        .arg(&out)
+        .arg("--sourcemap=linked")
+        .output()
+        .expect("run cribo");
+    assert!(
+        output.status.success(),
+        "bundling must succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let bundle = fs::read_to_string(&out).expect("read bundle");
+    assert!(
+        bundle.contains("# sourceMappingURL=bun%FFdle.py.map"),
+        "invalid bytes must be percent-encoded, not replaced with U+FFFD"
+    );
+    assert!(
+        !bundle.contains('\u{FFFD}'),
+        "no lossy replacement character may reach the comment"
+    );
+    // The bundle must remain valid, runnable Python (with its sibling map).
+    let (ok, stdout, stderr) = run_python(&out, &[]);
+    assert!(ok, "bundle must run: {stderr}");
+    assert!(stdout.contains("hello world"));
+}
+
+#[test]
+fn bundle_namespace_is_clean_of_runtime_helpers() {
+    // The prologue must leave no helper names behind: user code and
+    // `from bundle import *` consumers must not see (or collide with) them.
+    let dir = make_project(&[(
+        "main.py",
+        "prologue_names = (\"_cribo_sys\", \"_cribo_sm_import\", \"_CriboSmStream\", \"_CriboSourceMapRuntime\")\nleaked = sorted(name for name in prologue_names if name in globals())\nprint(\"LEAKED:\", leaked)\n",
+    )]);
+    let out = dir.path().join("bundle.py");
+    let (ok, _, stderr) = run_cribo(&[
+        "--entry",
+        &entry_arg(&dir),
+        "--output",
+        &out.to_string_lossy(),
+        "--sourcemap=inline",
+    ]);
+    assert!(ok, "bundling must succeed: {stderr}");
+    let (ok, stdout, stderr) = run_python(&out, &[]);
+    assert!(ok, "bundle must run: {stderr}");
+    assert!(
+        stdout.contains("LEAKED: []"),
+        "runtime helper names must not leak into the bundle namespace: {stdout}"
+    );
+}

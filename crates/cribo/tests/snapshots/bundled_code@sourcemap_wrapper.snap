@@ -7,12 +7,12 @@ input_file: crates/cribo/tests/fixtures/sourcemap_wrapper/main.py
 # https://github.com/ophidiarium/cribo
 
 import sys as _cribo_sys
-def _cribo_sm_import(name, script_path=None, *, _list=list, _import=__import__, _isinstance=isinstance, _str=str, _bex=BaseException):
-    """Import a stdlib module immune to script-directory shadowing.\n\n    The bundle's directory can reach `sys.path` several ways: as `sys.path[0]`\n    (direct execution), via `PYTHONPATH`, or not at all under `runpy` (where\n    `sys.path[0]` is the *driver's* directory) — so the bundle's own path is\n    passed in explicitly and every equivalent entry is removed. Lexical\n    de-duplication (exact spelling, trailing separators, cwd aliases) works\n    even before `os` itself is importable (`python -S`); once `os` is\n    available, entries are also compared by absolute path. Non-string path\n    entries (embedded hosts) are kept untouched, as the importer itself would\n    do. (`sys` is a builtin and can never be shadowed.)\n    """
-    module = _cribo_sys.modules.get(name)
+def _cribo_sm_import(name, script_path=None, *, _sys=_cribo_sys, _list=list, _import=__import__, _isinstance=isinstance, _str=str, _bex=BaseException):
+    """Import a stdlib module immune to script-directory shadowing.\n\n    The bundle's directory can reach `sys.path` several ways: as `sys.path[0]`\n    (direct execution), via `PYTHONPATH`, or not at all under `runpy` (where\n    `sys.path[0]` is the *driver's* directory) — so the bundle's own path is\n    passed in explicitly and every equivalent entry is removed from a private\n    *snapshot* of the search path. Resolution goes through the frozen importer\n    machinery (`PathFinder.find_spec` with that explicit snapshot), so global\n    `sys.path` is never mutated and concurrent bootstraps cannot race each\n    other's save/restore. Lexical de-duplication works even before `os` is\n    importable (`python -S`); once `os` is available, entries are also\n    compared by absolute path. Non-string entries are kept untouched.\n    (`sys` and the frozen importlib modules are builtins and can never be\n    shadowed.)\n    """
+    module = _sys.modules.get(name)
     if module is not None:
         return module
-    saved_path = _cribo_sys.path
+    saved_path = _list(_sys.path)
     candidates = []
     if saved_path and _isinstance(saved_path[0], _str):
         candidates.append(saved_path[0])
@@ -34,7 +34,7 @@ def _cribo_sm_import(name, script_path=None, *, _list=list, _import=__import__, 
             if stripped in trimmed:
                 continue
         filtered.append(entry)
-    os_mod = _cribo_sys.modules.get("os")
+    os_mod = _sys.modules.get("os")
     if os_mod is not None and trimmed:
         resolved = []
         for candidate in trimmed:
@@ -52,11 +52,25 @@ def _cribo_sm_import(name, script_path=None, *, _list=list, _import=__import__, 
                     pass
             kept.append(entry)
         filtered = kept
-    _cribo_sys.path = _list(filtered)
+    frozen_external = _sys.modules.get("_frozen_importlib_external")
+    frozen_bootstrap = _sys.modules.get("_frozen_importlib")
+    if frozen_external is not None and frozen_bootstrap is not None:
+        spec = frozen_bootstrap.BuiltinImporter.find_spec(name) or frozen_bootstrap.FrozenImporter.find_spec(name) or frozen_external.PathFinder.find_spec(name, filtered)
+        if spec is None:
+            raise ImportError("cribo runtime could not resolve " + name)
+        module = frozen_bootstrap.module_from_spec(spec)
+        _sys.modules[name] = module
+        try:
+            spec.loader.exec_module(module)
+        except _bex:
+            _sys.modules.pop(name, None)
+            raise
+        return module
+    _sys.path = filtered
     try:
         return _import(name)
     finally:
-        _cribo_sys.path = saved_path
+        _sys.path = saved_path
 class _CriboSmStream(object):
     """Byte-at-a-time reader over an iterator of byte chunks.\n\n    Keyword-only defaults snapshot the builtins at definition time (before any\n    bundled user code runs), so later shadowing of e.g. `len` cannot break the\n    reader — the same idiom cribo's generated module proxies use.\n    """
     __slots__ = "_chunks", "_buf", "_pos"
@@ -81,7 +95,7 @@ class _CriboSourceMapRuntime(object):
     _B64 = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
     _CHUNK = 8192
 
-    def __init__(self, mode, bundle_file, expected_digest, os_mod, binascii_mod, threading_mod, traceback_mod, hashlib_mod):
+    def __init__(self, mode, bundle_file, expected_digest, os_mod, binascii_mod, threading_mod, traceback_mod, hashlib_mod, *, _sys=_cribo_sys, _stream_cls=_CriboSmStream, _sm_import=_cribo_sm_import):
         self._mode = mode
         self._bundle = bundle_file
         if bundle_file == "<stdin>":
@@ -101,19 +115,19 @@ class _CriboSourceMapRuntime(object):
         except OSError:
             self._startup_cwd = "."
         self._os = os_mod
-        self._sys = _cribo_sys
+        self._sys = _sys
         self._binascii = binascii_mod
         self._threading = threading_mod
-        self._stream_cls = _CriboSmStream
-        self._import = _cribo_sm_import
+        self._stream_cls = _stream_cls
+        self._import = _sm_import
         self._traceback = traceback_mod
         self._hashlib = hashlib_mod
         self._local = threading_mod.local()
-        self._prev_excepthook = _cribo_sys.excepthook
-        self._prev_unraisablehook = _cribo_sys.unraisablehook
+        self._prev_excepthook = _sys.excepthook
+        self._prev_unraisablehook = _sys.unraisablehook
         self._prev_threading_hook = threading_mod.excepthook
-        self._default_excepthook = _cribo_sys.__excepthook__
-        self._default_unraisablehook = _cribo_sys.__unraisablehook__
+        self._default_excepthook = _sys.__excepthook__
+        self._default_unraisablehook = _sys.__unraisablehook__
         self._default_threading_hook = getattr(threading_mod, "__excepthook__", None)
         try:
             self._group_type = BaseExceptionGroup
@@ -132,11 +146,11 @@ class _CriboSourceMapRuntime(object):
         self._threading.excepthook = self.threading_hook
 
     @classmethod
-    def _bootstrap(cls, mode, bundle_file, expected_digest):
+    def _bootstrap(cls, mode, bundle_file, expected_digest, *, _sm_import=_cribo_sm_import):
         """Import dependencies safely, construct, and install — fail-open.\n\n        Any failure (however exotic the host environment) leaves the program\n        running without remapping instead of aborting it at startup.\n        """
         try:
             script = None if bundle_file == "<stdin>" else bundle_file
-            runtime = cls(mode, bundle_file, expected_digest, _cribo_sm_import("os", script), _cribo_sm_import("binascii", script), _cribo_sm_import("threading", script), _cribo_sm_import("traceback", script), _cribo_sm_import("hashlib", script))
+            runtime = cls(mode, bundle_file, expected_digest, _sm_import("os", script), _sm_import("binascii", script), _sm_import("threading", script), _sm_import("traceback", script), _sm_import("hashlib", script))
             runtime.install()
         except BaseException:
             pass
@@ -742,7 +756,6 @@ class _CriboSourceMapRuntime(object):
         if _getattr(self._local, "in_hook", False) or exc_value is None:
             return False
         self._local.in_hook = True
-        old_limit = None
         try:
             if self._chain_has_group(exc_value):
                 return False
@@ -776,11 +789,6 @@ class _CriboSourceMapRuntime(object):
                     continue
             if not maps_by_file:
                 return False
-            try:
-                old_limit = self._sys.getrecursionlimit()
-                self._sys.setrecursionlimit(old_limit + 64)
-            except _bex:
-                old_limit = None
             parts = []
             if prefix:
                 parts.append(prefix)
@@ -795,11 +803,6 @@ class _CriboSourceMapRuntime(object):
         except _bex:
             return False
         finally:
-            if old_limit is not None:
-                try:
-                    self._sys.setrecursionlimit(old_limit)
-                except _bex:
-                    pass
             self._local.in_hook = False
 
     def _registered_runtimes(self, *, _getattr=getattr, _isinstance=isinstance, _list=list):
@@ -814,21 +817,28 @@ class _CriboSourceMapRuntime(object):
             runtimes.append(self)
         return runtimes
 
-    def _notify_custom_hook(self, prev, default, call, prev_attr, *, _bex=BaseException, _getattr=getattr, _set=set, _id=id):
-        """Invoke a chained hook after a successful remap when it is custom.\n\n        A successful remap replaces the *default* printer, but preinstalled\n        custom hooks (error reporters, sitecustomize) must still observe the\n        exception; their own output is theirs to manage. Earlier cribo\n        runtimes in the chain are traversed (via their own captured\n        predecessor, named by `prev_attr`) rather than invoked, so a custom\n        hook installed before any bundle still gets notified while the default\n        printer is never reached (which would duplicate the traceback). Cycle\n        detection guards the traversal, and a chain that still ends on a cribo\n        hook invokes nothing (its registry-aware renderer would print the\n        traceback a second time). When the interpreter default is unavailable\n        for comparison (e.g. `threading.__excepthook__` before Python 3.10) no\n        notification happens — better to skip a custom hook than to\n        double-print via the default one.\n        """
+    def _notify_custom_hook(self, prev, default, call, prev_attr, default_attr, *, _bex=BaseException, _getattr=getattr, _set=set, _id=id):
+        """Invoke a chained hook after a successful remap when it is custom.\n\n        A successful remap replaces the *default* printer, but preinstalled\n        custom hooks (error reporters, sitecustomize) must still observe the\n        exception; their own output is theirs to manage. Earlier cribo\n        runtimes in the chain are traversed (via their own captured\n        predecessor, named by `prev_attr`) rather than invoked, so a custom\n        hook installed before any bundle still gets notified while the default\n        printer is never reached (which would duplicate the traceback). Each\n        traversed runtime's own captured default (named by `default_attr`) is\n        collected along the way: an earlier runtime may have snapshotted a\n        different default object than this one (e.g. after someone swapped\n        `sys.__excepthook__` between bundle imports), and a chain ending on\n        *any* of those defaults must invoke nothing — every default is a\n        traceback printer, and the remap already printed. Cycle detection\n        guards the traversal, and a chain that still ends on a cribo hook\n        likewise invokes nothing (its registry-aware renderer would print the\n        traceback a second time). When the interpreter default is unavailable\n        for comparison (e.g. `threading.__excepthook__` before Python 3.10) no\n        notification happens — better to skip a custom hook than to\n        double-print via the default one.\n        """
+        defaults = [default]
         seen = _set()
         while prev is not None and _id(prev) not in seen:
             seen.add(_id(prev))
             bound_to = _getattr(prev, "__self__", None)
             if bound_to is not None and _getattr(bound_to, "_cribo_sm_runtime_marker", False):
+                other_default = _getattr(bound_to, default_attr, None)
+                if other_default is not None:
+                    defaults.append(other_default)
                 prev = _getattr(bound_to, prev_attr, None)
                 continue
             break
         bound_to = _getattr(prev, "__self__", None)
         if bound_to is not None and _getattr(bound_to, "_cribo_sm_runtime_marker", False):
             return
-        if default is None or prev is None or prev is default:
+        if default is None or prev is None:
             return
+        for known_default in defaults:
+            if prev is known_default:
+                return
         try:
             call(prev)
         except _bex:
@@ -836,7 +846,7 @@ class _CriboSourceMapRuntime(object):
 
     def excepthook(self, exc_type, exc_value, traceback_obj):
         if self._try_render(exc_value, traceback_obj, None):
-            self._notify_custom_hook(self._prev_excepthook, self._default_excepthook, lambda hook: hook(exc_type, exc_value, traceback_obj), "_prev_excepthook")
+            self._notify_custom_hook(self._prev_excepthook, self._default_excepthook, lambda hook: hook(exc_type, exc_value, traceback_obj), "_prev_excepthook", "_default_excepthook")
             return
         self._prev_excepthook(exc_type, exc_value, traceback_obj)
 
@@ -848,7 +858,7 @@ class _CriboSourceMapRuntime(object):
         name = _getattr(thread, "name", None) or "Thread"
         prefix = "Exception in thread %s:\n" % name
         if self._try_render(args.exc_value, args.exc_traceback, prefix):
-            self._notify_custom_hook(self._prev_threading_hook, self._default_threading_hook, lambda hook: hook(args), "_prev_threading_hook")
+            self._notify_custom_hook(self._prev_threading_hook, self._default_threading_hook, lambda hook: hook(args), "_prev_threading_hook", "_default_threading_hook")
             return
         self._prev_threading_hook(args)
 
@@ -859,10 +869,11 @@ class _CriboSourceMapRuntime(object):
         except _bex:
             prefix = "%s\n" % message
         if self._try_render(unraisable.exc_value, unraisable.exc_traceback, prefix):
-            self._notify_custom_hook(self._prev_unraisablehook, self._default_unraisablehook, lambda hook: hook(unraisable), "_prev_unraisablehook")
+            self._notify_custom_hook(self._prev_unraisablehook, self._default_unraisablehook, lambda hook: hook(unraisable), "_prev_unraisablehook", "_default_unraisablehook")
             return
         self._prev_unraisablehook(unraisable)
-_CriboSourceMapRuntime._bootstrap("linked", globals().get("__file__", "<stdin>"), "d04b33c25f114129eb46735bdb46a45ae5a9636163102bd44bb41678e13b2608")
+_CriboSourceMapRuntime._bootstrap("linked", globals().get("__file__", "<stdin>"), "e892aae89904ceb493d1b2e4def1f0b19e81b73861a30ac51c7c6f8a2f5d395f")
+del _cribo_sys, _cribo_sm_import, _CriboSmStream, _CriboSourceMapRuntime
 import sys as _sys
 import importlib as _importlib
 class _CriboModule():

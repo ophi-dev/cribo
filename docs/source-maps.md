@@ -19,6 +19,9 @@ tracebacks to original sources at run time, analogous to `node --enable-source-m
    `linked`).
    - `linked`: write `<output>.map` next to the output and append a
      `# sourceMappingURL=<basename>.map` comment as the last line.
+     A newly created map file is owner-only (`0600` on Unix, set atomically at
+     creation) since it may embed `sourcesContent`; rebuilds preserve whatever
+     permissions the existing map carries, so a one-time `chmod` sticks.
    - `inline`: append a `# sourceMappingURL=data:application/json;base64,...` comment.
    - `external`: write the `.map` file with no comment.
 3. **Runtime traceback injection** is bundled into the output whenever `--sourcemap`

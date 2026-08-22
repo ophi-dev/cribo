@@ -85,9 +85,15 @@ fn staging_suffix(attempt: u32) -> String {
 /// be predicted and pointed elsewhere. Names are unpredictable (see
 /// [`staging_suffix`]) and collisions retry with fresh entropy, which also
 /// keeps concurrent builds from stomping each other's staged map.
-/// When a previous map exists, its permissions are copied onto the staged file
-/// before any content is written, so a restricted map (e.g. 0600 protecting
-/// `sourcesContent`) stays restricted across rebuilds.
+///
+/// The staged file is born `0600` on Unix (mode set atomically at `open(2)`
+/// time), so no other user can grab a readable handle between creation and a
+/// later `chmod`. When a previous map exists, its permissions are then copied
+/// onto the staged file before any content is written, so a restricted map
+/// (e.g. 0600 protecting `sourcesContent`) stays restricted across rebuilds.
+/// With no previous map the file keeps `0600`; after the rename the map is
+/// owner-only by default, and users who want it world-readable can `chmod` it
+/// once — the permissions persist across subsequent rebuilds.
 fn stage_map_file(map_path: &Path, map_json: &str) -> std::io::Result<PathBuf> {
     use std::io::Write as _;
 
@@ -100,11 +106,14 @@ fn stage_map_file(map_path: &Path, map_json: &str) -> std::io::Result<PathBuf> {
         let mut tmp_name = base_name.clone();
         tmp_name.push(format!(".{}.tmp", staging_suffix(attempt)));
         let tmp_path = map_path.with_file_name(tmp_name);
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&tmp_path)
+        let mut open_options = fs::OpenOptions::new();
+        open_options.write(true).create_new(true);
+        #[cfg(unix)]
         {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            open_options.mode(0o600);
+        }
+        match open_options.open(&tmp_path) {
             Ok(mut file) => {
                 // symlink_metadata: an attacker-planted symlink at the map
                 // path must not decide the staged file's permissions.
@@ -810,13 +819,11 @@ impl BundleOrchestrator {
                 SourceMapMode::Linked | SourceMapMode::External => {
                     let map_path = source_map_path_for(output_path);
                     if mode == SourceMapMode::Linked {
-                        let map_file_name = map_path.file_name().map_or_else(
-                            || map_path.to_string_lossy().into_owned(),
-                            |name| name.to_string_lossy().into_owned(),
-                        );
+                        let map_file_name =
+                            map_path.file_name().unwrap_or_else(|| map_path.as_os_str());
                         bundled_code.push('\n');
                         bundled_code.push_str(&crate::source_map::linked_source_mapping_comment(
-                            &map_file_name,
+                            map_file_name,
                         ));
                     }
                     pending_map = Some((map_path, map_json));

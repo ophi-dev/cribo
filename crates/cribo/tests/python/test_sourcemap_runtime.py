@@ -19,14 +19,22 @@ def load_runtime(path):
     """Import the runtime module and return a runtime instance for testing.
 
     The import installs the hooks; they are restored immediately so failures
-    in this harness surface as normal tracebacks.
+    in this harness surface as normal tracebacks. The runtime class is
+    recovered from the installed hook's bound instance — the template's last
+    statement deletes every module-level helper name, so the module namespace
+    is intentionally empty after import.
     """
     prev_hooks = (sys.excepthook, sys.unraisablehook, threading.excepthook)
     spec = importlib.util.spec_from_file_location("cribo_sm_runtime", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    installed_hook = sys.excepthook
     sys.excepthook, sys.unraisablehook, threading.excepthook = prev_hooks
-    return module._CriboSourceMapRuntime(
+    assert not hasattr(module, "_CriboSourceMapRuntime"), (
+        "template must scrub its helper names from the bundle namespace"
+    )
+    runtime_cls = type(installed_hook.__self__)
+    return runtime_cls(
         "external",
         "<test-bundle>",
         "",  # no build digest: verification is skipped

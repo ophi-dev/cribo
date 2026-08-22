@@ -546,9 +546,54 @@ fn relative_path(base: &std::path::Path, target: &std::path::Path) -> std::path:
 /// treats the line as a plain comment. The file name is percent-encoded so a
 /// hostile or accidental control character (e.g. a newline in a Unix filename)
 /// cannot terminate the comment and inject executable text into the bundle.
-pub(crate) fn linked_source_mapping_comment(map_file_name: &str) -> String {
+///
+/// Takes the name as `OsStr` because Unix filenames need not be UTF-8: invalid
+/// bytes are percent-encoded verbatim (`%XX` of the raw byte), which is both
+/// injection-safe and the faithful URL form of the on-disk name — a lossy
+/// U+FFFD substitution would point consumers at a file that does not exist.
+pub(crate) fn linked_source_mapping_comment(map_file_name: &std::ffi::OsStr) -> String {
     let mut encoded = String::with_capacity(map_file_name.len());
-    for character in map_file_name.chars() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt as _;
+        let mut bytes = map_file_name.as_bytes();
+        while !bytes.is_empty() {
+            match std::str::from_utf8(bytes) {
+                Ok(valid) => {
+                    encode_map_url_into(valid, &mut encoded);
+                    break;
+                }
+                Err(err) => {
+                    let (valid, rest) = bytes.split_at(err.valid_up_to());
+                    encode_map_url_into(
+                        std::str::from_utf8(valid).expect("valid_up_to prefix is UTF-8"),
+                        &mut encoded,
+                    );
+                    // error_len is None only at end-of-input (truncated
+                    // sequence); encode every remaining byte in that case.
+                    let invalid_len = err.error_len().unwrap_or(rest.len());
+                    for byte in &rest[..invalid_len] {
+                        let _ =
+                            std::fmt::Write::write_fmt(&mut encoded, format_args!("%{byte:02X}"));
+                    }
+                    bytes = &rest[invalid_len..];
+                }
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows filenames are UTF-16; unpaired surrogates cannot be
+        // expressed in a UTF-8 comment at all, so lossy substitution is the
+        // only option there.
+        encode_map_url_into(&map_file_name.to_string_lossy(), &mut encoded);
+    }
+    format!("# sourceMappingURL={encoded}\n")
+}
+
+/// Percent-encode `text` for a `sourceMappingURL` comment, appending to `out`.
+fn encode_map_url_into(text: &str, out: &mut String) {
+    for character in text.chars() {
         // Control characters would break out of the comment; '#', '?', and
         // other URL delimiters would truncate the reference for
         // standards-compliant URL consumers. Non-ASCII Unicode passes through
@@ -560,13 +605,11 @@ pub(crate) fn linked_source_mapping_comment(map_file_name: &str) -> String {
                 '%' | '#' | '?' | '"' | '<' | '>' | '\\' | '^' | '`' | '|'
             )
         {
-            let _ =
-                std::fmt::Write::write_fmt(&mut encoded, format_args!("%{:02X}", character as u32));
+            let _ = std::fmt::Write::write_fmt(out, format_args!("%{:02X}", character as u32));
         } else {
-            encoded.push(character);
+            out.push(character);
         }
     }
-    format!("# sourceMappingURL={encoded}\n")
 }
 
 /// Placeholder in the runtime template replaced with this build's map digest.
@@ -582,6 +625,11 @@ const RUNTIME_DIGEST_PLACEHOLDER: &str = "__CRIBO_SOURCEMAP_DIGEST__";
 /// substitution never shifts line numbers and the extracted mappings stay
 /// valid. With no map, the placeholder becomes an empty string, which the
 /// runtime treats as "no digest known" (verification is skipped).
+///
+/// Only the first occurrence is replaced: the prologue is emitted before any
+/// user code, so its placeholder is always the first one in the bundle, and
+/// user code that happens to contain the same spelling (in a string literal,
+/// comment, or identifier) is left untouched.
 pub(crate) fn apply_map_digest(code: &str, map_json: Option<&str>) -> String {
     use cow_utils::CowUtils as _;
     use sha2::{Digest as _, Sha256};
@@ -594,7 +642,7 @@ pub(crate) fn apply_map_digest(code: &str, map_json: Option<&str>) -> String {
         }
         hex
     });
-    code.cow_replace(RUNTIME_DIGEST_PLACEHOLDER, &digest_hex)
+    code.cow_replacen(RUNTIME_DIGEST_PLACEHOLDER, &digest_hex, 1)
         .into_owned()
 }
 
