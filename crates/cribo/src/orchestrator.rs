@@ -715,6 +715,13 @@ impl BundleOrchestrator {
         })?;
         let mut bundled_code = emitted.code;
 
+        // Bake the map digest into the runtime prologue (or blank the
+        // placeholder when no map was produced).
+        if self.config.sourcemap.is_some() {
+            bundled_code =
+                crate::source_map::apply_map_digest(&bundled_code, emitted.source_map.as_deref());
+        }
+
         // Stdout output can only carry an inline map; other modes are rejected
         // at CLI validation time.
         if self.config.sourcemap == Some(SourceMapMode::Inline)
@@ -785,6 +792,14 @@ impl BundleOrchestrator {
         })?;
         let mut bundled_code = emitted.code;
 
+        // Bake the map digest into the runtime prologue (or blank the
+        // placeholder when no map was produced): the digest lives inside the
+        // executing code itself, immune to on-disk replacement.
+        if self.config.sourcemap.is_some() {
+            bundled_code =
+                crate::source_map::apply_map_digest(&bundled_code, emitted.source_map.as_deref());
+        }
+
         // Apply the configured source map delivery mode. The map file itself is
         // written only after the bundle write succeeds, so a failed run never
         // leaves an orphaned (and potentially stale) map next to an old bundle.
@@ -794,16 +809,12 @@ impl BundleOrchestrator {
             match mode {
                 SourceMapMode::Linked | SourceMapMode::External => {
                     let map_path = source_map_path_for(output_path);
-                    // Both sibling-map modes embed the map digest so the
-                    // runtime can reject a mismatched pair; only linked mode
-                    // adds the sourceMappingURL reference.
-                    bundled_code.push('\n');
-                    bundled_code.push_str(&crate::source_map::linked_map_digest_comment(map_json));
                     if mode == SourceMapMode::Linked {
                         let map_file_name = map_path.file_name().map_or_else(
                             || map_path.to_string_lossy().into_owned(),
                             |name| name.to_string_lossy().into_owned(),
                         );
+                        bundled_code.push('\n');
                         bundled_code.push_str(&crate::source_map::linked_source_mapping_comment(
                             &map_file_name,
                         ));

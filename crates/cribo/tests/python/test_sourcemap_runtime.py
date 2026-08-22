@@ -29,6 +29,7 @@ def load_runtime(path):
     return module._CriboSourceMapRuntime(
         "external",
         "<test-bundle>",
+        "",  # no build digest: verification is skipped
         os,
         __import__("binascii"),
         threading,
@@ -237,6 +238,7 @@ def test_env_path_wins_for_every_mode(rt):
         inline_stdin = type(rt)(
             "inline",
             "<stdin>",
+            "",
             os,
             __import__("binascii"),
             threading,

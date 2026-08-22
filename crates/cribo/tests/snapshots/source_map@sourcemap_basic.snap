@@ -2,15 +2,15 @@
 source: crates/cribo/tests/test_bundling_snapshots.rs
 input_file: crates/cribo/tests/fixtures/sourcemap_basic/main.py
 ---
-bundle:1003 `def add(a, b):` -> calculator.py:1
-bundle:1004 `result = a + b` -> calculator.py:2
-bundle:1005 `return result` -> calculator.py:3
-bundle:1007 `def multiply(a, b):` -> calculator.py:6
-bundle:1008 `result = a * b` -> calculator.py:7
-bundle:1009 `return result` -> calculator.py:8
-bundle:1014 `def describe(name, value):` -> utils.py:1
-bundle:1015 `return f"{name} = {value}"` -> utils.py:2
-bundle:1021 `total = add(2, 3)` -> main.py:4
-bundle:1022 `product = multiply(total, 4)` -> main.py:5
-bundle:1023 `print(describe("total", total))` -> main.py:6
-bundle:1024 `print(describe("product", product))` -> main.py:7
+bundle:987  `def add(a, b):` -> calculator.py:1
+bundle:988  `result = a + b` -> calculator.py:2
+bundle:989  `return result` -> calculator.py:3
+bundle:991  `def multiply(a, b):` -> calculator.py:6
+bundle:992  `result = a * b` -> calculator.py:7
+bundle:993  `return result` -> calculator.py:8
+bundle:998  `def describe(name, value):` -> utils.py:1
+bundle:999  `return f"{name} = {value}"` -> utils.py:2
+bundle:1005 `total = add(2, 3)` -> main.py:4
+bundle:1006 `product = multiply(total, 4)` -> main.py:5
+bundle:1007 `print(describe("total", total))` -> main.py:6
+bundle:1008 `print(describe("product", product))` -> main.py:7

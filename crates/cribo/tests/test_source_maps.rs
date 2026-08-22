@@ -1457,20 +1457,25 @@ fn stacked_runtimes_merge_maps_across_bundles() {
 #[test]
 fn runtime_refuses_map_after_bundle_replacement() {
     // A bundle rebuilt at the same path while an old instance is running must
-    // not have its (new) map applied to the old in-memory code. The fixture
-    // simulates the replacement by touching its own file before crashing.
-    let dir = make_project(&[
-        (
-            "main.py",
-            "from helper import boom\n\nwith open(__file__, \"a\") as handle:\n    \
-             handle.write(\"# rebuilt\\n\")\nboom()\n",
-        ),
-        (
-            "helper.py",
-            "def boom():\n    raise ValueError(\"kaboom\")\n",
-        ),
-    ]);
+    // not have its (new) map applied to the old in-memory code. The digest of
+    // this build's map is baked into the executing code, so the old process
+    // rejects the replacement map. Simulated here by rebuilding with shifted
+    // lines and running the ORIGINAL bundle against the REBUILT map.
+    let dir = crash_project();
     let bundle = bundle_crash_project(&dir, "--sourcemap=linked");
+    let original_bundle = fs::read(&bundle).expect("read original bundle");
+
+    // Rebuild with different line numbers → different map (and digest).
+    fs::write(
+        dir.path().join("helper.py"),
+        "# shifted\n# shifted again\ndef boom():\n    inner()\n\ndef inner():\n    raise \
+         ValueError(\"kaboom\")\n",
+    )
+    .expect("shift helper lines");
+    bundle_crash_project(&dir, "--sourcemap=linked");
+
+    // Old bundle + new map: the replacement pairing must be refused.
+    fs::write(&bundle, original_bundle).expect("restore original bundle");
     let (ok, _, stderr) = run_python(&bundle, &[]);
     assert!(!ok);
     assert_standard_traceback(&stderr);

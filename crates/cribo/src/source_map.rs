@@ -569,22 +569,33 @@ pub(crate) fn linked_source_mapping_comment(map_file_name: &str) -> String {
     format!("# sourceMappingURL={encoded}\n")
 }
 
-/// Comment recording the SHA-256 of the sibling map at build time.
+/// Placeholder in the runtime template replaced with this build's map digest.
+const RUNTIME_DIGEST_PLACEHOLDER: &str = "__CRIBO_SOURCEMAP_DIGEST__";
+
+/// Bake the map's SHA-256 into the emitted bundle code.
 ///
-/// The runtime refuses a sibling map whose digest does not match, so no
-/// interleaving of concurrent builds (or manual file shuffling) can pair a
-/// bundle with another build's mappings — the digest travels inside the bundle
-/// itself, which is always internally consistent. Emitted for both linked and
-/// external modes (the sibling-map pairing problem is identical); an explicit
-/// `CRIBO_SOURCE_MAPS=<path>` override skips verification.
-pub(crate) fn linked_map_digest_comment(map_json: &str) -> String {
+/// The digest lives inside the executing code itself (not in a trailer read
+/// back from disk), so it is immune to any on-disk replacement of the bundle:
+/// no interleaving of concurrent builds, manual file shuffling, or
+/// redeploy-while-running can pair in-memory code objects with another build's
+/// mappings. The placeholder sits inside a single-line string literal, so the
+/// substitution never shifts line numbers and the extracted mappings stay
+/// valid. With no map, the placeholder becomes an empty string, which the
+/// runtime treats as "no digest known" (verification is skipped).
+pub(crate) fn apply_map_digest(code: &str, map_json: Option<&str>) -> String {
+    use cow_utils::CowUtils as _;
     use sha2::{Digest as _, Sha256};
-    let digest = Sha256::digest(map_json.as_bytes());
-    let mut hex = String::with_capacity(64);
-    for byte in digest {
-        hex.push_str(&format!("{byte:02x}"));
-    }
-    format!("# cribo-sourcemap-sha256={hex}\n")
+
+    let digest_hex = map_json.map_or_else(String::new, |json| {
+        let digest = Sha256::digest(json.as_bytes());
+        let mut hex = String::with_capacity(64);
+        for byte in digest {
+            let _ = std::fmt::Write::write_fmt(&mut hex, format_args!("{byte:02x}"));
+        }
+        hex
+    });
+    code.cow_replace(RUNTIME_DIGEST_PLACEHOLDER, &digest_hex)
+        .into_owned()
 }
 
 /// Comment embedding the source map as a base64 data URL.
@@ -671,6 +682,14 @@ fn is_docstring(stmt: &Stmt) -> bool {
 fn percent_encode_source(path: &str) -> String {
     let mut encoded = String::with_capacity(path.len());
     for character in path.chars() {
+        // On Windows the native separator is '\'; URL consumers only treat
+        // '/' as a path separator, so normalize. (On Unix a backslash is a
+        // legal filename character and passes through untouched.)
+        #[cfg(windows)]
+        if character == '\\' {
+            encoded.push('/');
+            continue;
+        }
         if character < '\u{20}' || matches!(character, '\u{7F}' | '%' | '#' | '?') {
             let _ =
                 std::fmt::Write::write_fmt(&mut encoded, format_args!("%{:02X}", character as u32));

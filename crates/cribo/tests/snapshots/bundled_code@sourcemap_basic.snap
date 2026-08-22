@@ -81,25 +81,25 @@ class _CriboSourceMapRuntime(object):
     _B64 = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
     _CHUNK = 8192
 
-    def __init__(self, mode, bundle_file, os_mod, binascii_mod, threading_mod, traceback_mod, hashlib_mod):
+    def __init__(self, mode, bundle_file, expected_digest, os_mod, binascii_mod, threading_mod, traceback_mod, hashlib_mod):
         self._mode = mode
         self._bundle = bundle_file
         if bundle_file == "<stdin>":
             self._bundle_anchor = bundle_file
         else:
             self._bundle_anchor = os_mod.path.abspath(bundle_file)
+        self._expected_digest = None
+        try:
+            if isinstance(expected_digest, str) and len(expected_digest) == 64:
+                int(expected_digest, 16)
+                self._expected_digest = expected_digest.lower()
+        except ValueError:
+            self._expected_digest = None
         self._cribo_sm_runtime_marker = True
         try:
             self._startup_cwd = os_mod.getcwd()
         except OSError:
             self._startup_cwd = "."
-        self._bundle_stat = None
-        if not bundle_file == "<stdin>":
-            try:
-                stat = os_mod.stat(self._bundle_anchor)
-                self._bundle_stat = stat.st_ino, stat.st_size, stat.st_mtime_ns
-            except (OSError, AttributeError):
-                self._bundle_stat = None
         self._os = os_mod
         self._sys = _cribo_sys
         self._binascii = binascii_mod
@@ -132,11 +132,11 @@ class _CriboSourceMapRuntime(object):
         self._threading.excepthook = self.threading_hook
 
     @classmethod
-    def _bootstrap(cls, mode, bundle_file):
+    def _bootstrap(cls, mode, bundle_file, expected_digest):
         """Import dependencies safely, construct, and install — fail-open.\n\n        Any failure (however exotic the host environment) leaves the program\n        running without remapping instead of aborting it at startup.\n        """
         try:
             script = None if bundle_file == "<stdin>" else bundle_file
-            runtime = cls(mode, bundle_file, _cribo_sm_import("os", script), _cribo_sm_import("binascii", script), _cribo_sm_import("threading", script), _cribo_sm_import("traceback", script), _cribo_sm_import("hashlib", script))
+            runtime = cls(mode, bundle_file, expected_digest, _cribo_sm_import("os", script), _cribo_sm_import("binascii", script), _cribo_sm_import("threading", script), _cribo_sm_import("traceback", script), _cribo_sm_import("hashlib", script))
             runtime.install()
         except BaseException:
             pass
@@ -146,13 +146,6 @@ class _CriboSourceMapRuntime(object):
         env = self._os.environ.get("CRIBO_SOURCE_MAPS", "")
         if env == "0":
             return None
-        stale = False
-        if self._bundle_stat is not None:
-            try:
-                stat = self._os.stat(self._bundle_anchor)
-                stale = not (stat.st_ino, stat.st_size, stat.st_mtime_ns) == self._bundle_stat
-            except (OSError, AttributeError):
-                stale = True
         if env not in ("", "1", "true", "yes", "on"):
             path = env
             if not self._os.path.isabs(path):
@@ -160,11 +153,9 @@ class _CriboSourceMapRuntime(object):
             return path, self._os.path.dirname(self._os.path.abspath(path)), False
         bundle = self._bundle_anchor
         if self._mode == "inline":
-            if bundle == "<stdin>" or stale:
+            if bundle == "<stdin>":
                 return None
-            return None, self._os.path.dirname(bundle), False
-        if stale:
-            return None
+            return None, self._os.path.dirname(bundle), True
         sibling = bundle + ".map"
         if self._mode == "linked":
             if self._os.path.exists(sibling):
@@ -223,36 +214,14 @@ class _CriboSourceMapRuntime(object):
             return -1
         return found + base64_at + 7
 
-    def _bundle_expected_digest(self, *, _open=open, _len=len, _int=int):
-        """SHA-256 hex the bundle records for its linked map, or None."""
+    def _map_matches_digest(self, chunks_factory, *, _bex=BaseException):
+        """False only when a build digest is known and the map bytes disagree.\n\n        The SHA-256 of this build's map is baked into the executing code at\n        build time, so it is immune to any on-disk replacement of the bundle —\n        no interleaving of concurrent builds, manual file shuffling, or\n        redeploy-while-running can pair these code objects with another\n        build's mappings. Hashing streams the same chunk source later used for\n        decoding. Verification errors fail open (the subsequent map read would\n        surface them anyway).\n        """
         try:
-            handle = _open(self._bundle_anchor, "rb")
-        except OSError:
-            return None
-        try:
-            found = self._find_marker_tail(handle, b"# cribo-sourcemap-sha256=")
-            if found < 0:
-                return None
-            handle.seek(found)
-            digest = handle.read(64)
-        finally:
-            handle.close()
-        if not _len(digest) == 64:
-            return None
-        try:
-            _int(digest, 16)
-        except ValueError:
-            return None
-        return digest.decode("ascii").lower()
-
-    def _map_matches_bundle(self, handle, *, _bex=BaseException):
-        """False only when the bundle records a digest and the map disagrees.\n\n        This is what makes sibling-map publication safe against interleaved\n        concurrent builds and manual file shuffling: the digest travels inside\n        the bundle, which is always internally consistent, so a sibling map\n        from a different build is detected and ignored. Hashing reads from the\n        same open handle later used for decoding, so the verified bytes are the\n        decoded bytes. Verification errors fail open (the subsequent map read\n        would surface them anyway).\n        """
-        try:
-            expected = self._bundle_expected_digest()
+            expected = self._expected_digest
             if expected is None:
                 return True
             hasher = self._hashlib.sha256()
-            for chunk in self._handle_chunks(handle):
+            for chunk in chunks_factory():
                 hasher.update(chunk)
             return hasher.hexdigest() == expected
         except _bex:
@@ -495,8 +464,6 @@ class _CriboSourceMapRuntime(object):
         max_needed = _max(needed0)
         handle = _open(self._bundle_anchor if map_path is None else map_path, "rb")
         try:
-            if map_path is not None and verify and not self._map_matches_bundle(handle):
-                return None
             if map_path is None:
 
                 def chunks_factory():
@@ -505,6 +472,8 @@ class _CriboSourceMapRuntime(object):
 
                 def chunks_factory():
                     return self._handle_chunks(handle)
+            if verify and not self._map_matches_digest(chunks_factory):
+                return None
             sources, table0 = self._scan(chunks_factory, needed0, max_needed)
         finally:
             handle.close()
@@ -522,12 +491,17 @@ class _CriboSourceMapRuntime(object):
         json = self._import("json")
         handle = _open(self._bundle_anchor if map_path is None else map_path, "rb")
         try:
-            if map_path is not None and verify and not self._map_matches_bundle(handle):
-                return None
             if map_path is None:
-                raw = b"".join(self._inline_chunks(handle))
+
+                def fallback_chunks():
+                    return self._inline_chunks(handle)
             else:
-                raw = b"".join(self._handle_chunks(handle))
+
+                def fallback_chunks():
+                    return self._handle_chunks(handle)
+            if verify and not self._map_matches_digest(fallback_chunks):
+                return None
+            raw = b"".join(fallback_chunks())
         finally:
             handle.close()
         data = json.loads(raw.decode("utf-8"))
@@ -763,7 +737,7 @@ class _CriboSourceMapRuntime(object):
                 self._write_frames(tb, maps_by_file, write, limit, summaries)
             self._write_exception_only(exc, write)
 
-    def _try_render(self, exc_value, traceback_obj, prefix, *, _getattr=getattr, _bex=BaseException):
+    def _try_render(self, exc_value, traceback_obj, prefix, *, _getattr=getattr, _bex=BaseException, _set=set, _len=len):
         """Attempt a remapped rendering to stderr; True on success.\n\n        Never raises and never masks the original exception: any failure in\n        this runtime returns False so callers can delegate to the previous\n        hook.\n        """
         if _getattr(self._local, "in_hook", False) or exc_value is None:
             return False
@@ -772,11 +746,18 @@ class _CriboSourceMapRuntime(object):
         try:
             if self._chain_has_group(exc_value):
                 return False
+            anchors_by_name = {}
+            for runtime in self._registered_runtimes():
+                bundle_file = _getattr(runtime, "_bundle", None)
+                anchor = _getattr(runtime, "_bundle_anchor", None)
+                anchors_by_name.setdefault(bundle_file, _set()).add(anchor)
             maps_by_file = {}
             for runtime in self._registered_runtimes():
                 try:
                     bundle_file = runtime._bundle
                     if bundle_file in maps_by_file:
+                        continue
+                    if _len(anchors_by_name.get(bundle_file, ())) > 1:
                         continue
                     needed = self._collect_needed(exc_value, traceback_obj, bundle_file)
                     if not needed:
@@ -833,16 +814,19 @@ class _CriboSourceMapRuntime(object):
             runtimes.append(self)
         return runtimes
 
-    def _notify_custom_hook(self, prev, default, call, prev_attr, *, _bex=BaseException, _getattr=getattr):
-        """Invoke a chained hook after a successful remap when it is custom.\n\n        A successful remap replaces the *default* printer, but preinstalled\n        custom hooks (error reporters, sitecustomize) must still observe the\n        exception; their own output is theirs to manage. Earlier cribo\n        runtimes in the chain are traversed (via their own captured\n        predecessor, named by `prev_attr`) rather than invoked, so a custom\n        hook installed before any bundle still gets notified while the default\n        printer is never reached (which would duplicate the traceback). When\n        the interpreter default is unavailable for comparison (e.g.\n        `threading.__excepthook__` before Python 3.10) no notification happens\n        — better to skip a custom hook than to double-print via the default\n        one.\n        """
-        hops = 0
-        while prev is not None and hops < 32:
+    def _notify_custom_hook(self, prev, default, call, prev_attr, *, _bex=BaseException, _getattr=getattr, _set=set, _id=id):
+        """Invoke a chained hook after a successful remap when it is custom.\n\n        A successful remap replaces the *default* printer, but preinstalled\n        custom hooks (error reporters, sitecustomize) must still observe the\n        exception; their own output is theirs to manage. Earlier cribo\n        runtimes in the chain are traversed (via their own captured\n        predecessor, named by `prev_attr`) rather than invoked, so a custom\n        hook installed before any bundle still gets notified while the default\n        printer is never reached (which would duplicate the traceback). Cycle\n        detection guards the traversal, and a chain that still ends on a cribo\n        hook invokes nothing (its registry-aware renderer would print the\n        traceback a second time). When the interpreter default is unavailable\n        for comparison (e.g. `threading.__excepthook__` before Python 3.10) no\n        notification happens — better to skip a custom hook than to\n        double-print via the default one.\n        """
+        seen = _set()
+        while prev is not None and _id(prev) not in seen:
+            seen.add(_id(prev))
             bound_to = _getattr(prev, "__self__", None)
             if bound_to is not None and _getattr(bound_to, "_cribo_sm_runtime_marker", False):
                 prev = _getattr(bound_to, prev_attr, None)
-                hops += 1
                 continue
             break
+        bound_to = _getattr(prev, "__self__", None)
+        if bound_to is not None and _getattr(bound_to, "_cribo_sm_runtime_marker", False):
+            return
         if default is None or prev is None or prev is default:
             return
         try:
@@ -878,7 +862,7 @@ class _CriboSourceMapRuntime(object):
             self._notify_custom_hook(self._prev_unraisablehook, self._default_unraisablehook, lambda hook: hook(unraisable), "_prev_unraisablehook")
             return
         self._prev_unraisablehook(unraisable)
-_CriboSourceMapRuntime._bootstrap("linked", globals().get("__file__", "<stdin>"))
+_CriboSourceMapRuntime._bootstrap("linked", globals().get("__file__", "<stdin>"), "a12cc2500424ec3363fdd28632bb2c8aefea11f8d96e1abfe1257d55772a8631")
 import sys as _sys
 import importlib as _importlib
 class _CriboModule():
@@ -1026,5 +1010,4 @@ total = add(2, 3)
 product = multiply(total, 4)
 print(describe("total", total))
 print(describe("product", product))
-# cribo-sourcemap-sha256=c36dd7f51595374bafef64709ded727675b756b31a07e0e1dd59bfdc790bf228
 # sourceMappingURL=bundled.py.map
