@@ -743,8 +743,13 @@ class _CriboSourceMapRuntime(object):
             tb = _getattr(exc, "__traceback__", None)
             limit = self._effective_tb_limit()
             if tb is not None and (limit is None or limit > 0):
+                total_frames = 0
+                probe = tb
+                while probe is not None:
+                    total_frames += 1
+                    probe = probe.tb_next
                 try:
-                    summaries = self._traceback.TracebackException(_type(exc), exc, tb, lookup_lines=False).stack
+                    summaries = self._traceback.TracebackException(_type(exc), exc, tb, limit=total_frames, lookup_lines=False).stack
                 except _bex:
                     summaries = None
                 write("Traceback (most recent call last):\n")
@@ -872,7 +877,7 @@ class _CriboSourceMapRuntime(object):
             self._notify_custom_hook(self._prev_unraisablehook, self._default_unraisablehook, lambda hook: hook(unraisable), "_prev_unraisablehook", "_default_unraisablehook")
             return
         self._prev_unraisablehook(unraisable)
-_CriboSourceMapRuntime._bootstrap("linked", globals().get("__file__", "<stdin>"), "e892aae89904ceb493d1b2e4def1f0b19e81b73861a30ac51c7c6f8a2f5d395f")
+_CriboSourceMapRuntime._bootstrap("linked", globals().get("__file__", "<stdin>"), "d1929b8451a8662aa287cb9620ed4718dbb5db55abe122d15d965adbc4bdc823")
 del _cribo_sys, _cribo_sm_import, _CriboSmStream, _CriboSourceMapRuntime
 import sys as _sys
 import importlib as _importlib

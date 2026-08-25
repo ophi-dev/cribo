@@ -1022,10 +1022,22 @@ class _CriboSourceMapRuntime(object):
             limit = self._effective_tb_limit()
             if tb is not None and (limit is None or limit > 0):
                 # Standard per-frame summaries (with PEP 657 positions on
-                # 3.11+) render the frames this runtime does not remap.
+                # 3.11+) render the frames this runtime does not remap. The
+                # extraction passes an explicit limit spanning the whole
+                # traceback: left implicit, the traceback module would honor a
+                # positive sys.tracebacklimit by keeping the FIRST n frames,
+                # while this renderer (like the interpreter's C printer) keeps
+                # the LAST n — the truncated list would misalign or fall out
+                # of range against raw traceback indices in _write_frames,
+                # which applies the real limit itself.
+                total_frames = 0
+                probe = tb
+                while probe is not None:
+                    total_frames += 1
+                    probe = probe.tb_next
                 try:
                     summaries = self._traceback.TracebackException(
-                        _type(exc), exc, tb, lookup_lines=False
+                        _type(exc), exc, tb, limit=total_frames, lookup_lines=False
                     ).stack
                 except _bex:
                     summaries = None

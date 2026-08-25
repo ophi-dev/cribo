@@ -368,9 +368,12 @@ impl ParallelWalker<'_> {
                     orig_anchor.map(|range| (g.name.range(), range, o.node_index().load()))
                 }
                 (Stmt::ClassDef(g), Stmt::ClassDef(o)) => {
-                    // The inliner regenerates inlined class names with a
-                    // default range, so fall back to the base-class /
-                    // metaclass argument list, which also sits on the header.
+                    // The inliner preserves the original identifier range on
+                    // renamed class names, so the name anchor holds even for
+                    // `class C:` headers with no argument list. The
+                    // base-class / metaclass argument list stays as a
+                    // fallback for any other transformation that regenerates
+                    // the identifier with a synthetic (default) range.
                     let orig_anchor = Some(o.name.range())
                         .filter(|range| o.range().contains(range.start()))
                         .or_else(|| {

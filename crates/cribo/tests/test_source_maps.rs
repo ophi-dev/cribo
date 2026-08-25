@@ -1112,8 +1112,8 @@ fn map_covers_match_case_headers_and_decorators() {
     // 0-based original lines: 4 and 5 are the def decorators; 6 is the
     // decorated `def run(value):` header itself; 8, 10, and 12 are the `case`
     // headers; 16 and 17 are the decorated class's decorator and header (the
-    // inliner regenerates class names with synthetic ranges, so the header
-    // anchor falls back to the base-class list).
+    // inliner preserves the original name range on renamed identifiers, and
+    // the base-class list serves as a fallback anchor).
     for header_line in [4, 5, 6, 8, 10, 12, 16, 17] {
         assert!(
             mapped_helper_lines.contains(&header_line),
@@ -1763,5 +1763,105 @@ fn bundle_namespace_is_clean_of_runtime_helpers() {
     assert!(
         stdout.contains("LEAKED: []"),
         "runtime helper names must not leak into the bundle namespace: {stdout}"
+    );
+}
+
+#[test]
+fn map_covers_decorated_class_without_argument_list() {
+    // `class Widget:` has no base-class list to fall back on, and the inliner
+    // rewrites every inlined class name — the header anchor must survive via
+    // the preserved identifier range, or exceptions CPython attributes to the
+    // class header during construction (e.g. a descriptor raising from
+    // `__set_name__`) stay on bundle coordinates.
+    let dir = make_project(&[
+        (
+            "main.py",
+            "from helper import Widget\n\nprint(Widget().value)\n",
+        ),
+        (
+            "helper.py",
+            "def trace(cls):\n    return cls\n\n\n@trace\nclass Widget:\n    def \
+             __init__(self):\n        self.value = \"widget value\"\n",
+        ),
+    ]);
+    let out = dir.path().join("bundle.py");
+    let (ok, _, stderr) = run_cribo(&[
+        "--entry",
+        &entry_arg(&dir),
+        "--output",
+        &out.to_string_lossy(),
+        "--sourcemap=linked",
+    ]);
+    assert!(ok, "bundling must succeed: {stderr}");
+    let map_json = fs::read_to_string(dir.path().join("bundle.py.map")).expect("read map");
+    let map = parse_map(&map_json);
+
+    let helper_id = (0..map.get_sources().count() as u32)
+        .find(|id| {
+            map.get_source(*id)
+                .is_some_and(|s| s.ends_with("helper.py"))
+        })
+        .expect("helper.py in sources");
+    let mapped_helper_lines: Vec<u32> = map
+        .get_tokens()
+        .filter(|token| token.get_source_id() == Some(helper_id))
+        .map(|token| token.get_src_line())
+        .collect();
+    // 0-based: 4 is the `@trace` decorator, 5 the bare `class Widget:` header.
+    for header_line in [4, 5] {
+        assert!(
+            mapped_helper_lines.contains(&header_line),
+            "helper.py 0-based line {header_line} (decorator or bare class header) must be \
+             mapped; mapped lines: {mapped_helper_lines:?}"
+        );
+    }
+}
+
+#[test]
+fn truncated_traceback_keeps_pep657_on_unmapped_frames() {
+    // With a positive sys.tracebacklimit the runtime keeps the LAST n frames
+    // (like the interpreter's C printer), while the traceback module keeps
+    // the FIRST n. The PEP 657 summaries must therefore be extracted
+    // untruncated, or a retained unmapped frame would index past (or into the
+    // wrong slot of) the shortened list and lose its caret anchors.
+    let dir = make_project(&[
+        (
+            "main.py",
+            "import importlib.util\nimport os\n\nfrom helper import boom\n\n__import__(\"sys\")\
+             .tracebacklimit = 2\nspec = importlib.util.spec_from_file_location(\"ext\", \
+             os.path.join(os.path.dirname(os.path.abspath(__file__)), \"ext.py\"))\next = \
+             importlib.util.module_from_spec(spec)\nspec.loader.exec_module(ext)\nboom(ext)\n",
+        ),
+        ("helper.py", "def boom(ext):\n    ext.go()\n"),
+    ]);
+    let bundle = bundle_crash_project(&dir, "--sourcemap=linked");
+    // Placed next to the bundle and loaded by explicit path at run time, so
+    // cribo never bundles it: its frames stay unmapped by design.
+    fs::write(
+        dir.path().join("ext.py"),
+        "def go():\n    left = 1\n    return left + \"boom\"\n",
+    )
+    .expect("write ext.py");
+
+    let (ok, _, stderr) = run_python(&bundle, &[]);
+    assert!(!ok);
+    // Retained frames: helper.boom (remapped) and ext.go (unmapped).
+    assert!(
+        stderr.contains("helper.py\", line 2, in boom"),
+        "the retained bundle frame must remap: {stderr}"
+    );
+    assert!(
+        stderr.contains("ext.py\", line 3, in go"),
+        "the retained external frame must render: {stderr}"
+    );
+    assert!(
+        !stderr.contains("main.py"),
+        "tracebacklimit = 2 must drop the module frame: {stderr}"
+    );
+    // The caret line proves the frame came from the standard summaries (the
+    // plain fallback prints only the file line and source text).
+    assert!(
+        stderr.contains('^'),
+        "the unmapped frame must keep its PEP 657 carets: {stderr}"
     );
 }
