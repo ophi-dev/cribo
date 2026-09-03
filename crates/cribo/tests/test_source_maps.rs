@@ -411,6 +411,17 @@ fn run_python(bundle: &Path, envs: &[(&str, &str)]) -> (bool, String, String) {
     )
 }
 
+/// Whether the selected test interpreter is at least Python 3.`minor`.
+fn python_at_least(minor: u8) -> bool {
+    Command::new(common::get_python_executable())
+        .args([
+            "-c",
+            &format!("import sys; raise SystemExit(0 if sys.version_info >= (3, {minor}) else 1)"),
+        ])
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
 /// Assert stderr shows the remapped traceback pointing at original files.
 fn assert_remapped(stderr: &str) {
     assert!(
@@ -808,6 +819,37 @@ fn env_var_enables_sourcemap_generation() {
 }
 
 #[test]
+fn invalid_sourcemap_env_values_warn_and_are_ignored() {
+    let dir = fixture_project();
+    let out = dir.path().join("bundle.py");
+    let output = Command::new(env!("CARGO_BIN_EXE_cribo"))
+        .args([
+            "--entry",
+            &entry_arg(&dir),
+            "--output",
+            &out.to_string_lossy(),
+        ])
+        .env("CRIBO_SOURCEMAP", "lnked")
+        .env("CRIBO_SOURCES_CONTENT", "sometimes")
+        .output()
+        .expect("run cribo binary");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "bundling must succeed: {stderr}");
+    assert!(
+        stderr.contains("Ignoring CRIBO_SOURCEMAP='lnked'"),
+        "invalid sourcemap mode must be reported: {stderr}"
+    );
+    assert!(
+        stderr.contains("Ignoring CRIBO_SOURCES_CONTENT='sometimes'"),
+        "invalid sources-content value must be reported: {stderr}"
+    );
+    assert!(
+        !dir.path().join("bundle.py.map").exists(),
+        "invalid environment values must leave source maps disabled"
+    );
+}
+
+#[test]
 fn runtime_keeps_thread_sys_exit_silent() {
     let dir = make_project(&[
         (
@@ -947,6 +989,9 @@ fn runtime_honors_tracebacklimit() {
 
 #[test]
 fn runtime_renders_exception_notes() {
+    if !python_at_least(11) {
+        return;
+    }
     let dir = make_project(&[
         ("main.py", "from helper import boom\n\nboom()\n"),
         (
@@ -1021,6 +1066,9 @@ fn map_covers_elif_and_except_headers() {
 
 #[test]
 fn runtime_keeps_name_error_suggestions() {
+    if !python_at_least(10) {
+        return;
+    }
     let dir = make_project(&[
         ("main.py", "from helper import go\n\ngo()\n"),
         (
@@ -1152,6 +1200,7 @@ fn runtime_survives_shadowed_builtins() {
     assert!(!stderr.contains("bundle.py\", line"), "{stderr}");
 }
 
+/// A relative bundle path remains anchored after user code changes directory.
 #[test]
 fn runtime_survives_chdir_before_crash() {
     // A bundle launched via a relative path that chdirs away before crashing
@@ -1184,6 +1233,7 @@ fn runtime_survives_chdir_before_crash() {
     assert!(stderr.contains("kaboom after chdir"));
 }
 
+/// Stacked source-map runtimes render one traceback instead of chaining printers.
 #[test]
 fn stacked_runtimes_do_not_duplicate_tracebacks() {
     // Two source-mapped bundles executed in one interpreter stack their hooks;
@@ -1234,6 +1284,9 @@ fn stacked_runtimes_do_not_duplicate_tracebacks() {
 
 #[test]
 fn runtime_remaps_when_group_is_suppressed() {
+    if !python_at_least(11) {
+        return;
+    }
     // A caught ExceptionGroup replaced via `raise ... from None` never
     // renders; its hidden presence in __context__ must not force the
     // unremapped fallback for the visible ordinary exception.
@@ -1863,5 +1916,398 @@ fn truncated_traceback_keeps_pep657_on_unmapped_frames() {
     assert!(
         stderr.contains('^'),
         "the unmapped frame must keep its PEP 657 carets: {stderr}"
+    );
+}
+
+#[test]
+fn bootstrap_survives_shadowed_transitive_stdlib_imports() {
+    // The runtime's own imports resolve through a filtered path snapshot, but
+    // modules imported *while those stdlib modules execute* (e.g. traceback
+    // importing textwrap) must be protected too: an adjacent project file
+    // named like a stdlib dependency must neither execute during bootstrap
+    // nor disable remapping by raising.
+    let dir = crash_project();
+    let bundle = bundle_crash_project(&dir, "--sourcemap=linked");
+    fs::write(
+        dir.path().join("textwrap.py"),
+        "print(\"SHADOWED TEXTWRAP EXECUTED\")\nraise RuntimeError(\"shadowed textwrap\")\n",
+    )
+    .expect("write shadowing textwrap.py");
+
+    let (ok, stdout, stderr) = run_python(&bundle, &[]);
+    assert!(!ok);
+    assert!(
+        !stdout.contains("SHADOWED TEXTWRAP EXECUTED"),
+        "the adjacent textwrap.py must never execute during bootstrap: {stdout}"
+    );
+    assert_remapped(&stderr);
+}
+
+#[cfg(unix)]
+#[test]
+fn sources_with_backslashes_are_encoded_and_decoded() {
+    // On Unix a backslash is a legal filename character but not a valid
+    // unescaped URL-path character; `sources` entries must carry %5C and the
+    // runtime must restore the filesystem spelling before file access.
+    let dir = TempDir::new().expect("create temp dir");
+    let src_dir = dir.path().join("we\\ird");
+    fs::create_dir_all(&src_dir).expect("create source dir");
+    fs::write(
+        src_dir.join("main.py"),
+        "from helper import boom\n\nboom()\n",
+    )
+    .expect("write main.py");
+    fs::write(
+        src_dir.join("helper.py"),
+        "def boom():\n    raise ValueError(\"kaboom\")\n",
+    )
+    .expect("write helper.py");
+
+    let out = dir.path().join("bundle.py");
+    let (ok, _, stderr) = run_cribo(&[
+        "--entry",
+        &src_dir.join("main.py").to_string_lossy(),
+        "--output",
+        &out.to_string_lossy(),
+        "--sourcemap=linked",
+    ]);
+    assert!(ok, "bundling must succeed: {stderr}");
+    let map_json = fs::read_to_string(dir.path().join("bundle.py.map")).expect("read map");
+    assert!(
+        map_json.contains("we%5Cird"),
+        "backslashes in source paths must be percent-encoded: {map_json}"
+    );
+
+    let (ok, _, stderr) = run_python(&out, &[]);
+    assert!(!ok);
+    assert!(
+        stderr.contains("we\\ird/helper.py\", line 2, in boom"),
+        "the runtime must decode %5C back to a backslash for display and file access: {stderr}"
+    );
+    assert!(
+        stderr.contains("raise ValueError(\"kaboom\")"),
+        "the original source line must load from the decoded path: {stderr}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn runtime_resolves_symlinked_bundle_to_sibling_map() {
+    // A bundle launched through a deployment symlink keeps the symlink
+    // spelling in __file__; the sibling map lives next to the real file and
+    // must still be found.
+    let dir = crash_project();
+    let bundle = bundle_crash_project(&dir, "--sourcemap=linked");
+    let link_dir = TempDir::new().expect("create link dir");
+    let link = link_dir.path().join("app");
+    std::os::unix::fs::symlink(&bundle, &link).expect("create symlink");
+
+    let (ok, _, stderr) = run_python(&link, &[]);
+    assert!(!ok);
+    assert_remapped(&stderr);
+}
+
+#[test]
+fn rebuilt_bundle_at_same_path_declines_stale_remap() {
+    // Bundle A stays imported while its file is rebuilt in place as bundle B;
+    // a traceback through A's retained code objects shares B's filename
+    // spelling and anchor, but B's mappings do not describe A's code. The
+    // runtimes' build digests differ, so the ambiguity check must decline
+    // rather than apply B's map to A's frames.
+    let dir = make_project(&[
+        (
+            "main_v1.py",
+            "def boom():\n    raise ValueError(\"kaboom v1\")\n\n\nassert callable(boom)\n",
+        ),
+        (
+            "main_v2.py",
+            "# filler line so v2 maps differently\n# more filler\n\n\ndef boom():\n    raise \
+             ValueError(\"kaboom v2\")\n\n\nassert callable(boom)\n",
+        ),
+        (
+            "driver.py",
+            "import importlib.util\nimport os\nimport shutil\nimport sys\n\n# The rebuild \
+             happens within pyc mtime granularity; a stale cache would\n# silently re-execute \
+             v1 and mask the scenario.\nsys.dont_write_bytecode = True\n\nbase = \
+             os.path.dirname(os.path.abspath(__file__))\ntarget = os.path.join(base, \
+             \"app.py\")\n\n\ndef load(tag):\n    spec = \
+             importlib.util.spec_from_file_location(\"app_\" + tag, target)\n    module = \
+             importlib.util.module_from_spec(spec)\n    spec.loader.exec_module(module)\n    \
+             return module\n\n\nshutil.copyfile(os.path.join(base, \"app_v1.py\"), \
+             target)\nshutil.copyfile(os.path.join(base, \"app_v1.py.map\"), target + \
+             \".map\")\nold = load(\"v1\")\nshutil.copyfile(os.path.join(base, \
+             \"app_v2.py\"), target)\nshutil.copyfile(os.path.join(base, \
+             \"app_v2.py.map\"), target + \".map\")\nload(\"v2\")\nold.boom()\n",
+        ),
+    ]);
+    for version in ["v1", "v2"] {
+        let (ok, _, stderr) = run_cribo(&[
+            "--entry",
+            &dir.path()
+                .join(format!("main_{version}.py"))
+                .to_string_lossy(),
+            "--output",
+            &dir.path()
+                .join(format!("app_{version}.py"))
+                .to_string_lossy(),
+            "--sourcemap=linked",
+        ]);
+        assert!(ok, "bundling {version} must succeed: {stderr}");
+    }
+
+    let (ok, _, stderr) = run_python(&dir.path().join("driver.py"), &[]);
+    assert!(!ok);
+    assert!(
+        stderr.contains("kaboom v1"),
+        "the retained v1 function must raise: {stderr}"
+    );
+    assert!(
+        !stderr.contains("main_v1.py") && !stderr.contains("main_v2.py"),
+        "neither build's mappings may be applied to ambiguous same-path frames: {stderr}"
+    );
+    assert!(
+        stderr.contains("app.py\", line"),
+        "the declined traceback must stay on bundle coordinates: {stderr}"
+    );
+    assert_eq!(
+        stderr.matches("Traceback (most recent call last):").count(),
+        1,
+        "exactly one traceback must print: {stderr}"
+    );
+}
+
+#[test]
+fn digest_survives_entry_docstring_with_placeholder() {
+    // The entry docstring can precede the injected prologue in the emitted
+    // bundle, so a docstring containing the placeholder spelling is the first
+    // textual match. The substitution is anchored on the bootstrap line: the
+    // docstring (and thus the program's __doc__) must stay untouched and
+    // digest verification must still pass.
+    let dir = make_project(&[(
+        "main.py",
+        "\"\"\"Docs mention __CRIBO_SOURCEMAP_DIGEST__ here.\"\"\"\n\nprint(repr(__doc__))\
+         \nraise ValueError(\"kaboom\")\n",
+    )]);
+    let out = dir.path().join("bundle.py");
+    let (ok, _, stderr) = run_cribo(&[
+        "--entry",
+        &entry_arg(&dir),
+        "--output",
+        &out.to_string_lossy(),
+        "--sourcemap=linked",
+    ]);
+    assert!(ok, "bundling must succeed: {stderr}");
+
+    let (ok, stdout, stderr) = run_python(&out, &[]);
+    assert!(!ok);
+    assert!(
+        stdout.contains("__CRIBO_SOURCEMAP_DIGEST__"),
+        "the docstring (module __doc__) must keep the placeholder verbatim: {stdout}"
+    );
+    // Remapping proves the bootstrap line received the real digest.
+    assert!(
+        stderr.contains("main.py\", line 4, in <module>"),
+        "traceback must remap, proving digest verification passed: {stderr}"
+    );
+}
+
+#[test]
+fn bare_output_filename_anchors_sources_to_current_directory() {
+    let dir = fixture_project();
+    let output = Command::new(env!("CARGO_BIN_EXE_cribo"))
+        .args([
+            "--entry",
+            "main.py",
+            "--output",
+            "bundle.py",
+            "--sourcemap=linked",
+        ])
+        .current_dir(dir.path())
+        .output()
+        .expect("run cribo");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "bundling must succeed: {stderr}");
+
+    let map_json = fs::read_to_string(dir.path().join("bundle.py.map")).expect("read map");
+    let map = parse_map(&map_json);
+    let sources: Vec<&str> = map.get_sources().collect();
+    assert!(
+        sources.contains(&"helper.py"),
+        "a bare output name must resolve sources relative to the current directory: {sources:?}"
+    );
+    assert!(
+        sources.iter().all(|source| !source.starts_with("tmp/")),
+        "absolute paths must not be stripped into cwd-relative nonsense: {sources:?}"
+    );
+}
+
+#[test]
+fn runtime_renders_the_traceback_passed_to_excepthook() {
+    let dir = make_project(&[
+        (
+            "main.py",
+            "from helper import boom\n\ntry:\n    boom()\nexcept Exception as error:\n    saved = \
+             error.__traceback__\n    error.__traceback__ = None\n    \
+             __import__(\"sys\").excepthook(type(error), error, saved)\n",
+        ),
+        (
+            "helper.py",
+            "def boom():\n    raise ValueError(\"saved traceback kaboom\")\n",
+        ),
+    ]);
+    let bundle = bundle_crash_project(&dir, "--sourcemap=linked");
+    let (ok, _, stderr) = run_python(&bundle, &[]);
+    assert!(
+        ok,
+        "manual excepthook invocation must not fail the process: {stderr}"
+    );
+    assert!(
+        stderr.contains("helper.py\", line 2, in boom"),
+        "the hook argument must drive frame rendering after __traceback__ is cleared: {stderr}"
+    );
+    assert!(stderr.contains("saved traceback kaboom"), "{stderr}");
+}
+
+#[test]
+fn wrapper_initialization_call_maps_to_import_site() {
+    let dir = make_project(&[
+        ("main.py", "import effects\n"),
+        (
+            "effects.py",
+            "print(\"loading effects\")\nraise ValueError(\"wrapper import kaboom\")\n",
+        ),
+    ]);
+    let bundle = bundle_crash_project(&dir, "--sourcemap=linked");
+    let (ok, _, stderr) = run_python(&bundle, &[]);
+    assert!(!ok);
+    assert!(
+        stderr.contains("main.py\", line 1, in <module>"),
+        "the synthesized init call must map to `import effects`: {stderr}"
+    );
+    assert!(
+        stderr.contains("effects.py\", line 2"),
+        "the wrapper body must remain mapped to effects.py: {stderr}"
+    );
+    assert!(
+        !stderr.contains("bundle.py\", line"),
+        "no user-facing frame should expose bundle coordinates: {stderr}"
+    );
+}
+
+#[test]
+fn renamed_function_frames_use_original_names() {
+    let dir = make_project(&[
+        (
+            "main.py",
+            "from first import boom as first_boom\nfrom second import boom as second_boom\n\n\
+             assert callable(first_boom)\nsecond_boom()\n",
+        ),
+        ("first.py", "def boom():\n    return \"first\"\n"),
+        (
+            "second.py",
+            "def boom():\n    raise ValueError(\"renamed function kaboom\")\n",
+        ),
+    ]);
+    let bundle = bundle_crash_project(&dir, "--sourcemap=linked");
+    let bundled_code = fs::read_to_string(&bundle).expect("read bundle");
+    assert!(
+        bundled_code.contains("def _cribo_"),
+        "the fixture must exercise conflict-driven function renaming"
+    );
+    let map_json = fs::read_to_string(dir.path().join("bundle.py.map")).expect("read map");
+    let map = parse_map(&map_json);
+    assert!(
+        map.get_names().any(|name| name == "boom"),
+        "the source map must preserve the original function name"
+    );
+
+    let (ok, _, stderr) = run_python(&bundle, &[]);
+    assert!(!ok);
+    assert!(
+        stderr.contains("second.py\", line 2, in boom"),
+        "traceback names must come from the source map: {stderr}"
+    );
+    assert!(
+        !stderr.contains("in _cribo_"),
+        "synthetic conflict-resolution names must not leak: {stderr}"
+    );
+}
+
+#[test]
+fn mapped_frames_keep_pep657_carets() {
+    if !python_at_least(11) {
+        return;
+    }
+    let dir = make_project(&[
+        ("main.py", "from helper import boom\n\nboom()\n"),
+        ("helper.py", "def boom():\n    return 1 + \"boom\"\n"),
+    ]);
+    let bundle = bundle_crash_project(&dir, "--sourcemap=linked");
+    let (ok, _, stderr) = run_python(&bundle, &[]);
+    assert!(!ok);
+    assert!(
+        stderr.contains("helper.py\", line 2, in boom"),
+        "the raising frame must remap: {stderr}"
+    );
+    assert!(
+        stderr.contains('^'),
+        "mapped frames must retain PEP 657 position indicators: {stderr}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn non_utf8_source_paths_are_encoded_and_decoded() {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt as _};
+
+    let dir = TempDir::new().expect("create temp dir");
+    let mut directory_name = b"src-".to_vec();
+    directory_name.push(0xFF);
+    let source_dir = dir.path().join(OsString::from_vec(directory_name));
+    fs::create_dir_all(&source_dir).expect("create non-UTF-8 source directory");
+    fs::write(
+        source_dir.join("main.py"),
+        "from helper import boom\n\nboom()\n",
+    )
+    .expect("write main.py");
+    fs::write(
+        source_dir.join("helper.py"),
+        "def boom():\n    raise ValueError(\"non-utf8 path kaboom\")\n",
+    )
+    .expect("write helper.py");
+
+    let bundle = dir.path().join("bundle.py");
+    let output = Command::new(env!("CARGO_BIN_EXE_cribo"))
+        .arg("--entry")
+        .arg(source_dir.join("main.py"))
+        .arg("--output")
+        .arg(&bundle)
+        .arg("--sourcemap=linked")
+        .output()
+        .expect("run cribo");
+    assert!(
+        output.status.success(),
+        "bundling must succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let map_json = fs::read_to_string(dir.path().join("bundle.py.map")).expect("read map");
+    assert!(
+        map_json.contains("src-%FF"),
+        "invalid path bytes must be encoded losslessly: {map_json}"
+    );
+    assert!(
+        !map_json.contains('\u{FFFD}'),
+        "lossy replacement characters must not enter source paths"
+    );
+
+    let (ok, _, stderr) = run_python(&bundle, &[]);
+    assert!(!ok);
+    assert!(
+        stderr.contains("helper.py\", line 2, in boom"),
+        "the encoded source path must remap: {stderr}"
+    );
+    assert!(
+        stderr.contains("raise ValueError(\"non-utf8 path kaboom\")"),
+        "the runtime must reopen the original non-UTF-8 path: {stderr}"
     );
 }

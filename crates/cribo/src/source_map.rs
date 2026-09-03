@@ -13,7 +13,7 @@ use std::borrow::Cow;
 use anyhow::Context as _;
 use oxc_sourcemap::{SourceMap, Token};
 use ruff_python_ast::{HasNodeIndex as _, ModModule, NodeIndex, Stmt};
-use ruff_text_size::{Ranged as _, TextSize};
+use ruff_text_size::{Ranged as _, TextRange, TextSize};
 
 use crate::{ast_indexer::MODULE_INDEX_RANGE, types::FxIndexMap};
 
@@ -105,6 +105,16 @@ impl ProvenanceResolver {
         let module = self.modules.get(ordinal)?;
         Some((ordinal, module.line_index.line_of(range_start)))
     }
+
+    /// Return the original source text covered by `range` for an indexed node.
+    fn source_text(&self, node_index: NodeIndex, range: TextRange) -> Option<&str> {
+        let index = node_index.as_u32()?;
+        let ordinal = (index / MODULE_INDEX_RANGE) as usize;
+        let module = self.modules.get(ordinal)?;
+        module
+            .source
+            .get(range.start().to_usize()..range.end().to_usize())
+    }
 }
 
 /// A single line-level mapping record.
@@ -116,6 +126,8 @@ struct Mapping {
     source_id: SourceId,
     /// 0-based line in the original source file.
     original_line: u32,
+    /// Optional original symbol name for this generated line.
+    name_id: Option<u32>,
 }
 
 /// Collects line-level mapping records and serializes them as Source Map v3 JSON.
@@ -130,6 +142,8 @@ pub(crate) struct SourceMapGenerator {
     /// Original source path → optional embedded content. Insertion order defines
     /// the `sources` array order; the map index is the [`SourceId`].
     sources: FxIndexMap<String, Option<String>>,
+    /// Original symbol name → stable Source Map `names` index.
+    names: FxIndexMap<String, ()>,
     /// Collected mappings, in insertion order (sorted at serialization time).
     mappings: Vec<Mapping>,
 }
@@ -140,6 +154,7 @@ impl SourceMapGenerator {
         Self {
             file: file.into(),
             sources: FxIndexMap::default(),
+            names: FxIndexMap::default(),
             mappings: Vec::new(),
         }
     }
@@ -164,25 +179,37 @@ impl SourceMapGenerator {
     }
 
     /// Record that 0-based `generated_line` in the bundle originates from
-    /// 0-based `original_line` of `source_id`.
+    /// 0-based `original_line` of `source_id`, with an optional original symbol
+    /// name.
     ///
     /// Multiple records for the same generated line are allowed; the first one
     /// added wins at serialization time (statement granularity means the first
     /// statement starting on a line is the authoritative origin).
-    pub(crate) fn add_mapping(
+    fn add_mapping_with_name(
         &mut self,
         generated_line: u32,
         source_id: SourceId,
         original_line: u32,
+        name: Option<&str>,
     ) {
         debug_assert!(
             (source_id as usize) < self.sources.len(),
             "add_mapping called with unregistered source_id {source_id}"
         );
+        let name_id = name.map(|name| {
+            if let Some(index) = self.names.get_index_of(name) {
+                index as u32
+            } else {
+                let index = self.names.len() as u32;
+                self.names.insert(name.to_owned(), ());
+                index
+            }
+        });
         self.mappings.push(Mapping {
             generated_line,
             source_id,
             original_line,
+            name_id,
         });
     }
 
@@ -212,11 +239,16 @@ impl SourceMapGenerator {
                     m.original_line,
                     0,
                     Some(m.source_id),
-                    None,
+                    m.name_id,
                 )
             })
             .collect();
 
+        let names: Vec<Cow<'_, str>> = self
+            .names
+            .keys()
+            .map(|name| Cow::Borrowed(name.as_str()))
+            .collect();
         let sources: Vec<Cow<'_, str>> = self
             .sources
             .keys()
@@ -230,7 +262,7 @@ impl SourceMapGenerator {
 
         let map = SourceMap::new(
             Some(Cow::Borrowed(self.file.as_str())),
-            Vec::new(),
+            names,
             None,
             sources,
             source_contents,
@@ -242,7 +274,7 @@ impl SourceMapGenerator {
 }
 
 /// One record produced by the parallel statement walk.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MappingRecord {
     /// 0-based line in the generated bundle text.
     pub(crate) generated_line: u32,
@@ -250,6 +282,8 @@ pub(crate) struct MappingRecord {
     pub(crate) module_ordinal: usize,
     /// 0-based line in the original module source.
     pub(crate) original_line: u32,
+    /// Original function/class name when the generated code object was renamed.
+    pub(crate) name: Option<String>,
 }
 
 /// Extract statement-level mappings by re-parsing the emitted bundle text and
@@ -273,7 +307,7 @@ pub(crate) fn extract_statement_mappings(
         provenance,
         records: Vec::new(),
     };
-    walker.walk_body(&reparsed.body, &bundled_ast.body);
+    walker.walk_body(&reparsed.body, &bundled_ast.body, None);
     Ok(walker.records)
 }
 
@@ -287,7 +321,7 @@ struct ParallelWalker<'a> {
 
 impl ParallelWalker<'_> {
     /// Walk two statement lists in lockstep; skip entirely on length divergence.
-    fn walk_body(&mut self, generated: &[Stmt], original: &[Stmt]) {
+    fn walk_body(&mut self, generated: &[Stmt], original: &[Stmt], frame_name: Option<&str>) {
         if generated.len() != original.len() {
             log::debug!(
                 "source map: skipping diverged body (generated {} statements, bundled AST {})",
@@ -297,12 +331,47 @@ impl ParallelWalker<'_> {
             return;
         }
         for (generated_stmt, original_stmt) in generated.iter().zip(original) {
-            self.walk_stmt(generated_stmt, original_stmt);
+            self.walk_stmt(generated_stmt, original_stmt, frame_name);
         }
     }
 
+    /// Record one generated-line mapping.
+    fn record(
+        &mut self,
+        generated_offset: TextSize,
+        module_ordinal: usize,
+        original_line: u32,
+        name: Option<&str>,
+    ) {
+        self.records.push(MappingRecord {
+            generated_line: self.line_index.line_of(generated_offset),
+            module_ordinal,
+            original_line,
+            name: name.map(str::to_owned),
+        });
+    }
+
+    /// Recover an original definition name when conflict resolution renamed it.
+    fn original_definition_name(&self, generated: &Stmt, original: &Stmt) -> Option<String> {
+        let (generated_name, node_index, original_range) = match (generated, original) {
+            (Stmt::FunctionDef(generated), Stmt::FunctionDef(original)) => (
+                generated.name.as_str(),
+                original.node_index().load(),
+                original.name.range(),
+            ),
+            (Stmt::ClassDef(generated), Stmt::ClassDef(original)) => (
+                generated.name.as_str(),
+                original.node_index().load(),
+                original.name.range(),
+            ),
+            _ => return None,
+        };
+        let original_name = self.provenance.source_text(node_index, original_range)?;
+        (original_name != generated_name).then(|| original_name.to_owned())
+    }
+
     /// Record a mapping for one aligned statement pair and recurse into nested bodies.
-    fn walk_stmt(&mut self, generated: &Stmt, original: &Stmt) {
+    fn walk_stmt(&mut self, generated: &Stmt, original: &Stmt, frame_name: Option<&str>) {
         if std::mem::discriminant(generated) != std::mem::discriminant(original) {
             log::debug!("source map: skipping diverged statement pair");
             return;
@@ -312,11 +381,12 @@ impl ParallelWalker<'_> {
             .provenance
             .resolve(original.node_index().load(), original.range().start());
         if let Some((module_ordinal, original_line)) = stmt_provenance {
-            self.records.push(MappingRecord {
-                generated_line: self.line_index.line_of(generated.range().start()),
+            self.record(
+                generated.range().start(),
                 module_ordinal,
                 original_line,
-            });
+                frame_name,
+            );
         }
         // Note on multiline statements: ruff's generator emits every statement
         // on a single physical line — multiline string/f-string literals are
@@ -343,11 +413,12 @@ impl ParallelWalker<'_> {
                     orig_decorator.node_index.load(),
                     orig_decorator.range().start(),
                 ) {
-                    self.records.push(MappingRecord {
-                        generated_line: self.line_index.line_of(gen_decorator.range().start()),
+                    self.record(
+                        gen_decorator.range().start(),
                         module_ordinal,
                         original_line,
-                    });
+                        frame_name,
+                    );
                 }
             }
             // With decorators present, the statement range starts at the first
@@ -391,22 +462,28 @@ impl ParallelWalker<'_> {
                 && let Some((module_ordinal, original_line)) =
                     self.provenance.resolve(orig_index, orig_anchor.start())
             {
-                self.records.push(MappingRecord {
-                    generated_line: self.line_index.line_of(gen_anchor.start()),
+                self.record(
+                    gen_anchor.start(),
                     module_ordinal,
                     original_line,
-                });
+                    frame_name,
+                );
             }
         }
 
         // Recurse into nested statement bodies even when the statement itself is
         // synthesized: wrapper-module init functions are synthesized `def`s whose
         // bodies contain original module statements.
+        let definition_name = self.original_definition_name(generated, original);
         match (generated, original) {
-            (Stmt::FunctionDef(g), Stmt::FunctionDef(o)) => self.walk_body(&g.body, &o.body),
-            (Stmt::ClassDef(g), Stmt::ClassDef(o)) => self.walk_body(&g.body, &o.body),
+            (Stmt::FunctionDef(g), Stmt::FunctionDef(o)) => {
+                self.walk_body(&g.body, &o.body, definition_name.as_deref());
+            }
+            (Stmt::ClassDef(g), Stmt::ClassDef(o)) => {
+                self.walk_body(&g.body, &o.body, definition_name.as_deref());
+            }
             (Stmt::If(g), Stmt::If(o)) => {
-                self.walk_body(&g.body, &o.body);
+                self.walk_body(&g.body, &o.body, frame_name);
                 if g.elif_else_clauses.len() == o.elif_else_clauses.len() {
                     for (gen_clause, orig_clause) in
                         g.elif_else_clauses.iter().zip(&o.elif_else_clauses)
@@ -421,27 +498,28 @@ impl ParallelWalker<'_> {
                                 .provenance
                                 .resolve(orig_test.node_index().load(), orig_clause.range().start())
                         {
-                            self.records.push(MappingRecord {
-                                generated_line: self.line_index.line_of(gen_clause.range().start()),
+                            self.record(
+                                gen_clause.range().start(),
                                 module_ordinal,
                                 original_line,
-                            });
+                                frame_name,
+                            );
                         }
-                        self.walk_body(&gen_clause.body, &orig_clause.body);
+                        self.walk_body(&gen_clause.body, &orig_clause.body, frame_name);
                     }
                 }
             }
             (Stmt::While(g), Stmt::While(o)) => {
-                self.walk_body(&g.body, &o.body);
-                self.walk_body(&g.orelse, &o.orelse);
+                self.walk_body(&g.body, &o.body, frame_name);
+                self.walk_body(&g.orelse, &o.orelse, frame_name);
             }
             (Stmt::For(g), Stmt::For(o)) => {
-                self.walk_body(&g.body, &o.body);
-                self.walk_body(&g.orelse, &o.orelse);
+                self.walk_body(&g.body, &o.body, frame_name);
+                self.walk_body(&g.orelse, &o.orelse, frame_name);
             }
-            (Stmt::With(g), Stmt::With(o)) => self.walk_body(&g.body, &o.body),
+            (Stmt::With(g), Stmt::With(o)) => self.walk_body(&g.body, &o.body, frame_name),
             (Stmt::Try(g), Stmt::Try(o)) => {
-                self.walk_body(&g.body, &o.body);
+                self.walk_body(&g.body, &o.body, frame_name);
                 if g.handlers.len() == o.handlers.len() {
                     for (gen_handler, orig_handler) in g.handlers.iter().zip(&o.handlers) {
                         let ruff_python_ast::ExceptHandler::ExceptHandler(gen_handler) =
@@ -459,19 +537,18 @@ impl ParallelWalker<'_> {
                                 orig_handler.range().start(),
                             )
                         {
-                            self.records.push(MappingRecord {
-                                generated_line: self
-                                    .line_index
-                                    .line_of(gen_handler.range().start()),
+                            self.record(
+                                gen_handler.range().start(),
                                 module_ordinal,
                                 original_line,
-                            });
+                                frame_name,
+                            );
                         }
-                        self.walk_body(&gen_handler.body, &orig_handler.body);
+                        self.walk_body(&gen_handler.body, &orig_handler.body, frame_name);
                     }
                 }
-                self.walk_body(&g.orelse, &o.orelse);
-                self.walk_body(&g.finalbody, &o.finalbody);
+                self.walk_body(&g.orelse, &o.orelse, frame_name);
+                self.walk_body(&g.finalbody, &o.finalbody, frame_name);
             }
             (Stmt::Match(g), Stmt::Match(o)) if g.cases.len() == o.cases.len() => {
                 for (gen_case, orig_case) in g.cases.iter().zip(&o.cases) {
@@ -481,13 +558,14 @@ impl ParallelWalker<'_> {
                         .provenance
                         .resolve(orig_case.node_index.load(), orig_case.range().start())
                     {
-                        self.records.push(MappingRecord {
-                            generated_line: self.line_index.line_of(gen_case.range().start()),
+                        self.record(
+                            gen_case.range().start(),
                             module_ordinal,
                             original_line,
-                        });
+                            frame_name,
+                        );
                     }
-                    self.walk_body(&gen_case.body, &orig_case.body);
+                    self.walk_body(&gen_case.body, &orig_case.body, frame_name);
                 }
             }
             _ => {}
@@ -618,6 +696,9 @@ fn encode_map_url_into(text: &str, out: &mut String) {
 /// Placeholder in the runtime template replaced with this build's map digest.
 const RUNTIME_DIGEST_PLACEHOLDER: &str = "__CRIBO_SOURCEMAP_DIGEST__";
 
+/// Column-0 prefix of the emitted bootstrap call carrying the placeholder.
+const RUNTIME_BOOTSTRAP_PREFIX: &str = "_CriboSourceMapRuntime._bootstrap(";
+
 /// Bake the map's SHA-256 into the emitted bundle code.
 ///
 /// The digest lives inside the executing code itself (not in a trailer read
@@ -629,12 +710,14 @@ const RUNTIME_DIGEST_PLACEHOLDER: &str = "__CRIBO_SOURCEMAP_DIGEST__";
 /// valid. With no map, the placeholder becomes an empty string, which the
 /// runtime treats as "no digest known" (verification is skipped).
 ///
-/// Only the first occurrence is replaced: the prologue is emitted before any
-/// user code, so its placeholder is always the first one in the bundle, and
-/// user code that happens to contain the same spelling (in a string literal,
-/// comment, or identifier) is left untouched.
+/// The substitution is anchored structurally, not textually: only the first
+/// physical line that starts (at column 0) with the runtime's bootstrap call
+/// is patched. The prologue precedes every user statement except the entry
+/// docstring, and the code generator emits that docstring as a single line
+/// beginning with a quote — so neither a docstring nor any user code that
+/// contains the placeholder spelling (even a crafted line inside a multiline
+/// docstring, which is emitted with `\n` escapes) can steal the replacement.
 pub(crate) fn apply_map_digest(code: &str, map_json: Option<&str>) -> String {
-    use cow_utils::CowUtils as _;
     use sha2::{Digest as _, Sha256};
 
     let digest_hex = map_json.map_or_else(String::new, |json| {
@@ -645,8 +728,25 @@ pub(crate) fn apply_map_digest(code: &str, map_json: Option<&str>) -> String {
         }
         hex
     });
-    code.cow_replacen(RUNTIME_DIGEST_PLACEHOLDER, &digest_hex, 1)
-        .into_owned()
+    let mut line_start = 0;
+    for line in code.split_inclusive('\n') {
+        if line.starts_with(RUNTIME_BOOTSTRAP_PREFIX)
+            && let Some(position) = line.find(RUNTIME_DIGEST_PLACEHOLDER)
+        {
+            let placeholder_start = line_start + position;
+            let placeholder_end = placeholder_start + RUNTIME_DIGEST_PLACEHOLDER.len();
+            let mut patched =
+                String::with_capacity(code.len() - RUNTIME_DIGEST_PLACEHOLDER.len() + 64);
+            patched.push_str(&code[..placeholder_start]);
+            patched.push_str(&digest_hex);
+            patched.push_str(&code[placeholder_end..]);
+            return patched;
+        }
+        line_start += line.len();
+    }
+    // No bootstrap line (defensive): leave the code untouched — the runtime
+    // treats a non-hex "digest" as unknown and skips verification.
+    code.to_owned()
 }
 
 /// Comment embedding the source map as a base64 data URL.
@@ -723,31 +823,71 @@ fn is_docstring(stmt: &Stmt) -> bool {
     matches!(stmt, Stmt::Expr(expr) if expr.value.is_string_literal_expr())
 }
 
-/// Percent-encode a source path for the `sources` array.
-///
-/// Source Map v3 consumers resolve `sources` entries as URL references, so a
-/// raw `#` or `?` in a filesystem name would be read as fragment/query
-/// delimiters and point at the wrong resource. Only URL-breaking characters
-/// are escaped; everything else (including non-ASCII) passes through. The
-/// injected runtime applies the inverse decoding before filesystem access.
-fn percent_encode_source(path: &str) -> String {
-    let mut encoded = String::with_capacity(path.len());
-    for character in path.chars() {
+/// Append UTF-8 source-path text using URL-path escaping.
+fn encode_source_url_text(text: &str, encoded: &mut String) {
+    for character in text.chars() {
         // On Windows the native separator is '\'; URL consumers only treat
-        // '/' as a path separator, so normalize. (On Unix a backslash is a
-        // legal filename character and passes through untouched.)
+        // '/' as a path separator, so normalize. On Unix a backslash is a
+        // legal *filename* character but not a valid unescaped URL-path
+        // character, so it is percent-encoded (%5C) — the runtime's decoder
+        // restores the filesystem spelling before any file access.
         #[cfg(windows)]
         if character == '\\' {
             encoded.push('/');
             continue;
         }
-        if character < '\u{20}' || matches!(character, '\u{7F}' | '%' | '#' | '?') {
-            let _ =
-                std::fmt::Write::write_fmt(&mut encoded, format_args!("%{:02X}", character as u32));
+        if character <= '\u{20}'
+            || character == '\u{7F}'
+            || matches!(
+                character,
+                '%' | '#' | '?' | '"' | '<' | '>' | '\\' | '^' | '`' | '|' | ':'
+            )
+        {
+            let _ = std::fmt::Write::write_fmt(encoded, format_args!("%{:02X}", character as u32));
         } else {
             encoded.push(character);
         }
     }
+}
+
+/// Percent-encode a filesystem path for the Source Map `sources` array.
+///
+/// Source Map consumers resolve these entries as URLs. Unix paths are walked
+/// byte-wise so invalid UTF-8 bytes can be represented losslessly as `%XX`;
+/// valid Unicode stays readable. Windows separators are normalized to `/`, and
+/// drive colons are escaped so an absolute path cannot be mistaken for a URL
+/// scheme. The injected runtime applies the inverse decoding before file I/O.
+fn percent_encode_source(path: &std::path::Path) -> String {
+    let mut encoded = String::with_capacity(path.as_os_str().len());
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let mut bytes = path.as_os_str().as_bytes();
+        while !bytes.is_empty() {
+            match std::str::from_utf8(bytes) {
+                Ok(valid) => {
+                    encode_source_url_text(valid, &mut encoded);
+                    break;
+                }
+                Err(err) => {
+                    let (valid, rest) = bytes.split_at(err.valid_up_to());
+                    encode_source_url_text(
+                        std::str::from_utf8(valid).expect("valid_up_to prefix is UTF-8"),
+                        &mut encoded,
+                    );
+                    let invalid_len = err.error_len().unwrap_or(rest.len());
+                    for byte in &rest[..invalid_len] {
+                        let _ =
+                            std::fmt::Write::write_fmt(&mut encoded, format_args!("%{byte:02X}"));
+                    }
+                    bytes = &rest[invalid_len..];
+                }
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    encode_source_url_text(&path.as_os_str().to_string_lossy(), &mut encoded);
     encoded
 }
 
@@ -765,9 +905,7 @@ pub(crate) fn build_source_map(
     let records = extract_statement_mappings(bundle_text, bundled_ast, provenance)?;
 
     let mut generator = SourceMapGenerator::new(options.file);
-    // None = not yet seen; Some(None) = seen but unmappable (non-UTF-8 path).
-    let mut ordinal_to_source: Vec<Option<Option<SourceId>>> =
-        vec![None; provenance.modules().len()];
+    let mut ordinal_to_source: Vec<Option<SourceId>> = vec![None; provenance.modules().len()];
 
     for record in records {
         let module = &provenance.modules()[record.module_ordinal];
@@ -776,31 +914,17 @@ pub(crate) fn build_source_map(
                 || module.path.clone(),
                 |base| relative_path(base, &module.path),
             );
-            // Source Map v3 is JSON: a path that is not valid UTF-8 has no
-            // lossless representation. A lossy rendering would display a
-            // nonexistent replacement-character path and could collide with a
-            // *different* non-UTF-8 path, mispairing mappings and
-            // sourcesContent — skip such modules instead (their frames stay on
-            // bundle coordinates).
-            let resolved = display_path.to_str().map_or_else(
-                || {
-                    log::debug!(
-                        "source map: skipping module with non-UTF-8 path: {}",
-                        display_path.display()
-                    );
-                    None
-                },
-                |display| {
-                    let content = options.include_contents.then(|| module.source.clone());
-                    Some(generator.add_source(&percent_encode_source(display), content))
-                },
-            );
-            ordinal_to_source[record.module_ordinal] = Some(resolved);
-            resolved
+            let content = options.include_contents.then(|| module.source.clone());
+            let source_id = generator.add_source(&percent_encode_source(&display_path), content);
+            ordinal_to_source[record.module_ordinal] = Some(source_id);
+            source_id
         });
-        if let Some(source_id) = source_id {
-            generator.add_mapping(record.generated_line, source_id, record.original_line);
-        }
+        generator.add_mapping_with_name(
+            record.generated_line,
+            source_id,
+            record.original_line,
+            record.name.as_deref(),
+        );
     }
 
     Ok(generator.into_json())
@@ -832,9 +956,9 @@ mod tests {
         let main = generator.add_source("main.py", None);
         let utils = generator.add_source("utils.py", None);
         // Insert out of order to exercise the sort.
-        generator.add_mapping(10, utils, 3);
-        generator.add_mapping(4, main, 0);
-        generator.add_mapping(7, utils, 1);
+        generator.add_mapping_with_name(10, utils, 3, None);
+        generator.add_mapping_with_name(4, main, 0, None);
+        generator.add_mapping_with_name(7, utils, 1, None);
         let json = generator.into_json();
 
         let parsed = SourceMap::from_json_string(&json).expect("valid source map JSON");
@@ -863,13 +987,31 @@ mod tests {
     }
 
     #[test]
+    fn named_mapping_round_trips_original_symbol() {
+        let mut generator = SourceMapGenerator::new("bundle.py");
+        let source = generator.add_source("module.py", None);
+        generator.add_mapping_with_name(3, source, 7, Some("original_name"));
+        let json = generator.into_json();
+
+        let parsed = SourceMap::from_json_string(&json).expect("valid source map JSON");
+        assert_eq!(parsed.get_names().collect::<Vec<_>>(), ["original_name"]);
+        let token = parsed.get_tokens().next().expect("named mapping token");
+        assert_eq!(
+            token
+                .get_name_id()
+                .and_then(|name_id| parsed.get_name(name_id)),
+            Some("original_name")
+        );
+    }
+
+    #[test]
     fn source_dedup_returns_same_id_and_first_content_wins() {
         let mut generator = SourceMapGenerator::new("bundle.py");
         let first = generator.add_source("pkg/mod.py", Some("x = 1\n".to_owned()));
         let second = generator.add_source("pkg/mod.py", Some("ignored".to_owned()));
         assert_eq!(first, second);
 
-        generator.add_mapping(0, first, 0);
+        generator.add_mapping_with_name(0, first, 0, None);
         let json = generator.into_json();
         let parsed = SourceMap::from_json_string(&json).expect("valid source map JSON");
         assert_eq!(parsed.get_sources().count(), 1);
@@ -883,7 +1025,7 @@ mod tests {
         let same = generator.add_source("mod.py", Some("y = 2\n".to_owned()));
         assert_eq!(id, same);
 
-        generator.add_mapping(0, id, 0);
+        generator.add_mapping_with_name(0, id, 0, None);
         let json = generator.into_json();
         let parsed = SourceMap::from_json_string(&json).expect("valid source map JSON");
         assert_eq!(parsed.get_source_content(id), Some("y = 2\n"));
@@ -894,14 +1036,14 @@ mod tests {
         let mut with_content = SourceMapGenerator::new("bundle.py");
         let id = with_content.add_source("a.py", Some("a = 1\n".to_owned()));
         with_content.add_source("b.py", None);
-        with_content.add_mapping(0, id, 0);
+        with_content.add_mapping_with_name(0, id, 0, None);
         let json = with_content.into_json();
         assert!(json.contains("sourcesContent"));
         assert!(json.contains("null"), "missing content must encode as null");
 
         let mut without_content = SourceMapGenerator::new("bundle.py");
         let id = without_content.add_source("a.py", None);
-        without_content.add_mapping(0, id, 0);
+        without_content.add_mapping_with_name(0, id, 0, None);
         assert!(!without_content.into_json().contains("sourcesContent"));
     }
 
@@ -910,8 +1052,8 @@ mod tests {
         let mut generator = SourceMapGenerator::new("bundle.py");
         let first = generator.add_source("first.py", None);
         let second = generator.add_source("second.py", None);
-        generator.add_mapping(5, first, 11);
-        generator.add_mapping(5, second, 99);
+        generator.add_mapping_with_name(5, first, 11, None);
+        generator.add_mapping_with_name(5, second, 99, None);
         let json = generator.into_json();
 
         let parsed = SourceMap::from_json_string(&json).expect("valid source map JSON");

@@ -30,89 +30,102 @@ def _cribo_sm_import(
     The bundle's directory can reach `sys.path` several ways: as `sys.path[0]`
     (direct execution), via `PYTHONPATH`, or not at all under `runpy` (where
     `sys.path[0]` is the *driver's* directory) — so the bundle's own path is
-    passed in explicitly and every equivalent entry is removed from a private
-    *snapshot* of the search path. Resolution goes through the frozen importer
-    machinery (`PathFinder.find_spec` with that explicit snapshot), so global
-    `sys.path` is never mutated and concurrent bootstraps cannot race each
-    other's save/restore. Lexical de-duplication works even before `os` is
-    importable (`python -S`); once `os` is available, entries are also
-    compared by absolute path. Non-string entries are kept untouched.
-    (`sys` and the frozen importlib modules are builtins and can never be
-    shadowed.)
+    passed in explicitly and every equivalent entry is removed. The complete
+    resolution/execution window holds the interpreter import lock; while the
+    resolved stdlib module executes, `sys.path` is temporarily the filtered
+    snapshot so its *transitive* imports cannot select adjacent project files.
+    Other imports block on the same lock and never observe that temporary path.
+    Lexical de-duplication works even before `os` is importable (`python -S`);
+    once `os` is available, entries are also compared by absolute path.
+    Non-string entries are kept untouched. (`sys`, `_imp`, and the frozen
+    importlib modules are builtins and cannot be shadowed.)
     """
-    module = _sys.modules.get(name)
-    if module is not None:
-        return module
-    saved_path = _list(_sys.path)
-    candidates = []
-    if saved_path and _isinstance(saved_path[0], _str):
-        candidates.append(saved_path[0])
-    if script_path and _isinstance(script_path, _str):
-        cut = script_path.rfind("/")
-        cut_windows = script_path.rfind("\\")
-        if cut_windows > cut:
-            cut = cut_windows
-        candidates.append(script_path[:cut] if cut >= 0 else ".")
-    trimmed = []
-    for candidate in candidates:
-        trimmed.append(candidate.rstrip("/\\") or candidate)
-    filtered = []
-    for entry in saved_path[1:]:
-        if _isinstance(entry, _str):
-            if entry in ("", ".", "./"):
-                continue
-            stripped = entry.rstrip("/\\") or entry
-            if stripped in trimmed:
-                continue
-        filtered.append(entry)
-    os_mod = _sys.modules.get("os")
-    if os_mod is not None and trimmed:
-        resolved = []
-        for candidate in trimmed:
-            try:
-                resolved.append(os_mod.path.normcase(os_mod.path.abspath(candidate or ".")))
-            except _bex:
-                pass
-        kept = []
-        for entry in filtered:
+    imp_mod = _sys.modules.get("_imp")
+    locked = False
+    if imp_mod is not None:
+        imp_mod.acquire_lock()
+        locked = True
+    try:
+        module = _sys.modules.get(name)
+        if module is not None:
+            return module
+        saved_path = _list(_sys.path)
+        candidates = []
+        if saved_path and _isinstance(saved_path[0], _str):
+            candidates.append(saved_path[0])
+        if script_path and _isinstance(script_path, _str):
+            cut = script_path.rfind("/")
+            cut_windows = script_path.rfind("\\")
+            if cut_windows > cut:
+                cut = cut_windows
+            candidates.append(script_path[:cut] if cut >= 0 else ".")
+        trimmed = []
+        for candidate in candidates:
+            trimmed.append(candidate.rstrip("/\\") or candidate)
+        filtered = []
+        for entry in saved_path[1:]:
             if _isinstance(entry, _str):
+                if entry in ("", ".", "./"):
+                    continue
+                stripped = entry.rstrip("/\\") or entry
+                if stripped in trimmed:
+                    continue
+            filtered.append(entry)
+        os_mod = _sys.modules.get("os")
+        if os_mod is not None and trimmed:
+            resolved = []
+            for candidate in trimmed:
                 try:
-                    if os_mod.path.normcase(os_mod.path.abspath(entry or ".")) in resolved:
-                        continue
+                    resolved.append(
+                        os_mod.path.normcase(os_mod.path.abspath(candidate or "."))
+                    )
                 except _bex:
                     pass
-            kept.append(entry)
-        filtered = kept
-    # Primary path: resolve against the private snapshot via the frozen
-    # importer machinery — no global state is touched. Builtin and frozen
-    # modules (which sys.path shadowing can never affect, and which PathFinder
-    # cannot see — e.g. `binascii` is compiled into some interpreters) are
-    # consulted first, mirroring the interpreter's own finder order.
-    frozen_external = _sys.modules.get("_frozen_importlib_external")
-    frozen_bootstrap = _sys.modules.get("_frozen_importlib")
-    if frozen_external is not None and frozen_bootstrap is not None:
-        spec = (
-            frozen_bootstrap.BuiltinImporter.find_spec(name)
-            or frozen_bootstrap.FrozenImporter.find_spec(name)
-            or frozen_external.PathFinder.find_spec(name, filtered)
-        )
-        if spec is None:
-            raise ImportError("cribo runtime could not resolve " + name)
-        module = frozen_bootstrap.module_from_spec(spec)
-        _sys.modules[name] = module
+            kept = []
+            for entry in filtered:
+                if _isinstance(entry, _str):
+                    try:
+                        if (
+                            os_mod.path.normcase(os_mod.path.abspath(entry or "."))
+                            in resolved
+                        ):
+                            continue
+                    except _bex:
+                        pass
+                kept.append(entry)
+            filtered = kept
+
+        frozen_external = _sys.modules.get("_frozen_importlib_external")
+        frozen_bootstrap = _sys.modules.get("_frozen_importlib")
+        if frozen_external is not None and frozen_bootstrap is not None:
+            spec = (
+                frozen_bootstrap.BuiltinImporter.find_spec(name)
+                or frozen_bootstrap.FrozenImporter.find_spec(name)
+                or frozen_external.PathFinder.find_spec(name, filtered)
+            )
+            if spec is None:
+                raise ImportError("cribo runtime could not resolve " + name)
+            module = frozen_bootstrap.module_from_spec(spec)
+            _sys.modules[name] = module
+            _sys.path = filtered
+            try:
+                spec.loader.exec_module(module)
+            except _bex:
+                _sys.modules.pop(name, None)
+                raise
+            finally:
+                _sys.path = saved_path
+            return module
+
+        # Fallback for exotic hosts without the frozen importlib modules.
+        _sys.path = filtered
         try:
-            spec.loader.exec_module(module)
-        except _bex:
-            _sys.modules.pop(name, None)
-            raise
-        return module
-    # Fallback for exotic hosts without the frozen modules: brief global
-    # swap (the historical behavior).
-    _sys.path = filtered
-    try:
-        return _import(name)
+            return _import(name)
+        finally:
+            _sys.path = saved_path
     finally:
-        _sys.path = saved_path
+        if locked:
+            imp_mod.release_lock()
 
 
 class _CriboSmStream(object):
@@ -183,7 +196,11 @@ class _CriboSourceMapRuntime(object):
         if bundle_file == "<stdin>":
             self._bundle_anchor = bundle_file
         else:
-            self._bundle_anchor = os_mod.path.abspath(bundle_file)
+            absolute_bundle = os_mod.path.abspath(bundle_file)
+            try:
+                self._bundle_anchor = os_mod.path.realpath(absolute_bundle)
+            except OSError:
+                self._bundle_anchor = absolute_bundle
         # SHA-256 of this build's map, baked into the executing code itself at
         # build time — immune to any on-disk replacement of the bundle, so a
         # redeployed bundle's map can never be applied to old in-memory code.
@@ -248,7 +265,9 @@ class _CriboSourceMapRuntime(object):
         self._threading.excepthook = self.threading_hook
 
     @classmethod
-    def _bootstrap(cls, mode, bundle_file, expected_digest, *, _sm_import=_cribo_sm_import):
+    def _bootstrap(
+        cls, mode, bundle_file, expected_digest, *, _sm_import=_cribo_sm_import
+    ):
         """Import dependencies safely, construct, and install — fail-open.
 
         Any failure (however exotic the host environment) leaves the program
@@ -368,26 +387,26 @@ class _CriboSourceMapRuntime(object):
         return found + base64_at + 7
 
     def _map_matches_digest(self, chunks_factory, *, _bex=BaseException):
-        """False only when a build digest is known and the map bytes disagree.
+        """Verify map bytes when this build carries an expected digest.
 
         The SHA-256 of this build's map is baked into the executing code at
         build time, so it is immune to any on-disk replacement of the bundle —
         no interleaving of concurrent builds, manual file shuffling, or
         redeploy-while-running can pair these code objects with another
         build's mappings. Hashing streams the same chunk source later used for
-        decoding. Verification errors fail open (the subsequent map read would
-        surface them anyway).
+        decoding. When an expected digest exists, verification errors fail
+        closed: bytes that were not successfully authenticated are never used.
         """
+        expected = self._expected_digest
+        if expected is None:
+            return True
         try:
-            expected = self._expected_digest
-            if expected is None:
-                return True
             hasher = self._hashlib.sha256()
             for chunk in chunks_factory():
                 hasher.update(chunk)
             return hasher.hexdigest() == expected
         except _bex:
-            return True
+            return False
 
     def _inline_chunks(self, handle, *, _len=len):
         """Yield decoded chunks of an inline (base64 data URL) source map.
@@ -418,7 +437,9 @@ class _CriboSourceMapRuntime(object):
             byte = stream.read_byte()
         return byte
 
-    def _read_hex4(self, stream, *, _int=int, _chr=chr, _range=range, _error=ValueError):
+    def _read_hex4(
+        self, stream, *, _int=int, _chr=chr, _range=range, _error=ValueError
+    ):
         """Read the four hex digits of a \\uXXXX escape; return the code unit."""
         code = 0
         for _ in _range(4):
@@ -537,13 +558,18 @@ class _CriboSourceMapRuntime(object):
         gen_line = 0
         src_idx = 0
         src_line = 0
+        name_idx = 0
         field = 0
         vlq_value = 0
         vlq_shift = 0
 
         def end_segment():
             if field >= 4 and gen_line in needed and gen_line not in result:
-                result[gen_line] = (src_idx, src_line)
+                result[gen_line] = (
+                    src_idx,
+                    src_line,
+                    name_idx if field >= 5 else None,
+                )
 
         while True:
             byte = stream.read_byte()
@@ -573,26 +599,41 @@ class _CriboSourceMapRuntime(object):
                 src_idx += signed
             elif field == 2:
                 src_line += signed
+            elif field == 4:
+                name_idx += signed
             field += 1
             vlq_value = 0
             vlq_shift = 0
 
     def _scan(self, chunks_factory, needed, max_needed, *, _set=set, _error=ValueError):
-        """Two-pass scan of the map; return (sources dict, line table).
+        """Streaming scan; return (sources dict, names dict, line table).
 
         Pass 1 decodes only `mappings` (skipping the sources array entirely);
-        pass 2 re-streams the map and collects only the source paths actually
-        referenced by the decoded lines. Memory therefore scales with the
-        traceback's needed frames, not with the bundle's full source table —
-        the property the whole streaming decoder exists for. `chunks_factory`
-        is a zero-argument callable producing a fresh chunk iterator per pass.
+        later passes collect only the source paths and symbol names referenced
+        by decoded lines. Memory therefore scales with the traceback's needed
+        frames, not with the bundle's full source/name tables.
+        `chunks_factory` produces a fresh chunk iterator per pass.
         """
-        table = self._scan_mappings(self._stream_cls(chunks_factory()), needed, max_needed)
-        wanted = _set(src_idx for (src_idx, _line) in table.values())
+        table = self._scan_mappings(
+            self._stream_cls(chunks_factory()), needed, max_needed
+        )
+        wanted_sources = _set(src_idx for (src_idx, _line, _name_idx) in table.values())
+        wanted_names = _set(
+            name_idx
+            for (_src_idx, _line, name_idx) in table.values()
+            if name_idx is not None
+        )
         sources = {}
-        if wanted:
-            sources = self._scan_sources(self._stream_cls(chunks_factory()), wanted)
-        return sources, table
+        names = {}
+        if wanted_sources:
+            sources = self._scan_string_array(
+                self._stream_cls(chunks_factory()), "sources", wanted_sources
+            )
+        if wanted_names:
+            names = self._scan_string_array(
+                self._stream_cls(chunks_factory()), "names", wanted_names
+            )
+        return sources, names, table
 
     def _scan_mappings(self, stream, needed, max_needed, *, _error=ValueError):
         """Pass 1: decode the `mappings` field; every other value is skipped."""
@@ -616,8 +657,8 @@ class _CriboSourceMapRuntime(object):
                 byte = self._skip_ws(stream, stream.read_byte())
         raise _error("no mappings field")
 
-    def _scan_sources(self, stream, wanted, *, _error=ValueError):
-        """Pass 2: collect only the `sources` entries whose index is wanted."""
+    def _scan_string_array(self, stream, field_name, wanted, *, _error=ValueError):
+        """Collect selected string items from one top-level array field."""
         byte = self._skip_ws(stream, stream.read_byte())
         if not byte == 123:  # '{'
             raise _error("not a JSON object")
@@ -628,9 +669,9 @@ class _CriboSourceMapRuntime(object):
             if not byte == 58:  # ':'
                 raise _error("malformed object")
             byte = self._skip_ws(stream, stream.read_byte())
-            if key == "sources":
+            if key == field_name:
                 if not byte == 91:  # '['
-                    raise _error("sources is not an array")
+                    raise _error(field_name + " is not an array")
                 return self._read_wanted_array_items(stream, wanted)
             byte = self._skip_ws(stream, self._skip_value(stream, byte))
             if byte == 44:  # ','
@@ -660,14 +701,14 @@ class _CriboSourceMapRuntime(object):
     # -- loading -------------------------------------------------------------
 
     def _load(self, needed_lines, *, _open=open, _set=set, _max=max):
-        """Load (table, sources, map_dir) for 1-based bundle line numbers.
+        """Load (table, sources, names, map_dir) for bundle line numbers.
 
         Returns None when the runtime is inactive for the current mode. The
         returned table is keyed by 1-based bundle lines mapping to
-        (source_index, 1-based original line). The map is opened exactly once:
-        digest verification and both decode passes read from the same pinned
-        handle, so the verified bytes are the decoded bytes even if a
-        concurrent build renames a new map into place mid-decode.
+        (source_index, 1-based original line, optional name_index). The map is
+        opened exactly once: digest verification and all decode passes read
+        from the same pinned handle, so the verified bytes are the decoded
+        bytes even if a concurrent build renames a new map into place.
         """
         location = self._map_location()
         if location is None:
@@ -689,13 +730,13 @@ class _CriboSourceMapRuntime(object):
 
             if verify and not self._map_matches_digest(chunks_factory):
                 return None
-            sources, table0 = self._scan(chunks_factory, needed0, max_needed)
+            sources, names, table0 = self._scan(chunks_factory, needed0, max_needed)
         finally:
             handle.close()
         table = {}
-        for line0, (src_idx, src_line0) in table0.items():
-            table[line0 + 1] = (src_idx, src_line0 + 1)
-        return (table, sources, map_dir)
+        for line0, (src_idx, src_line0, name_idx) in table0.items():
+            table[line0 + 1] = (src_idx, src_line0 + 1, name_idx)
+        return (table, sources, names, map_dir)
 
     def _load_json_fallback(
         self, needed_lines, *, _open=open, _set=set, _max=max, _enumerate=enumerate
@@ -728,19 +769,29 @@ class _CriboSourceMapRuntime(object):
         sources = {}
         for index, source in _enumerate(data.get("sources") or []):
             sources[index] = source
+        names = {}
+        for index, name in _enumerate(data.get("names") or []):
+            names[index] = name
         mappings = data.get("mappings") or ""
         needed0 = _set(line - 1 for line in needed_lines)
         stream = self._stream_cls([mappings.encode("ascii"), b'"'])
         table0, _terminated = self._decode_vlq(stream, needed0, _max(needed0))
         table = {}
-        for line0, (src_idx, src_line0) in table0.items():
-            table[line0 + 1] = (src_idx, src_line0 + 1)
-        return (table, sources, map_dir)
+        for line0, (src_idx, src_line0, name_idx) in table0.items():
+            table[line0 + 1] = (src_idx, src_line0 + 1, name_idx)
+        return (table, sources, names, map_dir)
 
     # -- traceback collection and rendering ----------------------------------
 
     def _collect_needed(
-        self, exc_value, traceback_obj, bundle_file, *, _set=set, _id=id, _getattr=getattr
+        self,
+        exc_value,
+        traceback_obj,
+        bundle_file,
+        *,
+        _set=set,
+        _id=id,
+        _getattr=getattr,
     ):
         """1-based lines of `bundle_file` referenced by the traceback chain."""
         needed = _set()
@@ -790,25 +841,34 @@ class _CriboSourceMapRuntime(object):
             exc = _getattr(exc, "__context__", None)
         return False
 
-    def _percent_decode(self, text, *, _int=int, _chr=chr, _len=len, _bex=BaseException):
-        """Inverse of the build-time percent-encoding of `sources` entries."""
+    def _percent_decode(
+        self,
+        text,
+        *,
+        _int=int,
+        _len=len,
+        _bytearray=bytearray,
+        _bytes=bytes,
+        _bex=BaseException,
+    ):
+        """Decode source URL bytes with filesystem-safe surrogate handling."""
         if "%" not in text:
             return text
-        out = []
+        out = _bytearray()
         position = 0
         length = _len(text)
         while position < length:
             character = text[position]
             if character == "%" and position + 2 < length:
                 try:
-                    out.append(_chr(_int(text[position + 1 : position + 3], 16)))
+                    out.append(_int(text[position + 1 : position + 3], 16))
                     position += 3
                     continue
                 except _bex:
                     pass
-            out.append(character)
+            out.extend(character.encode("utf-8"))
             position += 1
-        return "".join(out)
+        return _bytes(out).decode("utf-8", "surrogateescape")
 
     def _source_line(self, path, lineno, *, _open=open, _os_error=OSError):
         """Read a single 1-based line from a file without caching it."""
@@ -830,23 +890,34 @@ class _CriboSourceMapRuntime(object):
             handle.close()
         return None
 
-    def _effective_tb_limit(self, *, _getattr=getattr, _isinstance=isinstance, _int=int):
+    def _effective_tb_limit(
+        self, *, _getattr=getattr, _isinstance=isinstance, _int=int
+    ):
         """The application's `sys.tracebacklimit`, or None when unset/invalid."""
         limit = _getattr(self._sys, "tracebacklimit", None)
         return limit if _isinstance(limit, _int) else None
 
-    def _write_frames(self, traceback_obj, maps_by_file, write, limit, summaries, *, _bex=BaseException, _len=len):
+    def _write_frames(
+        self,
+        traceback_obj,
+        maps_by_file,
+        write,
+        limit,
+        summaries,
+        *,
+        _bex=BaseException,
+        _len=len,
+    ):
         """Write remapped frame lines, collapsing repeated frames like CPython.
 
-        `maps_by_file` holds one (table, sources, map_dir) triple per known
+        `maps_by_file` holds one (table, sources, names, map_dir) tuple per known
         bundle file, so a traceback crossing several stacked cribo bundles
-        remaps every frame. Frames that stay unmapped render through the
-        standard traceback machinery (`summaries`, when available) to preserve
-        PEP 657 position indicators. Consecutive identical frames (recursion)
-        print at most 3 times followed by a "[Previous line repeated N more
-        times]" marker; source line text is cached per (file, line) within one
-        rendering. A positive `limit` keeps only the last `limit` frames,
-        matching the interpreter's `sys.tracebacklimit` handling.
+        remaps every frame. Standard summaries supply PEP 657 position
+        indicators; mapped frames replace their location/source line while
+        retaining those diagnostic lines. Consecutive identical frames
+        (recursion) print at most 3 times followed by a "[Previous line repeated
+        N more times]" marker. A positive `limit` keeps only the last `limit`
+        frames, matching the interpreter's `sys.tracebacklimit` handling.
         """
         index = 0
         if limit is not None:
@@ -865,26 +936,39 @@ class _CriboSourceMapRuntime(object):
         last = None
         repeats = 0
 
+        def summary_lines(frame_index):
+            if summaries is None or frame_index >= _len(summaries):
+                return None
+            try:
+                rendered = self._traceback.StackSummary.from_list(
+                    [summaries[frame_index]]
+                ).format()
+                return "".join(rendered).splitlines(True)
+            except _bex:
+                return None
+
         def emit(entry, frame_index, mapped_frame):
-            if not mapped_frame and summaries is not None and frame_index < _len(summaries):
-                # Standard rendering for untouched frames keeps PEP 657
-                # carets and anchors intact.
-                try:
-                    rendered = self._traceback.StackSummary.from_list(
-                        [summaries[frame_index]]
-                    ).format()
-                except _bex:
-                    rendered = None
-                if rendered:
-                    for line in rendered:
-                        write(line)
-                    return
+            rendered_lines = summary_lines(frame_index)
+            if not mapped_frame and rendered_lines:
+                for line in rendered_lines:
+                    write(line)
+                return
             write('  File "%s", line %d, in %s\n' % entry)
             key = (entry[0], entry[1])
             if key not in cache:
-                cache[key] = self._source_line(entry[0], entry[1])
-            if cache[key]:
-                write("    %s\n" % cache[key])
+                try:
+                    cache[key] = self._source_line(entry[0], entry[1])
+                except _bex:
+                    cache[key] = None
+            source_line = cache[key]
+            if source_line:
+                write("    %s\n" % source_line)
+                # The first two standard lines are the original bundle header
+                # and source text. Any remaining lines are PEP 657 carets/ranges,
+                # which remain useful after substituting mapped coordinates.
+                if mapped_frame and rendered_lines and _len(rendered_lines) > 2:
+                    for line in rendered_lines[2:]:
+                        write(line)
 
         while traceback_obj is not None:
             frame = traceback_obj.tb_frame
@@ -894,7 +978,7 @@ class _CriboSourceMapRuntime(object):
             mapped_frame = False
             bundle_map = maps_by_file.get(filename)
             if bundle_map is not None:
-                table, sources, map_dir = bundle_map
+                table, sources, names, map_dir = bundle_map
                 mapped = table.get(lineno)
                 if mapped is not None:
                     source = sources.get(mapped[0])
@@ -905,6 +989,10 @@ class _CriboSourceMapRuntime(object):
                                 self._os.path.join(map_dir, source)
                             )
                         filename, lineno = source, mapped[1]
+                        if mapped[2] is not None:
+                            original_name = names.get(mapped[2])
+                            if original_name:
+                                name = original_name
                         mapped_frame = True
             entry = (filename, lineno, name)
             if entry == last:
@@ -972,6 +1060,7 @@ class _CriboSourceMapRuntime(object):
     def _render(
         self,
         exc_value,
+        traceback_obj,
         maps_by_file,
         write,
         *,
@@ -1018,7 +1107,15 @@ class _CriboSourceMapRuntime(object):
                         "\nDuring handling of the above exception, another exception "
                         "occurred:\n\n"
                     )
-            tb = _getattr(exc, "__traceback__", None)
+            # The installed hook receives an explicit traceback that may differ
+            # from (or outlive) exc_value.__traceback__. Use that argument for
+            # the visible top-level exception; chained exceptions keep their
+            # own traceback attributes.
+            tb = (
+                traceback_obj
+                if exc is exc_value
+                else _getattr(exc, "__traceback__", None)
+            )
             limit = self._effective_tb_limit()
             if tb is not None and (limit is None or limit > 0):
                 # Standard per-frame summaries (with PEP 657 positions on
@@ -1071,21 +1168,23 @@ class _CriboSourceMapRuntime(object):
             # Every stacked cribo runtime contributes mappings for its own
             # bundle, so a traceback crossing several bundles remaps fully.
             # When two runtimes share one filename spelling (e.g. both loaded
-            # as a relative "bundle.py" from different directories), frames
-            # carrying that spelling are ambiguous — decline rather than remap
-            # through the wrong project's sources.
-            anchors_by_name = {}
+            # as a relative "bundle.py" from different directories, or two
+            # builds loaded from the same replaced path), frames carrying that
+            # spelling are ambiguous. Anchor plus baked map digest identifies a
+            # build; conflicting identities decline rather than apply the wrong map.
+            identities_by_name = {}
             for runtime in self._registered_runtimes():
                 bundle_file = _getattr(runtime, "_bundle", None)
                 anchor = _getattr(runtime, "_bundle_anchor", None)
-                anchors_by_name.setdefault(bundle_file, _set()).add(anchor)
+                digest = _getattr(runtime, "_expected_digest", None)
+                identities_by_name.setdefault(bundle_file, _set()).add((anchor, digest))
             maps_by_file = {}
             for runtime in self._registered_runtimes():
                 try:
                     bundle_file = runtime._bundle
                     if bundle_file in maps_by_file:
                         continue
-                    if _len(anchors_by_name.get(bundle_file, ())) > 1:
+                    if _len(identities_by_name.get(bundle_file, ())) > 1:
                         continue  # ambiguous spelling: skip these frames
                     needed = self._collect_needed(exc_value, traceback_obj, bundle_file)
                     if not needed:
@@ -1109,7 +1208,7 @@ class _CriboSourceMapRuntime(object):
             parts = []
             if prefix:
                 parts.append(prefix)
-            self._render(exc_value, maps_by_file, parts.append)
+            self._render(exc_value, traceback_obj, maps_by_file, parts.append)
             stderr = self._sys.stderr
             stderr.write("".join(parts))
             try:
@@ -1122,7 +1221,9 @@ class _CriboSourceMapRuntime(object):
         finally:
             self._local.in_hook = False
 
-    def _registered_runtimes(self, *, _getattr=getattr, _isinstance=isinstance, _list=list):
+    def _registered_runtimes(
+        self, *, _getattr=getattr, _isinstance=isinstance, _list=list
+    ):
         """All installed cribo runtimes in this interpreter, self included.
 
         The registry lives on the (unshadowable) `sys` module so stacked
@@ -1178,7 +1279,9 @@ class _CriboSourceMapRuntime(object):
         while prev is not None and _id(prev) not in seen:
             seen.add(_id(prev))
             bound_to = _getattr(prev, "__self__", None)
-            if bound_to is not None and _getattr(bound_to, "_cribo_sm_runtime_marker", False):
+            if bound_to is not None and _getattr(
+                bound_to, "_cribo_sm_runtime_marker", False
+            ):
                 other_default = _getattr(bound_to, default_attr, None)
                 if other_default is not None:
                     defaults.append(other_default)
@@ -1186,7 +1289,9 @@ class _CriboSourceMapRuntime(object):
                 continue
             break
         bound_to = _getattr(prev, "__self__", None)
-        if bound_to is not None and _getattr(bound_to, "_cribo_sm_runtime_marker", False):
+        if bound_to is not None and _getattr(
+            bound_to, "_cribo_sm_runtime_marker", False
+        ):
             return
         if default is None or prev is None:
             return

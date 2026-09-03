@@ -65,23 +65,32 @@ def _scan(rt, json_text, needed, max_needed):
 def test_scan_extracts_sources_and_mappings(rt):
     # AAAA;AACA;AACA: one segment per line, source line advancing by one.
     json_text = '{"version":3,"sources":["a.py","b.py"],"mappings":"AAAA;AACA;AACA"}'
-    sources, table = _scan(rt, json_text, {0, 2}, 2)
+    sources, names, table = _scan(rt, json_text, {0, 2}, 2)
     assert sources == {0: "a.py"}, sources  # only referenced indices collected
-    assert table == {0: (0, 0), 2: (0, 2)}, table
+    assert names == {}, names
+    assert table == {0: (0, 0, None), 2: (0, 2, None)}, table
 
 
 def test_scan_negative_delta(rt):
     # Line 0 advances src_line by +1 (C), line 1 rewinds it by -1 (D).
     json_text = '{"sources":["a.py"],"mappings":"AACA;AADA"}'
-    _sources, table = _scan(rt, json_text, {0, 1}, 1)
-    assert table == {0: (0, 1), 1: (0, 0)}, table
+    _sources, _names, table = _scan(rt, json_text, {0, 1}, 1)
+    assert table == {0: (0, 1, None), 1: (0, 0, None)}, table
 
 
 def test_scan_source_index_delta(rt):
     # Second line switches to source 1 (C in field 1).
     json_text = '{"sources":["a.py","b.py"],"mappings":"AAAA;ACAA"}'
-    _sources, table = _scan(rt, json_text, {0, 1}, 1)
-    assert table == {0: (0, 0), 1: (1, 0)}, table
+    _sources, _names, table = _scan(rt, json_text, {0, 1}, 1)
+    assert table == {0: (0, 0, None), 1: (1, 0, None)}, table
+
+
+def test_scan_extracts_original_names(rt):
+    json_text = '{"sources":["a.py"],"names":["original"],"mappings":"AAAAA"}'
+    sources, names, table = _scan(rt, json_text, {0}, 0)
+    assert sources == {0: "a.py"}, sources
+    assert names == {0: "original"}, names
+    assert table == {0: (0, 0, 0)}, table
 
 
 def test_scan_ignores_adversarial_sources_content(rt):
@@ -91,20 +100,20 @@ def test_scan_ignores_adversarial_sources_content(rt):
     json_text = (
         '{"sources":["a.py"],"sourcesContent":["' + evil + '"],"mappings":"AAAA"}'
     )
-    sources, table = _scan(rt, json_text, {0}, 0)
+    sources, _names, table = _scan(rt, json_text, {0}, 0)
     assert sources == {0: "a.py"}, sources
-    assert table == {0: (0, 0)}, table
+    assert table == {0: (0, 0, None)}, table
 
 
 def test_scan_handles_unicode_escapes_in_sources(rt):
     json_text = '{"sources":["\\u00e9t\\u00e9.py"],"mappings":"AAAA"}'
-    sources, _table = _scan(rt, json_text, {0}, 0)
+    sources, _names, _table = _scan(rt, json_text, {0}, 0)
     assert sources == {0: "\u00e9t\u00e9.py"}, sources
 
 
 def test_scan_null_in_sources_array(rt):
     json_text = '{"sources":["a.py",null,"c.py"],"mappings":"ACAA"}'
-    sources, _table = _scan(rt, json_text, {0}, 0)
+    sources, _names, _table = _scan(rt, json_text, {0}, 0)
     assert sources == {}, sources  # a null entry is simply not collected
 
 
@@ -118,8 +127,8 @@ def test_vlq_early_exit_stops_reading(rt):
         yield b'{"sources":["a.py"],"mappings":"AAAA;AACA;'
         raise Boom("decoder read past its early-exit point")
 
-    _sources, table = rt._scan(chunks_factory, {0}, 0)
-    assert table == {0: (0, 0)}, table
+    _sources, _names, table = rt._scan(chunks_factory, {0}, 0)
+    assert table == {0: (0, 0, None)}, table
 
 
 def test_vlq_rejects_escapes_in_mappings(rt):
@@ -136,21 +145,21 @@ def test_scan_handles_mappings_before_sources(rt):
     # A spec-valid map may order keys arbitrarily. Early exit inside the
     # mappings string must not derail parsing of a later sources field.
     json_text = '{"mappings":"AAAA;AACA;AACA","sources":["a.py","b.py"]}'
-    sources, table = _scan(rt, json_text, {0}, 0)  # early exit after line 0
+    sources, _names, table = _scan(rt, json_text, {0}, 0)  # early exit after line 0
     assert sources == {0: "a.py"}, sources
-    assert table == {0: (0, 0)}, table
+    assert table == {0: (0, 0, None)}, table
 
 
 def test_scan_combines_surrogate_pairs(rt):
     # Non-BMP characters arrive as JSON surrogate pairs; they must decode to
     # one code point, not two replacement characters.
     json_text = '{"sources":["\\ud83d\\ude00.py"],"mappings":"AAAA"}'
-    sources, _table = _scan(rt, json_text, {0}, 0)
+    sources, _names, _table = _scan(rt, json_text, {0}, 0)
     assert sources == {0: "\U0001f600.py"}, sources
     # A lone high surrogate followed by a plain character stays recoverable
     # (replacement character), and the rest of the string is intact.
     json_text = '{"sources":["\\ud83dx.py"],"mappings":"AAAA"}'
-    sources, _table = _scan(rt, json_text, {0}, 0)
+    sources, _names, _table = _scan(rt, json_text, {0}, 0)
     assert sources[0].endswith("x.py"), sources
 
 
@@ -180,9 +189,9 @@ def test_inline_payload_scan_and_chunked_base64(rt):
         assert decoded.decode("utf-8") == json_text
         # And end-to-end through the scanner (one pinned handle, two passes):
         with open(path, "rb") as handle:
-            sources, table = rt._scan(lambda: rt._inline_chunks(handle), {0}, 0)
+            sources, _names, table = rt._scan(lambda: rt._inline_chunks(handle), {0}, 0)
         assert sources == {0: "a.py"}, sources
-        assert table == {0: (0, 0)}, table
+        assert table == {0: (0, 0, None)}, table
     finally:
         os.unlink(path)
 
@@ -215,14 +224,15 @@ def test_json_fallback_matches_streaming(rt):
         os.environ["CRIBO_SOURCE_MAPS"] = path
         loaded = rt._load_json_fallback({1, 2})
         assert loaded is not None
-        table, sources, _map_dir = loaded
+        table, sources, names, _map_dir = loaded
         # Fallback tables are 1-based.
         expected = {
-            line0 + 1: (idx, src_line0 + 1)
-            for line0, (idx, src_line0) in streaming[1].items()
+            line0 + 1: (idx, src_line0 + 1, name_idx)
+            for line0, (idx, src_line0, name_idx) in streaming[2].items()
         }
         assert table == expected, (table, expected)
         assert sources == streaming[0]
+        assert names == streaming[1]
     finally:
         if previous is None:
             os.environ.pop("CRIBO_SOURCE_MAPS", None)
@@ -255,9 +265,10 @@ def test_env_path_wins_for_every_mode(rt):
         )
         loaded = inline_stdin._load({1})
         assert loaded is not None, "env path must activate a <stdin> inline bundle"
-        table, sources, _map_dir = loaded
+        table, sources, names, _map_dir = loaded
         assert sources == {0: "a.py"}, sources
-        assert table == {1: (0, 1)}, table
+        assert names == {}, names
+        assert table == {1: (0, 1, None)}, table
         # Without the env override, a <stdin> inline bundle stays inactive.
         os.environ.pop("CRIBO_SOURCE_MAPS", None)
         assert inline_stdin._map_location() is None
@@ -269,11 +280,57 @@ def test_env_path_wins_for_every_mode(rt):
         os.unlink(path)
 
 
+def test_digest_verification_errors_fail_closed(rt):
+    class BrokenHashlib:
+        @staticmethod
+        def sha256():
+            raise RuntimeError("hashing unavailable")
+
+    with tempfile.TemporaryDirectory() as directory:
+        bundle = os.path.join(directory, "bundle.py")
+        with open(bundle, "w", encoding="utf-8") as handle:
+            handle.write("raise RuntimeError('boom')\n")
+        with open(bundle + ".map", "w", encoding="utf-8") as handle:
+            handle.write('{"sources":["a.py"],"mappings":"AAAA"}')
+
+        previous = (
+            rt._mode,
+            rt._bundle_anchor,
+            rt._expected_digest,
+            rt._hashlib,
+        )
+        try:
+            rt._mode = "linked"
+            rt._bundle_anchor = bundle
+            rt._expected_digest = "0" * 64
+            rt._hashlib = BrokenHashlib()
+            assert rt._load({1}) is None
+            assert rt._load_json_fallback({1}) is None
+        finally:
+            (
+                rt._mode,
+                rt._bundle_anchor,
+                rt._expected_digest,
+                rt._hashlib,
+            ) = previous
+
+
+def test_percent_decode_restores_non_utf8_unix_paths(rt):
+    if os.name != "posix":
+        return
+    decoded = rt._percent_decode("odd%FF/name.py")
+    assert os.fsencode(decoded) == b"odd\xff/name.py"
+
+
 def main():
     runtime_path = sys.argv[1]
     rt = load_runtime(runtime_path)
     tests = sorted(
-        (obj for name, obj in globals().items() if name.startswith("test_") and callable(obj)),
+        (
+            obj
+            for name, obj in globals().items()
+            if name.startswith("test_") and callable(obj)
+        ),
         key=lambda obj: obj.__name__,
     )
     for test in tests:

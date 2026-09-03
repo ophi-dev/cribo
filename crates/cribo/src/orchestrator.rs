@@ -88,14 +88,27 @@ fn staging_suffix(attempt: u32) -> String {
 ///
 /// The staged file is born `0600` on Unix (mode set atomically at `open(2)`
 /// time), so no other user can grab a readable handle between creation and a
-/// later `chmod`. When a previous map exists, its permissions are then copied
-/// onto the staged file before any content is written, so a restricted map
-/// (e.g. 0600 protecting `sourcesContent`) stays restricted across rebuilds.
-/// With no previous map the file keeps `0600`; after the rename the map is
-/// owner-only by default, and users who want it world-readable can `chmod` it
-/// once — the permissions persist across subsequent rebuilds.
+/// later `chmod`. When a previous map exists *and is owned by this user*, its
+/// permissions are then copied onto the staged file before any content is
+/// written, so a restricted map (e.g. 0600 protecting `sourcesContent`) stays
+/// restricted across rebuilds — while a foreign pre-created file in a shared
+/// sticky directory cannot force a permissive mode. Otherwise the file keeps
+/// `0600`; after the rename the map is owner-only by default, and users who
+/// want it world-readable can `chmod` it once — the permissions persist
+/// across subsequent rebuilds.
 fn stage_map_file(map_path: &Path, map_json: &str) -> std::io::Result<PathBuf> {
     use std::io::Write as _;
+
+    /// Owning uid on Unix; constant elsewhere (no ownership model to check).
+    #[cfg(unix)]
+    fn uid_of(metadata: &fs::Metadata) -> u32 {
+        use std::os::unix::fs::MetadataExt as _;
+        metadata.uid()
+    }
+    #[cfg(not(unix))]
+    fn uid_of(_metadata: &fs::Metadata) -> u32 {
+        0
+    }
 
     let base_name = map_path.file_name().map_or_else(
         || std::ffi::OsString::from("bundle.py.map"),
@@ -116,10 +129,17 @@ fn stage_map_file(map_path: &Path, map_json: &str) -> std::io::Result<PathBuf> {
         match open_options.open(&tmp_path) {
             Ok(mut file) => {
                 // symlink_metadata: an attacker-planted symlink at the map
-                // path must not decide the staged file's permissions.
+                // path must not decide the staged file's permissions. On Unix
+                // the previous map must also be owned by the same uid as the
+                // staged file (i.e. this process): in a shared sticky
+                // directory anyone can pre-create a world-readable file at
+                // the predictable final path, and inheriting its mode would
+                // expose `sourcesContent` before the rename even fails.
+                let staged_uid = uid_of(&file.metadata()?);
                 let write_result = fs::symlink_metadata(map_path)
                     .ok()
                     .filter(fs::Metadata::is_file)
+                    .filter(|metadata| uid_of(metadata) == staged_uid)
                     .map_or(Ok(()), |metadata| {
                         file.set_permissions(metadata.permissions())
                     })
@@ -2303,25 +2323,25 @@ impl BundleOrchestrator {
 
         // Extract source map when enabled: re-parse the emitted code and walk it
         // in parallel with the bundled AST (which carries node provenance).
-        let source_map = if self.config.sourcemap.is_some() {
-            self.extract_source_map(&code, &bundled_ast, params)
-        } else {
-            None
-        };
+        let source_map = self
+            .config
+            .sourcemap
+            .map(|_| self.extract_source_map(&code, &bundled_ast, params))
+            .transpose()?;
 
         Ok(EmittedBundle { code, source_map })
     }
 
     /// Build the Source Map v3 JSON for an emitted bundle.
-    ///
-    /// Never fails the bundle: extraction errors are logged and yield `None`.
     fn extract_source_map(
         &self,
         code: &str,
         bundled_ast: &ModModule,
         params: &StaticBundleParams<'_>,
-    ) -> Option<String> {
-        let parsed_modules = params.parsed_modules?;
+    ) -> Result<String> {
+        let parsed_modules = params
+            .parsed_modules
+            .context("source map generation requires parsed module data")?;
 
         // Module ordinals were assigned by the bundler's AST indexing pass in
         // the order of `parsed_modules`; register provenance in the same order.
@@ -2348,23 +2368,22 @@ impl BundleOrchestrator {
         // Source paths are relative to the directory the map lives in (the
         // output directory). For stdout output the bundle's eventual location
         // is unknown, so paths stay absolute.
-        let base_dir = params
-            .output_path
-            .and_then(Path::parent)
-            .map(|dir| std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf()));
+        let base_dir = params.output_path.and_then(Path::parent).map(|dir| {
+            let dir = if dir.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                dir
+            };
+            std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf())
+        });
 
         let options = SourceMapOptions {
             file: &file_name,
             include_contents: self.config.include_sources_content(),
             base_dir: base_dir.as_deref(),
         };
-        match build_source_map(code, bundled_ast, &provenance, &options) {
-            Ok(json) => Some(json),
-            Err(err) => {
-                warn!("Source map generation failed; bundling continues without a map: {err:#}");
-                None
-            }
-        }
+        build_source_map(code, bundled_ast, &provenance, &options)
+            .context("failed to generate requested source map")
     }
 
     /// Generate requirements.txt content from third-party imports

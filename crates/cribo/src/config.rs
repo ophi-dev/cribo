@@ -264,11 +264,22 @@ impl EnvConfig {
         // CRIBO_SOURCEMAP - source map delivery mode (linked|inline|external)
         if let Ok(sourcemap_str) = env::var("CRIBO_SOURCEMAP") {
             config.sourcemap = parse_sourcemap_mode(&sourcemap_str);
+            if config.sourcemap.is_none() {
+                log::warn!(
+                    "Ignoring CRIBO_SOURCEMAP='{sourcemap_str}': expected linked, inline, or \
+                     external"
+                );
+            }
         }
 
         // CRIBO_SOURCES_CONTENT - boolean flag overriding the sourcesContent default
         if let Ok(sources_content_str) = env::var("CRIBO_SOURCES_CONTENT") {
             config.sources_content = parse_bool(&sources_content_str);
+            if config.sources_content.is_none() {
+                log::warn!(
+                    "Ignoring CRIBO_SOURCES_CONTENT='{sources_content_str}': expected a boolean"
+                );
+            }
         }
 
         if let Ok(python) = env::var("CRIBO_PYTHON") {
