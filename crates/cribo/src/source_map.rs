@@ -783,7 +783,8 @@ pub(crate) fn inject_runtime_prologue(
         crate::config::SourceMapMode::Inline => "inline",
         crate::config::SourceMapMode::External => "external",
     };
-    let source = RUNTIME_TEMPLATE.cow_replace(RUNTIME_MODE_PLACEHOLDER, mode_str);
+    let normalized_template = crate::util::normalize_line_endings(RUNTIME_TEMPLATE);
+    let source = normalized_template.cow_replace(RUNTIME_MODE_PLACEHOLDER, mode_str);
     match ruff_python_parser::parse_module(&source) {
         Ok(parsed) => {
             let mut statements = parsed.into_syntax().body;
