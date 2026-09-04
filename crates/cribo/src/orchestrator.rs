@@ -2357,7 +2357,9 @@ impl BundleOrchestrator {
                         .unwrap_or_else(|| format!("module_{}", module_id.as_u32()));
                     PathBuf::from(&name)
                 });
-            let path = std::path::absolute(&path).unwrap_or(path);
+            let path = fs::canonicalize(&path)
+                .or_else(|_| std::path::absolute(&path))
+                .unwrap_or(path);
             provenance.push_module(path, source.clone());
         }
 
@@ -2374,7 +2376,9 @@ impl BundleOrchestrator {
             } else {
                 dir
             };
-            std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf())
+            fs::canonicalize(dir)
+                .or_else(|_| std::path::absolute(dir))
+                .unwrap_or_else(|_| dir.to_path_buf())
         });
 
         let options = SourceMapOptions {

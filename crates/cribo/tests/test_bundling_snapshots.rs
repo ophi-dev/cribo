@@ -115,6 +115,12 @@ fn get_path_filters() -> Vec<(&'static str, &'static str)> {
             r"line \d+, in import_module",
             "line <LINE>, in import_module",
         ),
+        // The digest authenticates exact map bytes, which legitimately vary
+        // when source paths differ across platforms or coverage builds.
+        (
+            r#"(_CriboSourceMapRuntime\._bootstrap\("[^"]+", globals\(\)\.get\("__file__", "<stdin>"\), ")[0-9a-f]{64}("\))"#,
+            "$1<SOURCE_MAP_DIGEST>$2",
+        ),
         // Note: Only keeping first 2 lines of stderr eliminates most cross-platform differences
         // Note: File paths eliminated by using stdin execution (shows as <stdin>)
     ]

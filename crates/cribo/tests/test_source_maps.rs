@@ -1537,8 +1537,8 @@ fn runtime_refuses_map_after_bundle_replacement() {
 #[test]
 fn runtime_survives_shadowed_threading_under_runpy() {
     // Under runpy, sys.path[0] is the DRIVER's directory; the bundle's own
-    // directory (reached via PYTHONPATH here) must still be filtered when the
-    // runtime imports its stdlib dependencies.
+    // directory is added only after importing runpy, then must be filtered when
+    // the runtime imports its stdlib dependencies.
     let dir = crash_project();
     let bundle = bundle_crash_project(&dir, "--sourcemap=linked");
     fs::write(
@@ -1552,7 +1552,9 @@ fn runtime_survives_shadowed_threading_under_runpy() {
     fs::write(
         &driver,
         format!(
-            "import runpy\nrunpy.run_path({bundle:?}, run_name=\"__main__\")\n",
+            "import runpy\nimport sys\nsys.path.insert(0, {bundle_dir:?})\nrunpy.run_path({bundle:?}, \
+             run_name=\"__main__\")\n",
+            bundle_dir = dir.path().to_string_lossy(),
             bundle = bundle.to_string_lossy(),
         ),
     )
@@ -1561,7 +1563,6 @@ fn runtime_survives_shadowed_threading_under_runpy() {
     let mut command = Command::new(common::get_python_executable());
     command.arg(&driver);
     command.env_remove("CRIBO_SOURCE_MAPS");
-    command.env("PYTHONPATH", dir.path());
     let output = command.output().expect("run python");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(!output.status.success());
@@ -1752,7 +1753,7 @@ fn digest_placeholder_in_user_code_is_left_untouched() {
     assert!(stderr.contains("raise ValueError(\"kaboom\")"), "{stderr}");
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn linked_comment_encodes_non_utf8_names() {
     // Unix filenames need not be UTF-8. A lossy conversion would bake U+FFFD
@@ -2007,6 +2008,32 @@ fn runtime_resolves_symlinked_bundle_to_sibling_map() {
     assert_remapped(&stderr);
 }
 
+#[cfg(unix)]
+#[test]
+fn runtime_resolves_sources_from_symlinked_output_directory() {
+    // The resolver may canonicalize source modules while the CLI output keeps
+    // a symlinked directory spelling. Map relativization must canonicalize both
+    // sides so resolving the real bundle path does not duplicate path prefixes.
+    let project = crash_project();
+    let link_parent = TempDir::new().expect("create link parent");
+    let linked_project = link_parent.path().join("project");
+    std::os::unix::fs::symlink(project.path(), &linked_project).expect("create project symlink");
+
+    let bundle = linked_project.join("bundle.py");
+    let (ok, _, stderr) = run_cribo(&[
+        "--entry",
+        &linked_project.join("main.py").to_string_lossy(),
+        "--output",
+        &bundle.to_string_lossy(),
+        "--sourcemap=linked",
+    ]);
+    assert!(ok, "bundling must succeed: {stderr}");
+
+    let (ok, _, stderr) = run_python(&bundle, &[]);
+    assert!(!ok);
+    assert_remapped(&stderr);
+}
+
 #[test]
 fn rebuilt_bundle_at_same_path_declines_stale_remap() {
     // Bundle A stays imported while its file is rebuilt in place as bundle B;
@@ -2255,7 +2282,7 @@ fn mapped_frames_keep_pep657_carets() {
     );
 }
 
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 #[test]
 fn non_utf8_source_paths_are_encoded_and_decoded() {
     use std::{ffi::OsString, os::unix::ffi::OsStringExt as _};

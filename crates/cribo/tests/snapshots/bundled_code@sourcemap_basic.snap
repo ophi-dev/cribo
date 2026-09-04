@@ -920,7 +920,7 @@ class _CriboSourceMapRuntime(object):
             self._notify_custom_hook(self._prev_unraisablehook, self._default_unraisablehook, lambda hook: hook(unraisable), "_prev_unraisablehook", "_default_unraisablehook")
             return
         self._prev_unraisablehook(unraisable)
-_CriboSourceMapRuntime._bootstrap("linked", globals().get("__file__", "<stdin>"), "f657e1c0a0a23b6451391ccba26f5d15127cc116ec792a17542ad158d9806c77")
+_CriboSourceMapRuntime._bootstrap("linked", globals().get("__file__", "<stdin>"), "<SOURCE_MAP_DIGEST>")
 del _cribo_sys, _cribo_sm_import, _CriboSmStream, _CriboSourceMapRuntime
 import sys as _sys
 import importlib as _importlib
