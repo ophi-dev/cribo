@@ -55,7 +55,7 @@ jobs:
       - run: cargo fmt --all --check
 
       - name: Spell Check Repo
-        uses: crate-ci/typos@512fc24f32f44ab01972217aaaf3dc86ec234d53 # v1
+        uses: crate-ci/typos@53821664afd79bb88fcdd22fdc2f49d8d3f6cac9 # v1
 
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v7
