@@ -50,7 +50,7 @@ jobs:
         run: uv sync --all-groups
 
       - name: Install Bencher CLI
-        uses: bencherdev/bencher@4329f73fe39302585007f172f45e3fdb924ba29f # main
+        uses: bencherdev/bencher@2d5a7d1c925343580fd0937d00c4f561458b2b0e # main
 
       - name: Track PR benchmarks with Bencher
         run: |
