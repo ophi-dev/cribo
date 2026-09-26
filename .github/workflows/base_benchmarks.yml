@@ -50,7 +50,7 @@ jobs:
         run: uv sync --all-groups
 
       - name: Install Bencher CLI
-        uses: bencherdev/bencher@537f7e97f3e2476af7b6ebeb8f7b7720ca640c2b # main
+        uses: bencherdev/bencher@f64a2e865917f798631e2e51d31b049a95b33df5 # main
 
       - name: Track base branch benchmarks with Bencher
         run: |
