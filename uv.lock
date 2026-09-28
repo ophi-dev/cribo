@@ -653,7 +653,7 @@ wheels = [
 
 [[package]]
 name = "googleapis-common-protos"
-version = "1.75.3"
+version = "1.75.4"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -670,9 +670,9 @@ resolution-markers = [
 dependencies = [
     { name = "protobuf", version = "7.36.2", source = { registry = "https://pypi.org/simple" } },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8a/c5/4353a188e2c335aee33269e8b654af228278cca8e5f0b4b5f11e5d0e9adb/googleapis_common_protos-1.75.3.tar.gz", hash = "sha256:57c435ac2c68b108999b6db075d9053e4d7a936ba57b4a3d45667b1346f1738a", size = 153905, upload-time = "2026-09-03T22:31:21.869Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4b/13/f83676de1dce4f8106bcba91725b3f3f4baf6ca1977685102b008b8e0097/googleapis_common_protos-1.75.4.tar.gz", hash = "sha256:4587babdc82a8d7e5a3d4f5a6697e064bf44a598b4d08341c212b68185eadbcd", size = 154248, upload-time = "2026-09-24T23:20:21.759Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1a/7a/7d79170c6ce6f12e109df2b3879d6b934010cf4f99aea8de8b7e5408c174/googleapis_common_protos-1.75.3-py3-none-any.whl", hash = "sha256:a018d2bf098ca9fb6faa08d5bb780e2a2c2f73c566f069761331386c9596d3f2", size = 306984, upload-time = "2026-09-03T22:30:45.133Z" },
+    { url = "https://files.pythonhosted.org/packages/11/59/6474c44460037b8474d85c1a82311ec7244f3aabd53197be5b06a4db778e/googleapis_common_protos-1.75.4-py3-none-any.whl", hash = "sha256:e8eb9cffa9a9f3423090cc7a086012004196abab388a0561690e81887fd79cc1", size = 307743, upload-time = "2026-09-24T23:19:57.136Z" },
 ]
 
 [[package]]
@@ -948,7 +948,7 @@ resolution-markers = [
     "python_full_version == '3.10.*'",
 ]
 dependencies = [
-    { name = "googleapis-common-protos", version = "1.75.3", source = { registry = "https://pypi.org/simple" } },
+    { name = "googleapis-common-protos", version = "1.75.4", source = { registry = "https://pypi.org/simple" } },
     { name = "grpcio", version = "1.84.0", source = { registry = "https://pypi.org/simple" } },
     { name = "protobuf", version = "7.36.2", source = { registry = "https://pypi.org/simple" } },
 ]
@@ -2294,11 +2294,11 @@ wheels = [
 
 [[package]]
 name = "petl"
-version = "1.7.25"
+version = "1.7.27"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/d3/8e/e5ee174074de506977bb2d87469db8211881e79ac24a4bb3a1a03b3946d1/petl-1.7.25.tar.gz", hash = "sha256:4a7a0f4436827497c3d9e81e858bd7846fbbfa70b97bfa9b1ea950074265141a", size = 440762, upload-time = "2026-09-09T02:30:41.126Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/fc/16/bc201e57d23276fab05f0e399d8a405a0d7854550a265b2f86a2596e7b58/petl-1.7.27.tar.gz", hash = "sha256:4807d8f33ccd7a7b64a83be0ee719d70735dd8e263364c1023d2874e9abea492", size = 446339, upload-time = "2026-09-24T18:06:13.357Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b2/2b/ce00ae557034535330b0a217a6647dd48e25a2d39ee4873d44dda8d9f465/petl-1.7.25-py3-none-any.whl", hash = "sha256:57713c23248414673bca2929558eb554e8d41b983a0869d4aec2adeca8deb787", size = 244635, upload-time = "2026-09-09T02:30:39.782Z" },
+    { url = "https://files.pythonhosted.org/packages/f1/6c/8cfd5c09754d68b817c124d0bc3e5d88558793a3bbf48fef270b10dfb365/petl-1.7.27-py3-none-any.whl", hash = "sha256:745a17ff9e132b10caff044731cdcf31f8559f09f8149d2850d1fcab405e419b", size = 249794, upload-time = "2026-09-24T18:06:12.076Z" },
 ]
 
 [[package]]
@@ -3015,7 +3015,7 @@ sdist = { url = "https://files.pythonhosted.org/packages/a7/ae/33e589ae3cf03c2e9
 
 [package.optional-dependencies]
 connect = [
-    { name = "googleapis-common-protos", version = "1.75.3", source = { registry = "https://pypi.org/simple" } },
+    { name = "googleapis-common-protos", version = "1.75.4", source = { registry = "https://pypi.org/simple" } },
     { name = "grpcio", version = "1.84.0", source = { registry = "https://pypi.org/simple" } },
     { name = "grpcio-status", version = "1.84.0", source = { registry = "https://pypi.org/simple" } },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -3173,11 +3173,11 @@ wheels = [
 
 [[package]]
 name = "pytz"
-version = "2026.3.post1"
+version = "2026.4"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/fb/48/fb042503b6ca6cd271261dc559fd6432f7d8c713153e9ec5c591af4dfc1c/pytz-2026.3.post1.tar.gz", hash = "sha256:2211d3fcf9a797d3405cac96ac7f61d80e6a644f72a3309607282fe8a2010c5d", size = 319745, upload-time = "2026-07-25T15:12:07.385Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/b0/ed/fa23d28713004418bbf2407127f80f385bfb0bf4e677bef02c25c27b00ee/pytz-2026.4.tar.gz", hash = "sha256:464303645bafafd72418898368b2429458f709cf1eb6a15372fbcc396b64da63", size = 318444, upload-time = "2026-09-24T03:58:40.443Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0f/7b/39c34ca613b0b198cb866466651b26b045e2009864c5183c979a3b83f383/pytz-2026.3.post1-py2.py3-none-any.whl", hash = "sha256:dd95840dd199baea12d9cc096a1d452caa6596a1c1e4b5f3dbd1541855d5e815", size = 508283, upload-time = "2026-07-25T15:12:05.782Z" },
+    { url = "https://files.pythonhosted.org/packages/d5/11/e3df59614bebe0ca50c905442603eda64ae7ac19811d4e4f74aa2d51ca85/pytz-2026.4-py2.py3-none-any.whl", hash = "sha256:9d514388fbc89ca0833203464272ac485b8828568ab73532f5020f17e892a0ff", size = 506747, upload-time = "2026-09-24T03:58:38.629Z" },
 ]
 
 [[package]]
