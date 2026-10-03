@@ -56,22 +56,22 @@ jobs:
         run: lefthook install
 
       - name: Install cargo-insta
-        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2
+        uses: taiki-e/install-action@861a07ce7084f55488e375df125cdc99bba60eb7 # v2
         with:
           tool: cargo-insta
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2
+        uses: taiki-e/install-action@861a07ce7084f55488e375df125cdc99bba60eb7 # v2
         with:
           tool: cargo-nextest
 
       - name: Install taplo
-        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2
+        uses: taiki-e/install-action@861a07ce7084f55488e375df125cdc99bba60eb7 # v2
         with:
           tool: taplo
 
       - name: Install typos
-        uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2
+        uses: taiki-e/install-action@861a07ce7084f55488e375df125cdc99bba60eb7 # v2
         with:
           tool: typos-cli
       - name: Verify installation
