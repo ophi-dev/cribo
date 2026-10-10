@@ -49,7 +49,7 @@ jobs:
           sudo apt-get install -y libc6-dbg valgrind
 
       - name: Install cargo-valgrind
-        uses: taiki-e/install-action@d8a70604563a86fa93f309bfefe42e078175d77a # cargo-valgrind
+        uses: taiki-e/install-action@36cebff96e21e4895b69e5bf3b2351be36494d82 # cargo-valgrind
 
       - name: Run cargo-valgrind
         continue-on-error: true

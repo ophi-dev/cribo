@@ -39,12 +39,12 @@ jobs:
         run: uv sync --all-groups
 
       - name: 'Install cargo nextest'
-        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad # v2
+        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe # v2
         with:
           tool: cargo-nextest
 
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@27cdd3237bf9a6a2b668f3bcbfaa06949ae17deb # cargo-llvm-cov
+        uses: taiki-e/install-action@be76f545a6a2f94fb131c5bb748ebed32edb5760 # cargo-llvm-cov
 
       - name: Generate coverage report
         shell: bash
